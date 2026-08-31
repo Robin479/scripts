@@ -1,0 +1,40 @@
+name: goodreads
+help: Interact with goodreads.com
+version: 0.1.0
+
+flags:
+- long: --data-path
+  arg: path
+  help: "Root directory for cached data and login sessions (default: $GOODREADS_DATA, or ~/.goodreads)"
+- long: --offline
+  help: Skip live network checks and use only cached data
+
+commands:
+- name: auth
+  help: Manage goodreads.com login sessions
+  commands:
+  - name: import
+    help: Start a session by importing cookies exported from a browser login
+    args:
+    - name: cookie_file
+      required: true
+      help: Path to a Netscape-format cookie file for goodreads.com
+  - name: status
+    help: Show an account's session state (defaults to the current account)
+    args:
+    - name: account
+      help: Account id (defaults to the current account)
+  - name: list
+    alias: ls
+    help: List all known accounts
+  - name: switch
+    help: Make a different known account the current one
+    args:
+    - name: account
+      required: true
+      help: Account id, as shown by 'auth list'
+  - name: logout
+    help: "Invalidate a session's cookies (defaults to the current account)"
+    args:
+    - name: account
+      help: Account id (defaults to the current account)

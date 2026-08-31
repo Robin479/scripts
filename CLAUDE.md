@@ -86,6 +86,10 @@ dockerized shellcheck or a different binary, e.g.
   gets its own sibling wrapper folder (e.g. `argbash/`) rather than being
   mixed into `bashly/`.
 
+  `bashly/goodreads/` currently still holds bashly's unmodified sample
+  commands (`download`/`upload`, from `bashly init`) — the actual
+  goodreads-specific commands haven't been designed yet.
+
 ## Conventions
 
 - Nothing is edited or authored directly in `bin/` — it holds only
