@@ -11,10 +11,18 @@ reflecting on reading challenges (identifying current challenges and
 selecting books to read towards their goals), and managing shelves and
 reading progress.
 
-Status: `auth` (login-session management) and the book metadata cache
-(schema.org JSON-LD + our own fields, no CLI surface yet) are implemented.
-Shelves, reading progress, and reading-challenge support are not designed
-yet.
+Status: `auth` (login-session management), the book metadata cache
+(schema.org JSON-LD + our own fields), and the blog post cache are
+implemented. `auth` and `blogs` have a CLI surface (`blogs
+update`/`list`/`get`/`delete`); the book cache doesn't yet. Shelves,
+reading progress, and
+reading-challenge support are not designed yet. The blog post cache exists
+specifically as groundwork for reading-challenge support: challenge detail
+data (which books count toward which badge) turned out to be locked behind
+a step-up-auth requirement no long-lived session can satisfy (see "Blog
+post cache" below), so the plan is a human-in-the-loop workflow — scrape
+and flag candidate blog posts, let the user confirm which challenge they
+belong to — rather than fully automated association.
 
 ## Architecture
 
@@ -655,6 +663,893 @@ directly/standalone (its own doc comment invites this) failed with a plain
 There's no CLI command exposing any of this yet — `gr::book_json` was built
 purely as the internal caching primitive; a `book` command group (or
 whatever surfaces it) is next-step work.
+
+## Blog post cache (implemented — no CLI surface yet, see below)
+
+`src/lib/goodreads_blogs.sh`. Exists as groundwork for reading-challenge
+support: a challenge's own badges each link off to a `goodreads.com/blog`
+post (e.g. the "CommunityPicks" badge → a themed book-list post), but that
+mapping only lives behind the step-up-auth wall described in the reading
+challenge research (`~/.goodreads/research/reading-challenges/notes.md` —
+machine-local, not committed; summary: certain endpoints require the
+underlying Amazon login to have happened within the last hour, which a
+long-lived `auth import` session structurally cannot satisfy). Blog posts
+themselves, by contrast, are plain public pages — no login needed at all,
+confirmed by fetching with the account-less/generic cookie jar. So the
+plan is a human-in-the-loop workflow: scrape blog posts and flag the ones
+that look like challenge book-listings (book count + cover-grid layout —
+confirmed via research that this correlates with "big listicle", not
+specifically with "challenge", so it's a candidate filter, not proof), let
+the user manually supply a challenge's title/date-window and confirm which
+flagged posts actually belong to it. This cache is the "scrape and store
+blog posts" half of that; the flagging/matching logic itself isn't built
+yet.
+
+**Cache TTL is infinite, unlike books** — deliberate, per explicit
+direction: a published blog post's content doesn't change. So
+`gr::blog_json` (`src/lib/goodreads_blogs.sh`) has no
+`book_cache_ttl`-style age check at all — "the file exists" and "the cache
+is fresh" are simply the same question here. The only way to re-fetch an
+already-cached post is passing `--force` as `gr::blog_json`'s second
+argument; `gr::refresh_blog` itself takes no force/freshness parameter
+and always fetches, unconditionally, whenever called — same division of
+responsibility as `gr::book_json`/`gr::refresh_book` (the wrapper decides
+*whether* to call refresh; refresh itself doesn't decide, it just does).
+
+**Blog post URLs** (`gr::blog_url <id>` →
+`https://www.goodreads.com/blog/show/<id>`): same "id alone is enough"
+convention as `gr::book_url`, confirmed directly — requesting the bare-id
+form of a real post gets a plain HTTP 301 to the full `<id>-slug` URL
+(`gr::http_get`'s `-L` follows it transparently), while a genuinely gone id
+gets a real, distinct HTTP 404. Fetched account-less (the generic cookie
+jar `before_hook` already defaults `COOKIE_JAR` to) — blog posts don't need
+a login to view, confirmed directly.
+
+**Posts get deleted from goodreads.com eventually** (confirmed: several
+old-looking ids return a real 404) — per explicit direction, a
+locally-cached post's content must survive that, not get silently wiped or
+left to look like an ordinary "never fetched" miss. `gr::refresh_blog`
+handles this by treating the two failure modes differently: `gr::http_get`
+itself only reports success/failure, not *why*, so on failure a dedicated
+follow-up call to `gr::http_status` (`src/lib/http.sh` — a new, minimal
+"just tell me the status code" sibling to `gr::http_get`, sharing its
+offline/cookie-jar/throttle handling but not its WAF-challenge retry loop,
+which is about something else entirely — a 2xx response with an empty
+body, not a 4xx) checks specifically for `404`. A confirmed 404 calls
+`gr::mark_blog_removed`, which sets `removed_remotely: true` +
+`removed_remotely_detected_at` (an ISO 8601 UTC timestamp, set once on
+first detection and left alone on every later call — no value in
+re-stamping "still gone") on the *existing* cache file, touching nothing
+else in it; if nothing was ever cached for that id, a minimal stub
+(`{blog_id, url, removed_remotely, removed_remotely_detected_at}`) is
+written instead of nothing, so `gr::blog_json`'s plain
+file-exists-means-fresh check (above) naturally stops re-attempting a
+confirmed-dead id without needing any special-case logic of its own. Any
+*other* failure (network hiccup, unexpected page structure, etc.) is a
+normal error — return 1, nothing written, any existing cache file left
+completely untouched, same "never silently corrupt a good cache on
+failure" rule `gr::refresh_book` follows.
+
+**Sanity check**: the fetched page's own `<link rel="canonical">` — its
+leading digits must match the requested id — same spirit as the book
+scraper's `__NEXT_DATA__`-based check, adapted since blog posts aren't
+Next.js pages (no `__NEXT_DATA__` here at all; this is an older,
+server-rendered Rails view).
+
+**Extracted fields**: `blog_id`, `url` (the canonical link), `title`
+(`<h1 class="gr-h1 gr-h1--serif">`), `author` and `published`
+(`YYYY-MM-DD`, parsed from the page's own "Posted by `<author>` on
+`<Month> <Day>, <Year>`" byline text), `like_count` (from the page's own
+like-count link, `/rating/voters/<id>`), and `book_sections`/
+`challenge_potential`, below.
+
+**The article container's raw HTML is deliberately *not* persisted** — per
+explicit direction, only the structured fields above are wanted, not a copy
+of the markup. It's still extracted internally though (via
+`--output-format=html`, not xidel's default plain-text extraction —
+confirmed directly that a listing post's actual book list is almost
+entirely `<img alt="...">` cover-grid elements a text-only extraction would
+silently drop): it's the input `book_sections`' own extraction validates
+against (a basic "did we actually find a real post" check) and
+`challenge_potential` greps for its grid-widget class name on (a CSS
+class name only exists in real HTML, not a plain-text rendering) — written
+to its own temp file either way, on general principle, even though it's no
+longer written into the final cache file.
+
+**`book_sections`**: every book referenced anywhere in the post, id +
+title, grouped the way the post itself groups them. A listing post often
+divides its books into named sub-lists (e.g. "204 Retellings" groups its
+204 books under headings like "Retellings based on Greek and Roman
+mythology"; "I Love the 90s" groups by individual year, 1990–1999, plus two
+catch-all sections) — plain `<h1 style="text-align:center">` elements
+interleaved with the book grids in the body, confirmed against multiple
+real posts (not exclusive to grid-style posts either — a small "weekly
+recommended books" post turned out to have one too, just a single section
+covering all its books). Most posts have no such headings at all and get
+one `{section: null, books: [...]}` group holding everything — the general
+case collapses cleanly to a flat list, no special-casing needed for it.
+`book_sections` **replaced** an earlier flat `book_ids` field — a plain id
+array with no titles or grouping, superseded once this was built (its
+grouping is a strict generalization: flatten `book_sections[].books[]` to
+get the old shape back).
+
+Per book: `book_id` and `title`. Grid-embedded books get a real title from
+their cover image's `<img alt="...">` — specifically the one whose class
+contains `AcrossImage` (`fourAcrossImage`/`threeAcrossImage`, the only
+variants a real cover image has ever been confirmed to use), **not** just
+the first `<img>` anywhere inside the link. That distinction is a real
+fix, found via `blogs get`'s pretty rendering (below) surfacing several
+books titled literally "Kindle Unlimited" once a human was actually
+reading the titles instead of them sitting unnoticed in JSON: a book's
+cover-grid entry is preceded by its own sibling
+`<div class="amazonBadge amazonBadge--fourAcrossImage__missing">`, a
+wrapper for a promotional badge (Kindle Unlimited eligibility, evidently)
+that's usually empty (`__missing`) but not always — when it does contain
+its own `<img>`, that image sits *before* the real cover image in document
+order, and `string()` on a multi-node XPath result takes the first one.
+Fixed retroactively too — 13 of the then-172 cached posts had at least one
+"Kindle Unlimited"-titled book, all re-fetched after the fix, all clean
+afterward (confirmed: zero remaining). A plain inline prose mention (an
+ordinary `<a href="/book/show/...">`, no image) has no reliable title
+anywhere in the markup at all, and gets `title: null` — confirmed directly
+that real posts mix both forms for the *same* book (an early inline
+mention with no title, then the same book id again later in its actual
+section's grid, title included that time). Deduplicated by book_id first —
+among a book_id's occurrences, the one with a non-null title wins (falls
+back to the first occurrence if none has one), which in every real case
+checked is also the one with the book's true section, so the null-titled
+duplicate is simply discarded. Section-grouping is then a `reduce`, not a
+second `group_by` (which would silently re-sort groups alphabetically by
+section text, destroying the post's own reading order) — each deduped book
+keeps its original document position (`idx`, assigned before dedup)
+specifically so re-sorting by `idx` afterward recovers narrative order,
+and each book is folded into whichever section group is already open for
+its section value, opening a new one when it isn't. This needs
+`--extract-kind=xquery3` on that particular `xidel` call — its default `-e`
+language is plain XPath, which has no `let` bindings at all (confirmed:
+errors outright without the flag) — needed here for
+`$a/preceding::h1[...][last()]`, the nearest *document-order* preceding
+heading regardless of tree nesting (a section heading and its book grid
+are siblings/cousins at varying depths, not ancestor/descendant, so a
+tree-structural query wouldn't find it).
+
+**`challenge_potential`**: a float, `0` to `1` — **currently only ever
+exactly `0` or `1`**, a direct carry-over of an earlier plain boolean field
+(`likely_challenge_listing`, renamed and reworked into this one per
+explicit direction: "we will refine the rules for the value later, just
+convert current true and false to 1 and 0 for now"). The underlying
+heuristic computing it is unchanged from that earlier boolean version —
+only the field's name and output type changed, to leave room for a
+genuinely fractional confidence score once the heuristic itself gets
+refined. `1` only when *all three* of the following hold — hardened
+repeatedly since the first version, each time against a real, named
+counterexample the user pointed at directly, not a hypothetical (and once,
+just as usefully, *un*-hardened again when a "fix" turned out to be
+wrong — see condition 2's own history below):
+
+1. The post's body uses Goodreads' own compact cover-grid embed
+   (`threeAcrossImage`/`fourAcrossImage` — confirmed the only two variants
+   actually seen). The original, sole condition.
+2. At least `$GR_CHALLENGE_LISTING_MIN_BOOKS` (40) books total. Added after
+   post 3182 ("The Week in Books..."), a 33-book weekly news roundup, was
+   found still flagged `true` — a post can legitimately use the grid
+   widget for just a handful of picks without being any kind of big themed
+   listing. The threshold wasn't picked blind: sorting every then-flagged
+   post by book count showed a clean jump from 12 and 33 (both real
+   small-roundup/promo posts, confirmed on inspection) straight to 48 and
+   up (everywhere from there reads as a genuine big listicle, whatever
+   it's actually about) — 40 sits in that real gap. One-directional, not a
+   reversal of the earlier "count alone doesn't work" finding below: that
+   finding was about a *high* count not proving true-positive-ness, which
+   a floor doesn't contradict — it only ever excludes posts too small to
+   be a real candidate, never confirms one.
+
+   **A third condition was added here, then reverted — worth keeping the
+   story, not just the outcome.** Reasoning at the time: 3182 mixes its 8
+   grid-widget "trending this week" picks with a *second* section using
+   `oneAcrossImage` + a full `<div class="bookInfoFullRow">` (an editorial
+   `<div class="bookDescription">` paragraph per book, not just a cover) —
+   surely a real big listicle would never mix the two, so exclude any post
+   that does. Checked against four known-good posts at the time
+   (3140/3184/3043/3145) and all were exclusively one widget, no mixing —
+   looked solid. **It wasn't**: confirmed directly against real,
+   *known-correct* ground truth — post 3127 ("Readers' Hit New Books of
+   the Year (So Far)") is one of the actual current Summer Challenge's own
+   8 badge-linked posts (verified via the gated achievement data captured
+   earlier this project — see the "HAR capture" section above), and it
+   genuinely mixes the two exactly the way 3182 does (a
+   `oneAcrossImage`/`bookInfoFullRow` "featured pick, more detail" entry
+   per genre section, alongside the main grid) — yet it's unambiguously
+   real challenge material. "A real big listicle never mixes the two" was
+   simply false. Worse, the condition was never even load-bearing for the
+   case that motivated it: 3182's real book count (33) already sits below
+   the condition-2 floor (40) on its own — the mixing check added zero
+   coverage for 3182 and one confirmed false negative for 3127. Reverted
+   outright rather than patched (e.g. into a ratio/threshold check) —
+   checked the actual numbers first (3182: ~2 of 33 books via the one-per-
+   row widget; 3127: ~11 of 143) and they're similar enough that no simple
+   ratio would cleanly separate the two either. **Lesson: don't harden
+   against a single counterexample with a rule stronger than that
+   counterexample actually needs, and check any new exclusion rule against
+   confirmed *positive* examples too, not just the negative one that
+   motivated it** — condition 3 (audiobooks, below) was cross-checked
+   against 3127 specifically for exactly this reason once it was found.
+3. **At least one *plain, unmodified* grid image** —
+   `class="fourAcrossImage"` or `class="threeAcrossImage"` *exactly*, not
+   Goodreads' own `--audiobook` BEM modifier of that same class
+   (`class="fourAcrossImage--audiobook"`). Subsumes condition 1's own
+   grid-presence check entirely (an exact-class match is trivially also a
+   substring match), so that separate check was folded into this one
+   rather than kept alongside a now-redundant duplicate. Added after post
+   3157, "72 Reader-Approved Audiobooks for Every Bookish Mood" — a clean
+   grid, all 72 entries, easily past the count floor, yet not a challenge/
+   big-listicle post at all, per explicit direction (the actual tell
+   suggested: audiobook cover art reads roughly square, real book covers
+   read portrait) — confirmed directly the *markup* already says so
+   explicitly, no image-dimension inspection needed: every one of 3157's
+   cover `<img>`s carries the modifier.
+
+   **This condition's first version repeated condition 2's exact mistake,
+   for the exact same reason — worth keeping this story too.** It excluded
+   on *any* occurrence of the `--audiobook` modifier anywhere in the post,
+   checked at the time against 3127 specifically (zero occurrences there)
+   and judged safe. It wasn't: post 3129 ("The Goodreads Staff...Share Top
+   Book Recommendations" — also real challenge material, the StaffShelves
+   badge) turned out to have 8 occurrences of the modifier mixed into an
+   otherwise-normal 128-cover grid — a handful of the staff's picks happen
+   to be audiobooks, same as any real recommendation list might
+   legitimately include a few. Checking only against 3127 wasn't
+   checking against the *whole* known-good set, and this is exactly the
+   gap that let it through — condition 2's retrospective already named
+   this as the lesson, and this condition's first draft still fell into it
+   regardless. Fixed the same way as condition 2: require the post to have
+   at least one plain-class cover (confirmed directly — 3157 has zero;
+   3129 has 128, the 8 audiobook ones notwithstanding) rather than
+   excluding on any audiobook-styled cover being present at all.
+
+**Still not proof a post is tied to any *specific* challenge** — confirmed
+directly, before any of this hardening, that an unrelated big listicle
+(3043, "204 Retellings") uses the exact same grid widget as real challenge
+posts, and nothing added since changes that: this field says "book-listing-
+shaped candidate", never "confirmed challenge material". It's a candidate
+signal for the human-in-the-loop matching workflow this whole cache exists
+to support (see "Purpose"/status above): book-listing-shaped posts,
+narrowed by a challenge's own date window (user-supplied, since that's not
+reliably scrapeable either), confirmed by the user — not something this
+field claims to settle on its own. That confirmation step is `challenge`,
+below.
+
+Retroactively re-applied across the whole cache every time the heuristic
+itself hardened (`blogs update --all`, since the value is computed at
+fetch time from body HTML that isn't persisted — there's no way to
+recompute it without a real re-fetch) — not just the one or two posts
+spot-checked directly. The rename to `challenge_potential` itself (this
+session) was likewise applied to the whole then-existing 172-post cache —
+but as a pure data migration (`likely_challenge_listing: true/false` →
+`challenge_potential: 1/0`, no `.challenge` field touched, since it didn't
+exist yet at that point), not a re-fetch: the value itself didn't change,
+only its name and JSON type, so there was nothing to actually recompute.
+
+**`challenge`**: the human half — a **tri-state manual override**:
+`true`, `false`, or the key **entirely absent** (never `null` — per
+explicit direction, "neither of the two" is a genuinely third state, not
+the same thing as an explicit `false`, and storing it as JSON `null` would
+blur that distinction; jq itself already reads a truly-missing key as
+`null` anyway, so nothing is lost by using absence for it instead of a
+literal value). Set via `blogs challenge <blog_id...> (--yes | --no |
+--auto)` — `--auto` runs `del(.challenge)`, not an assignment,
+specifically to produce the "absent" state rather than a stored `null`.
+Unlike `challenge_potential`, this is never touched by
+`gr::refresh_blog`'s own scraping logic — it only *preserves* whatever
+value (or absence) was already on disk across a refresh, read from the
+old cache file before that file gets rebuilt from scratch (`gr::refresh_blog`
+always does a full `jq -S -n` rebuild, not a merge — without this explicit
+carry-forward step, a routine `blogs update --all` would silently wipe
+out every manual decision made since the last full re-fetch). Confirmed
+directly: marking a post, then force-refreshing it (`blogs update
+<blog_id>`, a real re-fetch over the network) left `challenge` untouched
+while `challenge_potential` still got freshly recomputed as normal.
+
+**Merging the two into one effective status** — "is this post effectively
+considered a challenge listing" — is centralized in exactly one place:
+`GR_CHALLENGE_JQ_DEFS` (`src/lib/goodreads_blogs.sh`), two jq `def`s held
+together as one bash string constant:
+
+- `gr_challenge_status`: `challenge` wins whenever it's actually present
+  (`!= null`, which for jq is the same test as "not the absent-key case"),
+  otherwise falls back to `challenge_potential` crossing
+  `$GR_CHALLENGE_POTENTIAL_THRESHOLD` (0.5 — moot today since the value is
+  only ever exactly 0 or 1, but factored out by name rather than
+  hardcoded, ready for when `challenge_potential` gains real fractional
+  values).
+- `gr_challenge_marker`: one of four single characters, replacing an
+  earlier plain `*`/` ` binary marker per explicit direction — `°`
+  explicitly marked *not* a challenge (`.challenge == false`), `*`
+  explicitly marked *as* one (`.challenge == true`), `?` no manual
+  override but `gr_challenge_status` is still true (i.e. the machine guess
+  alone crosses the threshold), or a plain space for neither. Built on top
+  of `gr_challenge_status` rather than re-deriving the threshold
+  comparison a second time: by the point its own `elif gr_challenge_status`
+  branch is reached, `.challenge` has already been ruled out as `true` or
+  `false` by the branches above it, so `gr_challenge_status` there is
+  exactly the machine-guess fallback alone.
+
+Every command that needs either — `blogs list`'s marker + potential
+columns, `blogs get`'s challenge-potential line — prepends this constant
+to its own jq program text (`"$GR_CHALLENGE_JQ_DEFS"'...rest of the
+program...'`, two adjacent bash string tokens with no space between them,
+which bash concatenates into a single argument to `jq`) rather than
+reimplementing the same `if/else` inline at each call site — the whole
+reason this is a named constant instead of just being written inline the
+first time it was needed: a merge rule duplicated across several separate
+`jq` invocations in separate command files is exactly the kind of thing
+that quietly drifts out of sync the next time only one of the copies gets
+updated.
+
+**Why two fields instead of one** — considered merging `challenge` directly
+into `challenge_potential` (e.g. pinning it to `0`/`1` once manually
+decided) rather than keeping them separate. Rejected: refresh would still
+need the exact same "read the old value before rebuilding, carry it
+forward" logic regardless of which field name it's preserving — merging
+them doesn't remove that need, it just hides which parts of a single
+field are machine-owned versus human-owned, and loses the genuine "neither
+was ever decided" state entirely (a merged field has no way to tell "never
+looked at" apart from "assessed as 0"). Two fields keep that distinction
+explicit and keep `gr::refresh_blog` free to always overwrite
+`challenge_potential` unconditionally — no conditional "don't clobber
+this" logic needed there at all, only the one explicit carry-forward read
+for `challenge`.
+
+**Large HTML content must never be passed to `jq` via `--arg`** — found
+while `body_html` (above) was still a persisted field: a big listicle
+post's body easily exceeds 500KB, and `--arg` becomes a literal element of
+`jq`'s own argv, which blew straight past the OS's argument-list size
+limit (`jq: Argument list too long`) on a real 204-book post, confirmed
+directly. Fixed at the time by writing it straight to its own temp file
+and passing that to `jq --rawfile` instead, which has no such limit —
+`body_html` no longer reaches `jq` at all now that it isn't persisted (see
+above), but the underlying lesson still applies to anything comparably
+large that does: never `--arg`, always a temp file + `--rawfile`. Every
+other currently-extracted field is small enough that plain `--arg` is
+fine.
+
+**A `trap ... RETURN` set inside a function is a global handler, not
+scoped to that call frame** — it stays the active RETURN trap and fires
+*again* on the next function return anywhere up the call stack, not just
+the one that set it. Bit this code directly: `gr::refresh_blog` (and
+`gr::mark_blog_removed`) each set a `trap 'rm -f ...' RETURN` to clean
+up their own temp files: fine on their own return, but since neither
+function used to clear it afterward, the *same* trap — still referencing
+that function's own now-out-of-scope locals — fired again when the
+*caller* (`gr::blog_json`) itself returned. Under plain `set -e` (no
+`set -u`, which is what bashly's generated scripts actually run under —
+see the auth section above) this was silently harmless (`rm -f ""` is a
+no-op), but running the same code under `set -u` (as a manual test
+driver did) turned it into a hard `unbound variable` crash — and either
+way, a leftover trap silently referencing whatever an unrelated later local
+variable of the same name happens to be is fragile, not just cosmetically
+wrong. Fixed by having the trap's own command clear itself as its last
+action (`trap 'rm -f "$x"; trap - RETURN' RETURN`) so it never outlives the
+function that set it. Worth checking `goodreads_auth.sh`'s existing
+`trap ... RETURN` uses (`gr::identify_account_from_cookiejar`,
+`gr::cookies_state`) for the same latent issue if either is ever touched
+again — not fixed here, out of scope for this change, and doesn't
+misbehave in the real `set -e`-only bashly context, but the same root
+cause applies.
+
+The `blogs` command group (below) is the CLI surface for this cache — the
+actual challenge-association flagging/matching logic this cache exists to
+support is still next-step work, not yet built.
+
+## `blogs` commands (implemented)
+
+`blogs update [blog_id...] [--all]`, `blogs list [blog_id...] [--all |
+--since <date> --until <date> --limit <n>] [--reverse]`, `blogs get
+<blog_id> [--json]`, `blogs challenge <blog_id...> (--yes | --no |
+--auto)`,
+`blogs delete [blog_id...] [--all]`. Source: `src/bashly.yml` (command
+tree), one `src/blogs_*_command.sh` per leaf command — same
+one-file-per-command
+pattern `auth` uses; `update` is the one command backed by real logic in
+`src/lib/goodreads_blogs.sh` (`gr::discover_blog_ids`) rather than being a
+thin wrapper — every other command is just that, directly over
+`gr::blog_json`/`gr::blog_dir`/`gr::blog_file`.
+
+**`update`** started out as two separate commands (`refresh`/`discover`)
+and was deliberately collapsed into one, per explicit direction — its
+behavior branches on what's passed, in priority order:
+
+1. **One or more `blog_id`s** (`repeatable: true` in `bashly.yml` — bashly
+   exposes this at runtime as `args[blog_id]`, a single space-separated
+   string, not a real array; word-split back apart deliberately, not
+   quoted): force-refetches exactly those posts
+   (`gr::blog_json <id> --force`) — works identically whether or not a
+   given id was already cached, so this doubles as "add a new post by id"
+   too (no separate "add" needed). Mutually exclusive with `--all` —
+   checked explicitly and rejected with an error, since bashly itself
+   doesn't enforce that (confirmed directly: both can be set
+   simultaneously as far as arg parsing is concerned).
+2. **`--all`**: does a **full** discovery pass (`gr::discover_blog_ids
+   --full` — see below for what that means) *and* additionally
+   force-refreshes every post that was already cached before this run
+   started — a real "sync everything" pass, not just "check known ones are
+   still good" (that used to be all `--all` did, back when this was a
+   separate `refresh` command with no id — changed on explicit direction
+   that `--all` should include discovering new posts too, not skip that
+   half). The set force-refreshed is deliberately *only* what was cached
+   going in, not including whatever this same run just discovered — no
+   point force-refetching something that's already fresh from the
+   discovery pass moments earlier. Also the *only* mode that reports
+   which cached ids no longer turn up in the current listing — see below
+   for why that specifically needs `--full`'s guaranteed-complete scan, not
+   available on plain `blogs update` at all anymore.
+3. **Neither** (plain `blogs update`): a discovery pass only — scans the
+   `/news` listing (`gr::discover_blog_ids`, no flag — see below for how it
+   short-circuits) and fetches whatever comes back as genuinely new (plain
+   `gr::blog_json`, no `--force` needed — they're genuinely new, nothing to
+   force over). The short-circuit lets this stop *far* short of the full
+   ~18 pages once at least one discovery has ever completed (see below) —
+   no "no longer appears in the current listing" report on this path at
+   all, unlike an earlier version: a short-circuited scan can't tell an
+   older, never-(re)scanned id apart from one that quietly disappeared, so
+   it has nothing honest to say about that; run `--all` for that check.
+
+Formalizes what had been done ad hoc all session via one-off research
+scripts (see the "news catalog" research notes) into a real, reusable
+command.
+
+`gr::discover_blog_ids` (the underlying function) paginates
+`/news?content_type=articles[&page=N]` — the filter is deliberate, not the
+default: removing it also surfaces `/interviews/show/<id>.<name>` pages, a
+structurally different content type (separate id space, separate layout,
+no book list at all) this project doesn't scrape — confirmed directly that
+without the filter, zero *additional* `/blog/show/` ids turn up, only
+those unrelated interview pages, so filtering costs nothing.
+`$GR_NEWS_DISCOVER_MAX_PAGES` (50) is a safety cap against looping forever
+if the listing ever breaks in some way that doesn't terminate naturally —
+well above the real page count (17-18, confirmed directly by running this
+to completion against the live site).
+
+**The discovery marker** — added per explicit direction, replacing an
+earlier design (below) that seeded pagination with the *entire* on-disk
+cached-id set: a small on-disk state file
+(`gr::blogs_discovery_marker_file`, `$(gr::data_dir)/.blogs_discovery_marker`
+— a plain-text file holding one numeric blog id, same "small state file
+directly in the data dir" convention as `gr::throttle`'s own
+`.last_request_at`) remembers the id of whatever post sat at the very top
+of page 1 as of the last **successfully completed** discovery. A later
+plain `blogs update` stops paginating as soon as it encounters that exact
+id again — the listing is recency-ordered, so reaching it means everything
+from that point on is guaranteed already-known, no need to keep walking
+the remaining ~17 pages just to re-discover ids already sitting in the
+cache. Only ids appearing *before* the marker in that page's own document
+order count as new (found via an order-preserving dedup,
+`awk '!seen[$0]++'`, not `sort -n -u` — position relative to the marker is
+what matters here, not just set membership). `--full` mode
+(`gr::discover_blog_ids --full`, what `--all` uses) ignores this marker
+entirely and walks the whole listing unconditionally, the same as a
+marker-less first-ever run does — but **every** successful run, `--full`
+included, still updates the marker afterward: "this marker is only ever
+updated by running a blog discovery" (explicit direction) means any
+completed discovery counts, not just the short-circuited kind.
+
+Two termination conditions, either one ends the pagination loop: the
+marker turning up on a page (the common case once any discovery has run
+before), or a page contributing no id beyond what's already been
+accumulated *this run* (the fallback — covers `--full`, a marker-less
+first run, and the marker's own post having since been deleted from the
+listing so it can never be matched again).
+
+The marker write is the very last thing `gr::discover_blog_ids` does, and
+only on the success path — the early `return 1` on a page-fetch failure
+never reaches it. Confirmed directly: with `--offline` forcing a failure,
+the on-disk marker was untouched afterward; a later, successful run picks
+up exactly where the old marker leaves off, same as if the failed attempt
+had never happened. This was an explicit requirement, not just a nice
+property — "allow repeating a failed discovery with still the old
+marker."
+
+**Getting the marker capture right took two real, confirmed bugs to find**
+(both caught by testing directly against the live listing rather than
+trusting the design on paper):
+
+1. The very first version extracted candidate ids with a page-wide
+   `grep -oE '/blog/show/[0-9]+'` — anywhere on the page, not scoped to the
+   actual article listing. The page header carries its own unrelated
+   promotional banner link (a `topFullImage`/`BigBooksFall26_eb`-style
+   React prop, not part of the article feed) that happens to point at some
+   blog post id too, and sits *before* the real listing in raw document
+   order — so this matched it as if it were the listing's own first
+   (implicitly: newest) entry. Confirmed directly against a real fetched
+   page: that banner linked to the single *oldest* post actually visible in
+   the real listing below it, about as wrong as a "newest post" marker
+   could possibly be. This likely also explains the older "one single
+   stray id past the real page range" finding (used for the fallback
+   termination condition, above) from long before the marker existed — the
+   header, banner included, renders on every page template regardless of
+   whether real content still exists at that page number, so an
+   out-of-range page could easily echo nothing but that same banner link
+   for the same reason; that finding only described the symptom
+   empirically at the time, this is the likely actual cause. Fixed by
+   scoping the match to lines that also carry
+   `editorialCard__image--fullHeight` — the real per-post listing card's
+   own cover image class, always on the same physical line as its
+   `/blog/show/<id>` href in this markup (confirmed directly against real
+   fetched pages) — which the header banner never carries.
+2. Even after that fix, the very first live re-run of a short-circuited
+   `blogs update` — genuinely nothing new since the marker was set — came
+   back reporting a hard failure (exit 1) with no error message at all.
+   Traced (via `bash -x`) to `gr::discover_blog_ids`'s own last line:
+   `sort -n -u <<< "$all_ids" | grep -v '^$'` — when there's legitimately
+   nothing to return, `grep -v` finds zero lines to output and exits 1
+   (its own "no lines selected" convention, not an actual error), which
+   then became *this function's own* return status since it was the last
+   command executed. Every caller's `gr::discover_blog_ids ... || exit 1`
+   read that as a real failure. Fixed by capturing the result into a
+   variable and `echo`ing it instead of ending on the bare pipeline —
+   `echo` always succeeds regardless of whether there's anything to print,
+   so the function's own exit status now reflects only whether the
+   pagination loop itself actually failed.
+
+**`gr::discover_blog_ids` no longer filters its own return value against
+the real on-disk cache at all** — a deliberate simplification over the
+earlier `$1`-seeded design (below): it only ever answers "what does the
+listing currently show, scanned this efficiently," never "what's not
+already cached." Diffing against the real `*.json` files present is the
+caller's job in both branches of `blogs_update_command.sh` now (`comm -23`
+against a freshly-built `cached_ids`, built once, shared by both the
+`--all` and plain branches) — previously only `--all` needed to do this
+itself, since the old seeded design had the plain path do this filtering
+internally. Found to be necessary, not just a symmetry cleanup: on a
+marker-less first-ever run (or the marker's-post-deleted fallback), a
+short-circuited scan can return ids that are already sitting in the local
+cache, and without this diff those got misreported as `-> fetched` even
+though `gr::blog_json` itself still only ever served the on-disk copy for
+them — no wasted network call, just a misleading label. Confirmed directly
+against the real 172-post cache before this fix, and clean after.
+
+**Earlier design, superseded by the marker above**: `gr::discover_blog_ids`
+used to take an optional `$1` — a newline-separated set of already-known
+ids — and seed the "no new ids" per-page termination check with it
+directly, added per explicit direction so plain `blogs update` could stop
+paginating once it reached ids the local cache already had, rather than
+always walking the full ~18-page listing even when nothing past page 1 or
+2 was ever going to be new. Confirmed working at the time: a routine
+`blogs update` against an already-fully-populated 172-post cache dropped
+from walking all ~18 pages (several minutes, throttled) to ~2 seconds.
+Replaced because a single remembered marker id is simpler than carrying
+the *entire* known-id set through this function just to diff against it on
+every single page, and doesn't depend on the caller having an accurate
+known-id set in the first place (the marker is authoritative about "what
+discovery last saw," independent of whatever's separately been added or
+removed from the cache by other means since).
+
+**bashly's command-embedding step silently corrupts a multi-line string
+literal spanning two source lines in a `*_command.sh` file** — found while
+building `discover`'s own already-cached/catalog set-difference. It
+prepends a fixed indent to *every physical line* of a command file when
+inlining it into the generated script's function body (purely cosmetic for
+ordinary code — confirmed harmless everywhere else), but a continuation
+line of a multi-line string picks up that injected indentation as part of
+its actual runtime *value*, not just source formatting. `discover`'s first
+version built its already-cached-ids list as `cached_ids="$cached_ids\n$(...)"` split across two source lines, which reached the generated
+executable as `cached_ids="$cached_ids\n  $(...)"` — a stray two-space
+prefix on every id, invisible in the source file itself. The fallout was
+silent and total: `comm` (used for the new/missing set difference) never
+matched a single already-cached id against anything, so a live run
+reported **all 166** ids as "new" and force-refetched every one — including
+the 33 already genuinely cached — rather than the ~133 that actually were.
+No error, no warning, just wrong output; caught only by noticing the
+fetched count didn't match expectations and diffing this source file
+against the corresponding function body in the generated `goodreads`
+script. Fixed by never spanning a string literal across two physical
+source lines in a command file — `"${cached_ids}${cached_ids:+$'\n'}${id}"`
+instead, one physical line, immune to the injected indent regardless of
+where it lands. `src/lib/*.sh` files are sourced verbatim (no such
+re-indentation happens there), so this is specific to `*_command.sh` files
+— worth remembering for any future multi-line string built in one of
+those, and worth an extra moment's suspicion any time a command file's
+runtime behavior doesn't match what its source plainly says it should do.
+
+**Regenerating `bin/goodreads` (`make bin/goodreads`) while a long-running
+invocation of it is still executing in the background is *mostly* safe,
+but not entirely** — a *single* overwrite while a process has the old file
+open for reading is fine (Linux keeps serving that process the original
+content through its already-open file descriptor; confirmed directly,
+several times, across this whole `blogs` feature's development, each time
+regenerating mid-run to pick up the next change without disrupting a
+several-minutes-long `blogs update --all` already in flight). But doing
+that *repeatedly* during one single long-running invocation eventually
+desynced something: a real run left a stray
+`line 2845: logs_usage: command not found` at the very tail of its output
+— a corrupted read, evidently from the executing process's read position
+no longer lining up with any one consistent version of the file after
+several successive overwrites. It landed strictly after all the real work
+for that run (the refresh loop, the summary counts, the missing-ids
+report) had already completed and printed correctly, so no actual data was
+lost — confirmed directly: the final file count, per-post success count,
+and JSON validity all checked out fine afterward — but it's real
+corruption, not just a cosmetic annoyance, and could plausibly land
+somewhere that *does* matter with different timing. **Prefer letting a
+background invocation of `goodreads` finish before regenerating the
+executable again**, rather than relying on this having worked out gently
+each time so far.
+
+A successful `gr::blog_json` call doesn't distinguish "fetched real
+content" from "confirmed permanently gone, marker written" (both are
+success from its own point of view — see `gr::refresh_blog` above), so
+`update`'s own `report_outcome` helper checks `removed_remotely` itself
+afterward and reports `-> confirmed removed remotely` instead of a plain
+`-> refreshed` when that's what actually happened — found by testing
+against a real nonexistent id and noticing the plain "Refreshed blog post
+999999." message was misleading (nothing was actually fetched). Shared by
+both the `blog_id`-list path and `--all`'s own force-refresh pass — the
+only difference between those two is which ids get handed to it.
+
+**`list`**: one line per post, sorted by `published` date, most recent
+first — changed from an id sort on explicit direction. Defaults to the 15
+most recent (`--limit <n>` overrides the count; `--all` shows everything,
+mutually exclusive with `--since`/`--until`/`--limit` — asking for
+"everything" and a filtered/capped view at once doesn't mean anything) and
+prints a trailing note naming the true total whenever the cap actually
+truncated something (never printed when `--all`, explicit ids, both
+`--since`+`--until` together, or the true total is already `<= limit`).
+Explicit `blog_id...` args narrow the candidate set to exactly those
+(missing ones are just noted to stderr, not fatal — the rest of the
+request still gets served) and bypass the cap entirely, same as `--all`
+does — you asked for specific ones, so exactly those are what get shown,
+however many that is; combining explicit ids with `--since`/`--until` is
+allowed (they still narrow the *shown* set further) since there's no real
+conflict, only `--all` is exclusive with the date flags. `--since <date>`/
+`--until <date>` are parsed liberally via `date -d` (same as
+`gr::refresh_blog`'s own byline-date parsing) rather than requiring the
+exact `YYYY-MM-DD` storage format, so "yesterday", "2 weeks ago", etc. all
+work.
+
+`--limit`'s meaning depends on which date bound, if any, is active — per
+explicit direction that "the 15 most recent" isn't actually what's wanted
+once a bound narrows the range:
+
+- Neither bound (or `--until` only): `--limit n` keeps the `n` *newest*
+  matching posts — the same head-of-sorted behavior as always, since
+  "closest to `--until`" and "most recent" agree in this direction.
+- `--since` only: `--limit n` keeps the `n` *oldest* matching posts — the
+  ones closest to `--since`, working forward — the opposite end of the
+  sorted array from the no-bound case, since here "closest to the bound"
+  means the earliest matches, not the latest.
+- Both `--since` and `--until`: no cap at all — the two bounds together
+  already say exactly which posts are wanted ("all of them, in that
+  range"), so a `--limit` alongside both is contradictory, not merely
+  redundant, and is rejected outright (`error: --limit has no effect once
+  both --since and --until are given...`), the same way `--all` combined
+  with a date flag is rejected — never silently ignored.
+- `--until` before `--since` (both given) is also rejected outright
+  (`error: --until (...) is before --since (...)`) rather than silently
+  producing an empty range.
+
+`--reverse` flips whatever set actually ends up selected/capped, applied
+as the very last step, regardless of which of the above branches produced
+it — reversing before capping would reverse *which* posts got shown, not
+just their order, which isn't what "reverse the list" means. The trailing
+truncation notice's wording follows the same split: "oldest" when
+`--since` alone drove the cap, "most recent" otherwise — printed only when
+a cap was actually applied (tracked via one `bypass_limit` bash variable
+covering `--all`, explicit ids, and the both-bounds case uniformly, rather
+than re-deriving "was anything capped" from `$all`/`$blog_ids` alone,
+which would silently miss the both-bounds case).
+
+Implementation is `cat "${files[@]}" | jq -s '...'` — every candidate
+file, slurped into one real JSON array, with the date filter, the sort,
+the cap, and `--reverse` all done as a single `jq` pipeline over that
+array. An earlier version instead built a TSV row per file (one `jq -r`
+call each) and drove `sort`/`awk`/`head`/`tac` over that in bash — working,
+but needlessly roundabout for something `jq` itself already does natively
+once every candidate is one array; simplified on direct feedback that this
+was overcomplicated. `jq -s` (slurp mode) takes concatenated JSON documents
+from stdin exactly as `cat` produces them, whitespace between them (this
+project's own pretty-printed storage format, in particular) included —
+no manual line-joining needed regardless of file count or formatting.
+Emits `{total, lines}`: `$total` is the post-filter, pre-cap count (what
+the truncation notice needs), `$lines` is TSV — one row per post actually
+being displayed, **already in final display form** (the effective
+challenge status — `gr_challenge_status`, see the "Blog post cache"
+section above — and a `[removed remotely]` suffix both folded into the row
+by `jq` itself, not reconstructed from separate fields in bash). The
+header row is fed through the exact same pipe as the data —
+`{ printf 'id\tpublished\ttitle\tbooks\tchallenge\turl\n'; jq -r '.lines[]' <<< "$result"; } | column -t -s $'\t' -R 1,4`
+— and `column -t` (not a hand-picked fixed-width `printf`, an earlier
+version's approach, changed on direct feedback) does the actual column
+alignment: it sizes each column to its own widest value, so there's no
+fixed-width assumption (`%-7s` for id, say) to silently outgrow the moment
+some value needs one more character than expected — and the header has to
+go through the same measurement pass as the data for exactly that reason,
+not print pre-aligned to an assumed layout. `-R 1,4` right-aligns the id
+and books-count columns specifically (util-linux `column`'s own flag for
+it, per explicit direction, each added in its own turn) — `published`,
+`title`, `challenge`, and `url` stay left-aligned, `column -t`'s default;
+`challenge` deliberately so even though it's numeric-adjacent — it's a
+compound marker-plus-number label (below), not a pure number, so
+right-justifying it wouldn't read as cleanly as it does for `id`/`books`.
+
+Column order is `id, published, title, books, challenge, url`, per
+explicit direction (an earlier version had two separate leading marker/
+potential columns before `id` — see `challenge`, below, for why they're
+one column now, and in this position). `url` is the rightmost column, per
+explicit direction — `title` sits earlier instead and does need real
+column-width padding as a result (there's nothing to its right when it was
+the trailing column). Real
+scraped titles routinely carry curly quotes, em dashes, etc.; tested
+directly that util-linux `column` (2.37.2 here) measures that UTF-8
+content correctly rather than by raw byte count, so this doesn't actually
+misalign the `url` column that follows — but that's a property of this
+`column` build, not a guarantee, worth re-checking if this project ever
+moves to a much older util-linux. `url` is built fresh as
+`"https://www.goodreads.com/blog/show/" + .blog_id`, not read off the
+cached `.url` field, since that one carries the full slug and a short,
+id-only url was explicitly what was asked for (confirmed elsewhere, e.g.
+`gr::blog_url`: goodreads.com resolves either id-only form identically to
+the slug one). `www.` is kept here — unlike `blogs get`'s book urls
+(below) — tested directly: a bare `goodreads.com/blog/show/<id>`
+301-redirects to add `www.` back before serving anything (on top of the
+already-known, unrelated id→slug redirect every blog url gets regardless
+of `www.`), while `www.goodreads.com/book/show/<id>` vs.
+`goodreads.com/book/show/<id>` behave identically with no redirect at all.
+Not obviously explained by anything this project controls — just an
+observed, tested asymmetry in how goodreads.com itself routes the two
+paths.
+
+The sort/filter key is `.published`, or a `"0000-00-00"` fallback —
+lexically before every real date — when absent (only a `removed_remotely`
+stub file ever lacks one); that fallback sorts an unknown-date post to the
+very end in most-recent-first order rather than landing arbitrarily, and
+gets explicitly excluded whenever `--since`/`--until` is actually active
+(an unknown date can't truthfully satisfy an explicit range, so it's
+dropped rather than kept with an unanswerable comparison — but only when a
+date filter is in play; with neither flag given, every cached post is
+still shown, unknown-date ones just sorted last). One easy-to-miss
+`jq` subtlety: `sort_by(x) | reverse` is *not* the same as a stable
+descending sort — reversing the whole array after an ascending stable sort
+also flips the relative order of same-key ties, unlike (e.g.) GNU
+`sort -r`, which stays stable in the forward direction even reversed. Not
+worth working around: "sort by publish date" doesn't specify tie-breaking
+among same-day posts, so which of two same-date posts prints first is
+genuinely unspecified, not a correctness bug — just don't be surprised by
+it if it ever comes up again.
+
+`challenge` is one column, not two — raw `challenge_potential` rounded to
+2 decimal places (`fmt2dp`) and `gr_challenge_marker` (`°`/`*`/`?`/space
+for explicitly-not/explicitly-yes/machine-guessed/neither, see "Blog post
+cache" above), joined by a single space, value first then symbol
+(`(.challenge_potential // 0 | fmt2dp) + " " + gr_challenge_marker`) —
+per explicit direction (value-then-symbol order swapped from an earlier
+symbol-then-value version); an even earlier version had these as two
+separate leading columns instead. `fmt2dp` is a `def` local to this
+command — presentation formatting, not
+part of `GR_CHALLENGE_JQ_DEFS`, since no other command needs it. jq has no
+built-in printf-style decimal formatting, so `fmt2dp` builds the fixed
+"X.YY" string by hand: scale by 100 and round to a whole number of
+"cents", split into whole/fractional parts, zero-pad the fractional part
+back to two digits (`round()` alone would print `"1"` for `0.1`, not
+`"0.10"` — jq numbers drop trailing zeros in `tostring`). `[removed
+remotely]` is appended to the title for a post `removed_remotely` marked
+true. Book count is `[.book_sections[]?.books[]?] | length` — the `?`s
+matter, a `removed_remotely` stub file has no `book_sections` key at all,
+and this degrades to `0` instead of erroring.
+
+**`get`**: fetches on demand via `gr::blog_json` (discarding its own
+compact-JSON stdout, only used for its side effect + exit status). Default
+output is a pretty book listing, not the raw JSON — per explicit
+direction, since that's what someone running `get` almost always actually
+wants to read. `--json` gets the old behavior: `cat`ing the cache file
+directly rather than re-emitting anything (the file on disk is already
+pretty-printed with sorted keys, `gr::refresh_blog`'s own write format —
+`gr::blog_json`'s own stdout is deliberately compacted to one line
+instead, for programmatic callers, so `--json` bypasses it too).
+
+The pretty renderer is one `jq` call that emits a JSON object (`{removed,
+meta, sections, rows}`), not text directly — title/url/`author · published
+· N likes` (each piece dropped via `map(select(. != null))` if actually
+absent, rather than a fixed three-part template that would leave stray
+`· ·` separators) plus a `gr_challenge_marker`-prefixed "Challenge
+potential: `<raw value>`" line go in `meta` — unconditional now (an
+earlier version only showed anything here when `gr_challenge_status` was
+true; changed per explicit direction to display the value itself, not
+just a derived yes/no) — with a parenthetical noting *why*
+(`"(manually marked as a challenge listing)"`/`"(manually marked as NOT a
+challenge listing)"`) whenever `.challenge` is actually set, nothing
+appended when there's no override and the line is just reporting the
+machine's own guess. Shown at full precision here, unlike `blogs
+list`'s 2-decimal-rounded column — no column-width constraint in this
+one-post detail view;
+`sections` is `{header, count}` per `book_sections` group (`Section
+(count):`, or `Books (N):` for the single group a post with no real
+sectioning gets); `rows` is every book across every section, flattened
+into one `book_id\ttitle` TSV list, in original order. A `removed_remotely`
+post instead gets `{removed: true, meta: [...]}` with no `sections`/`rows`
+at all — its own much shorter branch, since a stub has none of the normal
+fields to render (no title/author/book_sections — see
+`gr::mark_blog_removed`), not the full renderer running over mostly-absent
+data.
+
+Book rows are id-first, `column -t`-aligned (`  - Title  [book_id]`, an
+earlier version's format, dropped on explicit direction for a real
+id-then-title table instead — id right-aligned, `-R 1`, matching
+`blogs list`'s own id column), `url` the rightmost column (per explicit
+direction, same as `blogs list`) — built fresh as
+`"https://goodreads.com/book/show/" + .book_id` (there's no cached field
+to read here regardless, unlike a blog post's own stored `.url`),
+**without** `www.`, unlike `blogs list`'s blog urls — tested directly:
+`goodreads.com/book/show/<id>` and `www.goodreads.com/book/show/<id>`
+behave identically, no redirect either way, so `www.` is genuinely
+superfluous for a book url specifically (confirmed *not* true for a blog
+url — see there, the asymmetry is real and tested, not assumed). `title`
+sits in the middle and does need real column-width padding as a result;
+tested directly that util-linux `column` (2.37.2 here) measures real UTF-8
+title content (curly quotes, em dashes) correctly rather than by raw byte
+count, so this doesn't misalign the trailing `url` column, but that's a
+property of this `column` build, not a guarantee — and aligned **once,
+globally, across every section**, not reset per section: `jq -r
+'.rows[]' <<< "$result" | column -t -s $'\t' -R 1` runs a single time over
+the *entire* flattened book list, then
+a `while` loop walks `sections` again and slices consecutive lines off the
+front of that one aligned array using each section's own `count` (tracked
+via a running `idx`) to know where one section's rows end and the next
+begin. Running `column -t` separately per section instead would size each
+section's id/title columns independently — inconsistent alignment across
+one single listing the moment two sections' ids differ enough in digit
+count, exactly what running it once globally avoids. A blank line follows
+each section's own books (a plain `echo` at the end of the same loop
+iteration, added per explicit direction) — including a trailing one after
+the very last section, not specifically suppressed there since a trailing
+blank line is harmless.
+
+**`challenge`**: sets or clears `.challenge` (see the "Blog post cache"
+section above for the full tri-state design and why it's a separate field
+from `challenge_potential`) on one or more posts — `blog_id` is
+`repeatable: true` here (renamed from an earlier single-id-only `mark`
+command per explicit direction, taking the same repeatable-id shape
+`update`/`delete` already use). Exactly one of `--yes`/`--no`/`--auto` is
+required — checked by hand in bash, same "bashly doesn't enforce this
+itself" pattern every other multi-flag `blogs` command uses — and unlike
+those, *no* flag given is rejected too rather than defaulting to anything,
+since there's no sensible default for a command whose entire purpose is
+recording an explicit human decision. Each id needs to already be cached
+(`gr::blog_file`'s path exists) — an uncached id is reported to stderr
+(`<id> -> not cached`) and counted as a failure rather than aborting the
+whole run, same "best-effort across the list, report the tally" shape
+`blogs delete`'s own multi-id loop uses (`mark_one`/`delete_one`, a shared
+helper plus a loop, in each case) — not fetched on this command's own
+initiative, since marking an as-yet-unseen post as a challenge listing (or
+not) isn't something it can meaningfully do sight unseen; the failure
+message points at `blogs update <blog_id>` instead. Implementation is a
+plain `jq '. + {challenge: true}'` / `'. + {challenge: false}'` /
+`'del(.challenge)'` **merge onto the existing cache file**, not a rebuild —
+unlike `gr::refresh_blog`'s own `jq -S -n`, every other field (including
+`challenge_potential`, the machine's own guess) is left untouched, since
+this command only ever means to touch the one key it's actually about.
+`--auto` is `del(...)`, specifically, not an assignment to `null` — the
+tri-state is true/false/*absent*, and `del` is the operation that actually
+produces "absent" rather than a stored `null` value.
+
+**`delete`**: takes the same `blog_id...`/`--all` shape as `update` (added
+afterward, on explicit direction, to match) — one or more explicit ids, or
+`--all` for every cached post, mutually exclusive, and now an error if
+*neither* is given (a bare `blogs delete` with nothing to act on used to
+be impossible since `blog_id` was `required: true`; now that it's
+`repeatable` instead — optional by bashly's own rules — that "give me
+something to do" case has to be checked explicitly). `--all` builds its id
+list from `gr::blog_dir`'s contents and folds it into the exact same
+`blog_ids` code path the explicit-id case uses (word-split apart the same
+way) rather than being a separate branch, keeping only one place that
+actually does a delete (`delete_one`). Per-id outcome plus a summary line,
+same shape as `update`'s own reporting; unlike `update`'s failures (a
+network hiccup is worth tolerating and reporting on, not aborting over), a
+requested id that was never cached is treated as a real usage error here —
+`delete` exits 1 if anything requested wasn't found, `update` does not.
+Still no confirmation prompt even for `--all` (which can now wipe the
+*entire* local blog cache in one call) — same non-interactive-delete
+precedent as `auth logout`, not changed just because the blast radius grew;
+revisit only if actually asked for.
 
 ## Open design questions
 

@@ -38,3 +38,79 @@ commands:
     args:
     - name: account
       help: Account id (defaults to the current account)
+- name: blogs
+  help: Manage the local cache of scraped goodreads.com blog posts
+  commands:
+  - name: update
+    help: "Fetch blog posts, discovering new ones, unless specific IDs are give."
+    args:
+    - name: blog_id
+      repeatable: true
+      help: Fetch the specified blog posts.
+    flags:
+    - long: --all
+      short: -a
+      help: Discover new blog posts and refresh all existing ones.
+  - name: list
+    alias: ls
+    help: "List cached blog posts, most recent first (last 15 by default)"
+    args:
+    - name: blog_id
+      repeatable: true
+      help: Only list these specific blog post ids (bypasses the default limit)
+    flags:
+    - long: --all
+      short: -a
+      help: Show every cached post (mutually exclusive with --since/--until/--limit)
+    - long: --since
+      short: -s
+      arg: date
+      help: Only posts on or after this date (with --limit, the n oldest)
+    - long: --until
+      short: -u
+      arg: date
+      help: Only posts on or before this date (with --limit, the n newest)
+    - long: --reverse
+      short: -r
+      help: Reverse the display order
+    - long: --limit
+      short: -l
+      arg: n
+      help: "Show n posts instead of 15 (not with --all, or both --since+--until)"
+  - name: get
+    help: Print one blog post's books, prettily (fetches it first if not cached yet)
+    args:
+    - name: blog_id
+      required: true
+      help: Blog post id
+    flags:
+    - long: --json
+      short: -J
+      help: Print the raw cached JSON instead of a pretty book listing
+  - name: challenge
+    help: Manually flag (or unflag) blog posts as challenge listings
+    args:
+    - name: blog_id
+      repeatable: true
+      help: Blog post id(s) to mark
+    flags:
+    - long: --yes
+      short: -y
+      help: Mark these posts as challenge listings
+    - long: --no
+      short: -n
+      help: Mark these posts as NOT challenge listings
+    - long: --auto
+      short: -a
+      help: Remove the manual override, falling back to the machine-computed guess again
+  - name: delete
+    alias: rm
+    help: Remove one or more blog posts from the local cache
+    args:
+    - name: blog_id
+      repeatable: true
+      help: Blog post id(s) to remove
+    flags:
+    - long: --all
+      short: -a
+      help: Remove every cached blog post

@@ -142,3 +142,21 @@ gr::http_get() {
   echo "error: $url kept returning an empty response after retries — likely rate-limited/challenged by the site" >&2
   return 1
 }
+
+# shellcheck disable=SC2154 # COOKIE_JAR is meant to be set by the caller, same convention as gr::http_get
+# Prints just the final HTTP status code — e.g. to confirm a 404 is real
+# before treating a post as permanently gone (see gr::refresh_blog).
+gr::http_status() {
+  local url="$1"
+
+  if gr::offline; then
+    echo "error: cannot check $url — --offline was given" >&2
+    return 1
+  fi
+
+  local cookie_opts=()
+  [[ -n "${COOKIE_JAR:-}" ]] && cookie_opts=(-c "$COOKIE_JAR" -b "$COOKIE_JAR")
+
+  gr::throttle "$url"
+  curl -sL -o /dev/null -w '%{http_code}' -A "$GR_USER_AGENT" "${cookie_opts[@]}" "$url"
+}
