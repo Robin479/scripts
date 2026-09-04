@@ -10,6 +10,14 @@ flags:
   help: Skip live network checks and use only cached data
 
 commands:
+# Run `eval "$(goodreads completions)"` to enable completions in the current shell.
+- name: completions
+  help: Print a bash completions script
+  args:
+  - name: shell
+    help: Shell to generate completions for (only bash is currently supported)
+    allowed: [bash]
+    default: bash
 - name: auth
   help: Manage goodreads.com login sessions
   commands:
@@ -77,6 +85,16 @@ commands:
       short: -l
       arg: n
       help: "Show n posts instead of 15 (not with --all, or both --since+--until)"
+    # bashly's `args:` schema has no per-argument `completions:` (only
+    # `command`/`flag` support it), so this is attached to the command
+    # itself instead. These IDs don't start with "-", so (unlike the
+    # flags above) they show up on a bare tab too -- completely's filter
+    # only hides candidates starting with "-" until you type one.
+    # $GOODREADS_DATA/~/.goodreads only -- doesn't honor a --data-path
+    # override given elsewhere on the command line, since that would need
+    # parsing COMP_WORDS here.
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
   - name: get
     help: Print one blog post's books, prettily (fetches it first if not cached yet)
     args:

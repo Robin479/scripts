@@ -1,0 +1,40 @@
+name: boxctl
+help: boxctl command line tool
+version: 0.0.0
+
+commands:
+# Run `eval "$(boxctl completions)"` to enable completions in the current shell.
+- name: completions
+  help: Print a bash completions script
+  args:
+  - name: shell
+    help: Shell to generate completions for (only bash is currently supported)
+    allowed: [bash]
+    default: bash
+- name: drop-caches
+  help: Flush filesystem buffers, then drop the page cache, dentries, and inodes
+- name: install
+  help: Install or update a tool that isn't packaged in the default system repositories
+  commands:
+  - name: calibre
+    help: Install or update calibre
+    flags:
+    - long: --update
+      short: -u
+      help: Install the latest version (alias for --version=latest)
+      conflicts: [--version]
+    - long: --version
+      arg: version
+      help: Install this specific version instead of the latest
+      conflicts: [--update]
+  - name: xidel
+    help: Install or update xidel
+    flags:
+    - long: --update
+      short: -u
+      help: Install the latest version even if a version is already installed
+    - long: --dev
+      help: Install the latest development snapshot instead of the latest stable release
+    - long: --development
+      private: true
+      help: Alias for --dev

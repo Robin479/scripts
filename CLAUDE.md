@@ -100,5 +100,5 @@ dockerized shellcheck or a different binary, e.g.
 - `bin/` is the single directory meant to be added to `$PATH` — no other
   directory in this repo should be added to it.
 - Symlink names in `bin/` are the invocable command name and drop any
-  source file extension (e.g. `plain/install-calibre.sh` is symlinked as
-  `bin/install-calibre`, not `bin/install-calibre.sh`).
+  source file extension (e.g. `plain/fix-eclipse-classpath.sh` is symlinked
+  as `bin/fix-eclipse-classpath`, not `bin/fix-eclipse-classpath.sh`).

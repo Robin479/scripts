@@ -2,3 +2,12 @@
 *.swp
 
 bin/
+
+# not derived content -- the bashly project scaffolding template
+!bashly/.template/
+
+# generated per-project completion scripts -- see bash-completion.d/.template.sh.in
+bash-completion.d/*
+# not derived content -- the completion script template itself (a bare "*"
+# above also matches dotfiles in .gitignore, unlike Make/shell globs)
+!bash-completion.d/.template.sh.in

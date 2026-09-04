@@ -1,0 +1,13 @@
+name: @NAME@
+help: @NAME@ command line tool
+version: 0.0.0
+
+commands:
+# Run `eval "$(@NAME@ completions)"` to enable completions in the current shell.
+- name: completions
+  help: Print a bash completions script
+  args:
+  - name: shell
+    help: Shell to generate completions for (only bash is currently supported)
+    allowed: [bash]
+    default: bash
