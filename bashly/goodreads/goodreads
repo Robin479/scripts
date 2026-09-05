@@ -29,6 +29,7 @@ goodreads_usage() {
   printf "  %s   Print a bash completions script\n" "completions"
   printf "  %s   Manage goodreads.com login sessions\n" "auth       "
   printf "  %s   Manage the local cache of scraped goodreads.com blog posts\n" "blogs      "
+  printf "  %s   Manage the local cache of scraped goodreads.com book metadata\n" "books      "
   echo
 
   # :command.long_usage
@@ -489,6 +490,178 @@ goodreads_blogs_delete_usage() {
     # :argument.usage
     printf "  %s\n" "BLOG_ID..."
     printf "    Blog post id(s) to remove\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_books_usage() {
+  printf "goodreads books - Manage the local cache of scraped goodreads.com book metadata\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads books COMMAND\n"
+  printf "  goodreads books [COMMAND] --help | -h\n"
+  echo
+  # :command.usage_commands
+  printf "%s\n" "Commands:"
+  printf "  %s   Fetch new books by id, or force-refresh already-cached ones\n" "update"
+  printf "  %s   List cached books, sorted by title\n" "list  "
+  printf "  %s   Print one book's details (fetches or refreshes it first if needed)\n" "get   "
+  printf "  %s   Remove one or more books from the local cache\n" "delete"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    printf "%s\n" "Options:"
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_books_update_usage() {
+  printf "goodreads books update - Fetch new books by id, or force-refresh already-cached ones\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads books update [BOOK_ID...] [OPTIONS]\n"
+  printf "  goodreads books update --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--all, -a"
+    printf "    Force-refresh every already-cached book\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "BOOK_ID..."
+    printf "    Fetch or force-refresh these specific book ids\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_books_list_usage() {
+  printf "goodreads books list - List cached books, sorted by title\n\n"
+  printf "Alias: ls\n"
+  echo
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads books list [BOOK_ID...] [OPTIONS]\n"
+  printf "  goodreads books list --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--limit, -l N"
+    printf "    Show at most n books (unlimited by default)\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "BOOK_ID..."
+    printf "    Only list these specific book ids\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_books_get_usage() {
+  printf "goodreads books get - Print one book's details (fetches or refreshes it first if needed)\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads books get BOOK_ID [OPTIONS]\n"
+  printf "  goodreads books get --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--json, -J"
+    printf "    Print the raw cached JSON instead of a pretty summary\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "BOOK_ID"
+    printf "    Book id\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_books_delete_usage() {
+  printf "goodreads books delete - Remove one or more books from the local cache\n\n"
+  printf "Alias: rm\n"
+  echo
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads books delete [BOOK_ID...] [OPTIONS]\n"
+  printf "  goodreads books delete --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--all, -a"
+    printf "    Remove every cached book\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "BOOK_ID..."
+    printf "    Book id(s) to remove\n"
     echo
 
   fi
@@ -1412,15 +1585,18 @@ gr::refresh_book() {
 # the exact expected path handles "missing" and "stale" as a single check: it
 # prints the path only if the file exists AND is newer than the threshold,
 # so empty output means "needs a refresh" either way — no separate
-# existence/age checks needed. Refresh always runs via gr::refresh_book when
-# needed — --offline is gr::http_get's problem (see there), not this
-# function's; a refresh that fails for any reason, offline included, fails
-# gr::book_json outright rather than silently falling back to stale/missing
-# data. Never holds the JSON in a shell variable — the file is the single
-# source of truth, and jq is what reads and re-emits it (which doubles as a
-# "is this valid JSON" check).
+# existence/age checks needed. A second "--force" argument bypasses the TTL
+# check and always refreshes — same force-parameter shape as gr::blog_json,
+# used by the `books update` command. Refresh always runs via
+# gr::refresh_book when needed — --offline is gr::http_get's problem (see
+# there), not this function's; a refresh that fails for any reason, offline
+# included, fails gr::book_json outright rather than silently falling back
+# to stale/missing data. Never holds the JSON in a shell variable — the file
+# is the single source of truth, and jq is what reads and re-emits it (which
+# doubles as a "is this valid JSON" check).
 gr::book_json() {
   local id="$1"
+  local force="${2:-}"
   local book_file
   book_file="$(gr::book_file "$id")"
   mkdir -p "$(gr::book_dir)"
@@ -1434,7 +1610,7 @@ gr::book_json() {
   local fresh
   fresh="$(find "$book_file" -newermt "$threshold" 2>/dev/null)" || true
 
-  if [[ -z "$fresh" ]]; then
+  if [[ -z "$fresh" || "$force" == "--force" ]]; then
     gr::refresh_book "$id" > /dev/null || return 1
   fi
 
@@ -1723,7 +1899,15 @@ send_completions() {
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--auto --help --no --yes -a -h -n -y")" -- "$cur")'
   echo $'      ;;'
   echo $''
+  echo $'    *\'books update\'*)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--all --help -a -h")" -- "$cur")'
+  echo $'      ;;'
+  echo $''
   echo $'    *\'blogs delete\'*)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--all --help -a -h")" -- "$cur")'
+  echo $'      ;;'
+  echo $''
+  echo $'    *\'books delete\'*)'
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--all --help -a -h")" -- "$cur")'
   echo $'      ;;'
   echo $''
@@ -1731,15 +1915,7 @@ send_completions() {
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--all --help -a -h")" -- "$cur")'
   echo $'      ;;'
   echo $''
-  echo $'    *\'completions\'*)'
-  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help -h bash")" -- "$cur")'
-  echo $'      ;;'
-  echo $''
-  echo $'    *\'auth import\'*)'
-  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help -h")" -- "$cur")'
-  echo $'      ;;'
-  echo $''
-  echo $'    *\'auth status\'*)'
+  echo $'    *\'auth logout\'*)'
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help -h")" -- "$cur")'
   echo $'      ;;'
   echo $''
@@ -1747,12 +1923,28 @@ send_completions() {
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help -h")" -- "$cur")'
   echo $'      ;;'
   echo $''
-  echo $'    *\'auth logout\'*)'
+  echo $'    *\'auth status\'*)'
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help -h")" -- "$cur")'
+  echo $'      ;;'
+  echo $''
+  echo $'    *\'auth import\'*)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help -h")" -- "$cur")'
+  echo $'      ;;'
+  echo $''
+  echo $'    *\'completions\'*)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help -h bash")" -- "$cur")'
   echo $'      ;;'
   echo $''
   echo $'    *\'blogs list\'*)'
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//") --all --help --limit --reverse --since --until -a -h -l -r -s -u")" -- "$cur")'
+  echo $'      ;;'
+  echo $''
+  echo $'    *\'books list\'*)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/books" 2>/dev/null | sed "s/\.json$//") --help --limit -h -l")" -- "$cur")'
+  echo $'      ;;'
+  echo $''
+  echo $'    *\'books get\'*)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help --json -J -h")" -- "$cur")'
   echo $'      ;;'
   echo $''
   echo $'    *\'auth list\'*)'
@@ -1761,6 +1953,14 @@ send_completions() {
   echo $''
   echo $'    *\'blogs get\'*)'
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help --json -J -h")" -- "$cur")'
+  echo $'      ;;'
+  echo $''
+  echo $'    *\'books ls\'*)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/books" 2>/dev/null | sed "s/\.json$//") --help --limit -h -l")" -- "$cur")'
+  echo $'      ;;'
+  echo $''
+  echo $'    *\'books rm\'*)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--all --help -a -h")" -- "$cur")'
   echo $'      ;;'
   echo $''
   echo $'    *\'blogs rm\'*)'
@@ -1775,6 +1975,10 @@ send_completions() {
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help -h")" -- "$cur")'
   echo $'      ;;'
   echo $''
+  echo $'    *\'books\'*)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help -h delete get list ls rm update")" -- "$cur")'
+  echo $'      ;;'
+  echo $''
   echo $'    *\'blogs\'*)'
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--help -h challenge delete get list ls rm update")" -- "$cur")'
   echo $'      ;;'
@@ -1784,7 +1988,7 @@ send_completions() {
   echo $'      ;;'
   echo $''
   echo $'    *)'
-  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--data-path --help --offline --version -h -v auth blogs completions")" -- "$cur")'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(_goodreads_completions_filter "--data-path --help --offline --version -h -v auth blogs books completions")" -- "$cur")'
   echo $'      ;;'
   echo $''
   echo $'  esac'
@@ -2476,6 +2680,315 @@ goodreads_blogs_delete_command() {
 
 }
 
+# :command.function
+goodreads_books_update_command() {
+
+  # src/books_update_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  all="${args[--all]:-}"
+  book_ids="${args[book_id]:-}"
+
+  if [[ -n "$all" && -n "$book_ids" ]]; then
+    echo "error: --all and specific book ids are mutually exclusive" >&2
+    exit 1
+  fi
+
+  if [[ -z "$all" && -z "$book_ids" ]]; then
+    echo "error: give one or more book ids, or --all" >&2
+    exit 1
+  fi
+
+  if [[ -n "$all" ]]; then
+    book_dir="$(gr::book_dir)"
+    ids=()
+    for file in "$book_dir"/*.json; do
+      [[ -e "$file" ]] && ids+=("$(basename "$file" .json)")
+    done
+    if [[ "${#ids[@]}" -eq 0 ]]; then
+      echo "No cached books yet."
+      exit 0
+    fi
+    book_ids="${ids[*]}"
+  fi
+
+  ok=0
+  fail=0
+  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — book_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+  for id in $book_ids; do
+    if gr::book_json "$id" --force > /dev/null; then
+      echo "$id -> refreshed"
+      ok=$((ok + 1))
+    else
+      echo "$id -> failed" >&2
+      fail=$((fail + 1))
+    fi
+  done
+
+  echo "Refreshed $ok book(s), $fail failed."
+
+}
+
+# :command.function
+goodreads_books_list_command() {
+
+  # src/books_list_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  book_ids="${args[book_id]:-}"
+  limit_raw="${args[--limit]:-}"
+
+  limit=""
+  if [[ -n "$limit_raw" ]]; then
+    if ! [[ "$limit_raw" =~ ^[1-9][0-9]*$ ]]; then
+      echo "error: --limit must be a positive integer: $limit_raw" >&2
+      exit 1
+    fi
+    limit="$limit_raw"
+  fi
+
+  book_dir="$(gr::book_dir)"
+
+  if [[ ! -d "$book_dir" ]] || [[ -z "$(ls -A "$book_dir" 2>/dev/null)" ]]; then
+    echo "No cached books yet. Run 'goodreads books update <book_id>' to fetch one."
+    exit 0
+  fi
+
+  files=()
+  if [[ -n "$book_ids" ]]; then
+    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — book_ids is bashly's own space-separated repeatable-arg string
+    for id in $book_ids; do
+      file="$(gr::book_file "$id")"
+      if [[ -f "$file" ]]; then
+        files+=("$file")
+      else
+        echo "$id -> not cached" >&2
+      fi
+    done
+  else
+    for file in "$book_dir"/*.json; do
+      [[ -e "$file" ]] && files+=("$file")
+    done
+  fi
+
+  if [[ "${#files[@]}" -eq 0 ]]; then
+    echo "No cached books match those filters."
+    exit 0
+  fi
+
+  result="$(cat "${files[@]}" | jq -s --argjson limit "${limit:-0}" '
+    # Truncates to at most n characters, replacing the tail with a single "…"
+    # (not "..."; one character, so a truncated string is never longer than n)
+    # once the untruncated value would exceed it.
+    def trunc(n): if (length > n) then (.[0:(n - 1)] + "…") else . end;
+
+    # Many long titles are actually "Title: tag-line" — not reliably
+    # distinguishable from a title that legitimately contains a colon, so
+    # this is a heuristic, not a real parse: only when the whole title
+    # exceeds 30 characters (short titles are never a tag-line pair) AND
+    # the part before the first colon is shorter than the part after it
+    # (a real subtitle/tag-line is normally the longer half) does the colon
+    # onward get dropped. Only the *first* colon is considered — deliberate,
+    # since a tag-line normally comes right after the title itself, not
+    # after some later, incidental colon. Full title (untruncated) always
+    # still available via `books get`.
+    def strip_tagline:
+      . as $title
+      | ($title | index(":")) as $i
+      | if $i == null or ($title | length) <= 30 then $title
+        else
+          ($title[0:$i] | sub("\\s+$"; "")) as $before
+          | ($title[($i + 1):] | sub("^\\s+"; "")) as $after
+          | if ($before | length) < ($after | length) then $before else $title end
+        end;
+
+    # Truncates a list of author names, joined by ", ", to at most n
+    # characters — but cuts at a name boundary (right after the preceding
+    # comma) rather than mid-name whenever possible, per explicit direction.
+    # Only falls back to a mid-name cut (plain trunc(n) on the joined
+    # string) when even the very first name alone already exceeds n, since
+    # there is then no comma boundary within the limit to cut at at all.
+    # Otherwise, finds the longest prefix of names whose own joined length
+    # (before the trailing ", …" is appended) still fits within n — that
+    # prefix is guaranteed non-empty since the first-name-alone case was
+    # already ruled out above.
+    def trunc_authors(n):
+      . as $names
+      | (join(", ")) as $full
+      | if ($full | length) <= n then $full
+        elif (($names[0] // "") | length) > n then ($full | trunc(n))
+        else
+          ([range(1; ($names | length) + 1) | $names[0:.] | join(", ") | select(length <= n)] | last) as $best
+          | $best + ", …"
+        end;
+
+    (sort_by((.title // .name // "") | ascii_downcase)) as $sorted
+    | ($sorted | length) as $total
+    | (if $limit > 0 then $sorted[0:$limit] else $sorted end) as $display
+    | {
+        total: $total,
+        lines: [$display[] | [
+          .book_id,
+          (.published // "?"),
+          ([.contributors[]?.name] | trunc_authors(30)),
+          ((.title // .name // "(no title)") | strip_tagline | trunc(60)),
+          (.numberOfPages // "?" | tostring),
+          (if (.aggregateRating.ratingValue // null) != null then "\(.aggregateRating.ratingValue)" else "?" end),
+          ("https://goodreads.com/book/show/" + .book_id)
+        ] | @tsv]
+      }
+  ')"
+
+  total="$(jq -r '.total' <<< "$result")"
+
+  if [[ "$total" -eq 0 ]]; then
+    echo "No cached books match those filters."
+    exit 0
+  fi
+
+  {
+    printf 'id\tpublished\tauthor(s)\ttitle\tpages\trating\turl\n'
+    jq -r '.lines[]' <<< "$result"
+  } | column -t -s $'\t' -R 1,5
+
+  if [[ -n "$limit" && "$total" -gt "$limit" ]]; then
+    echo
+    echo "Showing $limit of $total cached book(s) — omit --limit to see the rest."
+  fi
+
+}
+
+# :command.function
+goodreads_books_get_command() {
+
+  # src/books_get_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  id="${args[book_id]}"
+  json="${args[--json]:-}"
+
+  if ! gr::book_json "$id" > /dev/null; then
+    exit 1
+  fi
+
+  file="$(gr::book_file "$id")"
+
+  if [[ -n "$json" ]]; then
+    # The cache file, not gr::book_json's own compacted one-line output.
+    cat "$file"
+    exit 0
+  fi
+
+  result="$(jq '
+    {
+      meta: [
+        (.title // .name // "(no title)"),
+        ([
+           (if (.contributors // []) != [] then "by " + ([.contributors[].name] | join(", ")) else empty end),
+           (.published // empty),
+           (if (.work.published // null) != null and .work.published != .published then "work first published \(.work.published)" else empty end),
+           (if (.numberOfPages // null) != null then "\(.numberOfPages) pages" else empty end),
+           (if (.aggregateRating.ratingValue // null) != null then
+              "\(.aggregateRating.ratingValue)" + (if (.aggregateRating.ratingCount // null) != null then " (\(.aggregateRating.ratingCount) ratings)" else "" end)
+            else empty end)
+         ] | map(select(. != null and . != "")) | join(" · ")),
+        (if (.genres // []) != [] then "Genres: " + (.genres | join(", ")) else empty end),
+        (if (.isbn // []) != [] then "ISBN: " + (.isbn | join(", ")) else empty end),
+        # Moved to the last meta line, right before the series table — see
+        # CLAUDE.md.
+        (if (.url // null) != null then "URL: " + .url else empty end)
+      ] | map(select(. != null and . != "")),
+      # url is built fresh, id-only (no www., no title slug) — same
+      # convention as books list/blogs get use for book urls.
+      series: [(.series // [])[] | {
+        series_id,
+        title: (.name + (if .position then " #\(.position)" else "" end)),
+        url: ("https://goodreads.com/series/" + .series_id)
+      }]
+    }
+  ' "$file")"
+
+  jq -r '.meta[]' <<< "$result"
+
+  if [[ "$(jq -r '.series | length' <<< "$result")" -gt 0 ]]; then
+    echo
+    echo "Series:"
+    jq -r '.series[] | [.series_id, .title, .url] | @tsv' <<< "$result" \
+      | column -t -s $'\t' -R 1 \
+      | sed 's/^/  /'
+  fi
+
+  description="$(jq -r '.description // empty' "$file")"
+  if [[ -n "$description" ]]; then
+    echo
+    echo "Description: $description"
+  fi
+
+}
+
+# :command.function
+goodreads_books_delete_command() {
+
+  # src/books_delete_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  all="${args[--all]:-}"
+  book_ids="${args[book_id]:-}"
+
+  if [[ -n "$all" && -n "$book_ids" ]]; then
+    echo "error: --all and specific book ids are mutually exclusive" >&2
+    exit 1
+  fi
+
+  if [[ -z "$all" && -z "$book_ids" ]]; then
+    echo "error: give one or more book ids, or --all" >&2
+    exit 1
+  fi
+
+  delete_one() {
+    local id="$1"
+    local file
+    file="$(gr::book_file "$id")"
+    if [[ ! -f "$file" ]]; then
+      echo "$id -> not cached" >&2
+      return 1
+    fi
+    rm -f "$file"
+    echo "$id -> deleted"
+  }
+
+  if [[ -n "$all" ]]; then
+    book_dir="$(gr::book_dir)"
+    ids=()
+    for file in "$book_dir"/*.json; do
+      [[ -e "$file" ]] && ids+=("$(basename "$file" .json)")
+    done
+    if [[ "${#ids[@]}" -eq 0 ]]; then
+      echo "No cached books to remove."
+      exit 0
+    fi
+    book_ids="${ids[*]}"
+  fi
+
+  ok=0
+  fail=0
+  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — book_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+  for id in $book_ids; do
+    if delete_one "$id"; then
+      ok=$((ok + 1))
+    else
+      fail=$((fail + 1))
+    fi
+  done
+
+  if [[ "$fail" -gt 0 ]]; then
+    echo "Deleted $ok book(s), $fail not found."
+    exit 1
+  fi
+  echo "Deleted $ok book(s)."
+
+}
+
 # :command.parse_requirements
 parse_requirements() {
   # :command.fixed_flags_filter
@@ -2546,6 +3059,13 @@ parse_requirements() {
       action="blogs"
       shift
       goodreads_blogs_parse_requirements "$@"
+      shift $#
+      ;;
+
+    books)
+      action="books"
+      shift
+      goodreads_books_parse_requirements "$@"
       shift $#
       ;;
 
@@ -3467,6 +3987,343 @@ goodreads_blogs_delete_parse_requirements() {
 
 }
 
+# :command.parse_requirements
+goodreads_books_parse_requirements() {
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_books_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action=${1:-}
+
+  case $action in
+    -*) ;;
+
+    update)
+      action="update"
+      shift
+      goodreads_books_update_parse_requirements "$@"
+      shift $#
+      ;;
+
+    list | ls)
+      action="list"
+      shift
+      goodreads_books_list_parse_requirements "$@"
+      shift $#
+      ;;
+
+    get)
+      action="get"
+      shift
+      goodreads_books_get_parse_requirements "$@"
+      shift $#
+      ;;
+
+    delete | rm)
+      action="delete"
+      shift
+      goodreads_books_delete_parse_requirements "$@"
+      shift $#
+      ;;
+
+    # :command.command_fallback
+    "")
+      goodreads_books_usage >&2
+      exit 1
+      ;;
+
+    *)
+      printf "invalid command: %s\n" "$action" >&2
+      exit 1
+      ;;
+
+  esac
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        printf "invalid argument: %s\n" "$key" >&2
+        exit 1
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_books_update_parse_requirements() {
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_books_update_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="books update"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --all | -a)
+
+        # :flag.case_no_arg
+        args['--all']=1
+        shift
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_repeatable
+        # :argument.case_repeatable
+        escaped="$(printf '%q' "$1")"
+        if [[ -z ${args['book_id']+x} ]]; then
+          args['book_id']="$escaped"
+        else
+          args['book_id']="${args['book_id']} $escaped"
+
+        fi
+        shift
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_books_list_parse_requirements() {
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_books_list_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="books list"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --limit | -l)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--limit']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--limit requires an argument: --limit, -l N" >&2
+          exit 1
+        fi
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_repeatable
+        # :argument.case_repeatable
+        escaped="$(printf '%q' "$1")"
+        if [[ -z ${args['book_id']+x} ]]; then
+          args['book_id']="$escaped"
+        else
+          args['book_id']="${args['book_id']} $escaped"
+
+        fi
+        shift
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_books_get_parse_requirements() {
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_books_get_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="books get"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --json | -J)
+
+        # :flag.case_no_arg
+        args['--json']=1
+        shift
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        # :argument.case
+        if [[ -z ${args['book_id']+x} ]]; then
+          args['book_id']=$1
+          shift
+        else
+          printf "invalid argument: %s\n" "$key" >&2
+          exit 1
+        fi
+
+        ;;
+
+    esac
+  done
+
+  # :command.required_args_filter
+  if [[ -z ${args['book_id']+x} ]]; then
+    printf "missing required argument: BOOK_ID\nusage: goodreads books get BOOK_ID [OPTIONS]\n" >&2
+
+    exit 1
+  fi
+
+}
+
+# :command.parse_requirements
+goodreads_books_delete_parse_requirements() {
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_books_delete_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="books delete"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --all | -a)
+
+        # :flag.case_no_arg
+        args['--all']=1
+        shift
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_repeatable
+        # :argument.case_repeatable
+        escaped="$(printf '%q' "$1")"
+        if [[ -z ${args['book_id']+x} ]]; then
+          args['book_id']="$escaped"
+        else
+          args['book_id']="${args['book_id']} $escaped"
+
+        fi
+        shift
+
+        ;;
+
+    esac
+  done
+
+}
+
 # :command.user_hooks
 before_hook() {
   # src/before.sh
@@ -3508,6 +4365,11 @@ run() {
     "blogs get") goodreads_blogs_get_command ;;
     "blogs challenge") goodreads_blogs_challenge_command ;;
     "blogs delete") goodreads_blogs_delete_command ;;
+    "books") goodreads_books_command ;;
+    "books update") goodreads_books_update_command ;;
+    "books list") goodreads_books_list_command ;;
+    "books get") goodreads_books_get_command ;;
+    "books delete") goodreads_books_delete_command ;;
   esac
 }
 

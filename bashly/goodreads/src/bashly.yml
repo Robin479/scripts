@@ -132,3 +132,51 @@ commands:
     - long: --all
       short: -a
       help: Remove every cached blog post
+- name: books
+  help: Manage the local cache of scraped goodreads.com book metadata
+  commands:
+  - name: update
+    help: Fetch new books by id, or force-refresh already-cached ones
+    args:
+    - name: book_id
+      repeatable: true
+      help: Fetch or force-refresh these specific book ids
+    flags:
+    - long: --all
+      short: -a
+      help: Force-refresh every already-cached book
+  - name: list
+    alias: ls
+    help: List cached books, sorted by title
+    args:
+    - name: book_id
+      repeatable: true
+      help: Only list these specific book ids
+    flags:
+    - long: --limit
+      short: -l
+      arg: n
+      help: Show at most n books (unlimited by default)
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/books" 2>/dev/null | sed "s/\.json$//")'
+  - name: get
+    help: Print one book's details (fetches or refreshes it first if needed)
+    args:
+    - name: book_id
+      required: true
+      help: Book id
+    flags:
+    - long: --json
+      short: -J
+      help: Print the raw cached JSON instead of a pretty summary
+  - name: delete
+    alias: rm
+    help: Remove one or more books from the local cache
+    args:
+    - name: book_id
+      repeatable: true
+      help: Book id(s) to remove
+    flags:
+    - long: --all
+      short: -a
+      help: Remove every cached book

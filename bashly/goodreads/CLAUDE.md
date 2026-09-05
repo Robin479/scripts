@@ -13,8 +13,9 @@ reading progress.
 
 Status: `auth` (login-session management), the book metadata cache
 (schema.org JSON-LD + our own fields), and the blog post cache are
-implemented. `auth` and `blogs` have a CLI surface (`blogs
-update`/`list`/`get`/`delete`); the book cache doesn't yet. Shelves,
+implemented. `auth`, `blogs` (`blogs
+update`/`list`/`get`/`delete`/`challenge`), and `books` (`books
+update`/`list`/`get`/`delete`) all have a CLI surface. Shelves,
 reading progress, and
 reading-challenge support are not designed yet. The blog post cache exists
 specifically as groundwork for reading-challenge support: challenge detail
@@ -325,7 +326,7 @@ warning. `--offline` skips the network call entirely and just reports
 `present`/`missing` from the cookie file's existence. Always returns 0
 (state is encoded in the printed string) — same set-e-safety rule as above.
 
-## Book metadata cache (implemented — no CLI surface yet, see below)
+## Book metadata cache (implemented — CLI surface: `books`, see below)
 
 **Book URLs** (`gr::book_url <id>` → `https://www.goodreads.com/book/show/<id>`):
 the trailing title-slug goodreads.com normally shows in book URLs
@@ -660,9 +661,183 @@ having already done so — found via testing that calling it
 directly/standalone (its own doc comment invites this) failed with a plain
 `mv` error otherwise.
 
-There's no CLI command exposing any of this yet — `gr::book_json` was built
-purely as the internal caching primitive; a `book` command group (or
-whatever surfaces it) is next-step work.
+## `books` commands (implemented)
+
+`books update [book_id...] [--all]`, `books list [book_id...] [--limit n]`,
+`books get <book_id> [--json]`, `books delete [book_id...] [--all]`. Source:
+`src/bashly.yml` (command tree), one `src/books_*_command.sh` per leaf
+command — same one-file-per-command pattern `auth`/`blogs` use, all thin
+wrappers directly over `gr::book_json`/`gr::book_dir`/`gr::book_file` (unlike
+`blogs update`, there's no `gr::discover_*` equivalent backing any of these
+— see below for why).
+
+**No discovery, unlike `blogs update`** — there's no goodreads.com listing
+page enumerating "all books"; a book only ever becomes known to this cache
+by being fetched via an explicit id (from a blog post's own `book_sections`,
+or hand-entered). So `update` only ever operates on ids it's actually
+given: either explicit `book_id...` args (works whether or not each was
+already cached — same "add or force-refresh" duality `blogs update`'s
+explicit-id branch has) or `--all` (force-refreshes every already-cached
+book, nothing more) — mutually exclusive, and giving neither is a plain
+usage error (`update` with truly nothing to do isn't meaningful here, unlike
+`blogs update`'s bare-discovery-scan default). Both branches always pass
+`--force` to `gr::book_json` — added to it for this purpose (previously
+`gr::book_json` had no force parameter at all, since nothing needed one
+before this): same `force="${2:-}"` / `[[ ... || "$force" == "--force" ]]`
+shape as `gr::blog_json` already had. `report_outcome`'s
+`removed_remotely`-vs-`refreshed` distinction (`blogs update`) has no
+counterpart here — `gr::refresh_book` doesn't implement that concept at
+all, so every success is reported as a plain `-> refreshed` regardless of
+whether the id was new or already cached.
+
+**`list` sorts by title, not by a recency date, unlike `blogs list`** — a
+book's own `published` field is the *edition's* publish date, not remotely
+"when this entry was added to the cache," so there's no meaningful
+recency ordering to default to the way a blog feed naturally has one.
+Columns: `id, published, author(s), title, pages, rating, url` (per
+explicit direction, evolved twice: `published` moved between `id` and
+`title` first, then `author(s)` moved in front of `title` and
+`pages`/`rating` added right after it; `author(s)` is every
+`contributors[].name` joined) — no `series` column (per explicit
+direction, dropped to keep the table narrower — `books get` still shows
+it) and no `challenge`-style column, since books carry no equivalent
+field. `title` is truncated (`trunc(n)`, a local jq `def`) to 60
+characters, and `author(s)` to 30 (also moved back down from a brief
+40-character stint, both per explicit direction) via its own
+`trunc_authors(n)` (below) — both replacing the cut tail with a single
+`…` character (not `"..."`) so a truncated value is never longer than
+its limit, rather than a three-character ellipsis pushing it over.
+`pages` (`.numberOfPages`, right-aligned like `id`) and `rating`
+(`.aggregateRating.ratingValue` — a bare number, the `★` it briefly
+carried was dropped again per explicit direction; `?` when absent) are
+the same
+two JSON-LD-only fields `books get`'s own byline shows — here each its
+own column instead, and `rating` deliberately compact (value only, no
+`ratingCount`) since a list row has far less room than `get`'s detail
+view.
+
+**`trunc_authors(n)` cuts at a name boundary, not mid-name, per explicit
+direction** — plain `trunc(n)` (used for `title`) chops at a fixed
+character position regardless of what's there, which for a joined
+`"Name1, Name2, Name3"` string can slice a name in half. Instead: if the
+whole joined list already fits in `n`, it's left alone; otherwise, if
+even the *first* name alone is already longer than `n` (no comma boundary
+exists within the limit at all), it falls back to plain `trunc(n)` on the
+full joined string — a mid-name cut is genuinely unavoidable here, per
+the user's own stated exception; otherwise, the longest prefix of full
+names whose own joined length still fits within `n` is kept, and `", …"`
+appended right after it — i.e. the ellipsis always lands immediately
+after the last preceding comma, never inside a name. Confirmed directly
+against `V for Vendetta`'s real 4-author `"Alan Moore, David Lloyd, Steve
+Whitaker, Siobhan Dodds"` (55 characters) → `"Alan Moore, David Lloyd,
+Steve Whitaker, …"` at the 40-character limit, and against a synthetic
+single name well over 40 characters on its own → falls back to a plain
+mid-name `trunc(40)` cut, confirming the exception path.
+
+**`strip_tagline` runs on `title` before `trunc(60)`, per explicit
+direction** — many long titles are actually "Title: tag-line" (e.g.
+`"Long Walk to Freedom: The Autobiography of Nelson Mandela"`), and
+showing the tag-line half in a width-constrained list column is less
+useful than showing the real title alone. Not reliably distinguishable
+from a title that legitimately *contains* a colon (e.g. `"All About
+Love: New Visions"`), so this is a deliberate heuristic, not a real
+parse, per the user's own suggested rule: only when the *whole* title
+exceeds 30 characters (a short title is never worth treating as a
+title+tag-line pair) **and** the part before the first colon is shorter
+than the part after it (a real tag-line is normally the longer half —
+confirmed against several real cached titles, e.g. `"Stupid TV, Be More
+Funny: How the Golden Era of The Simpsons Changed
+Television—and America—Forever"` → kept `"Stupid TV, Be More Funny"`)
+does the colon onward actually get dropped; otherwise the title is left
+alone (`"All About Love: New Visions"` is only 28 characters, so it's
+kept whole despite having a colon). Only the *first* colon is ever
+considered, not every one in the title — a real tag-line always
+immediately follows the title itself, not some later, incidental colon
+deeper in the string. This only ever affects `books list`'s own display
+— the full, untruncated title (colon and all) is always what `books get`
+shows, and what's actually stored on disk; nothing about the cache
+itself is touched. `url` is built fresh as
+`"https://goodreads.com/book/show/" + .book_id` (id only, no slug, no
+`www.`) rather than read off the cached `.url` field — that field
+carries the full `<id>.Title_With_Underscores` slug, and a short id-only
+url was explicitly what was asked for; same "no `www.`" convention
+`blogs get`'s book rows already use (tested: a book url behaves
+identically with or without `www.`, unlike a blog url — see there).
+Sorted case-insensitively
+(`ascii_downcase`) by `title // name`. A single `--limit n` caps the
+*alphabetically-first* `n` after sorting (no `--since`/`--until`/`--all`/
+`--reverse` — none of those have an obvious meaning for a title-sorted
+list, so they were left out rather than copied over from `blogs list` for
+symmetry's own sake); omitting `--limit` shows everything, which is the
+default (unlike `blogs list`'s capped-by-default 15) since there's no
+"most recent N" concept driving a sensible cap here either. Explicit
+`book_id...` args narrow the candidate set the same way `blogs list`'s do
+(missing ones noted to stderr, not fatal) and are unaffected by
+`--limit`. Implementation is the same `cat "${files[@]}" | jq -s '...'`
+single-pipeline shape `blogs list` uses, for the same performance reason
+(see the "Performance lesson" note above).
+
+**`get`** always calls plain `gr::book_json <id>` (no `--force`) — the
+book cache has a finite TTL (`book_cache_ttl`, unlike blog posts' infinite
+one), so a bare `get` transparently re-fetches a stale entry on its own;
+there's no "if not cached yet" caveat to state the way `blogs get`'s doc
+comment does. `--json` behaves identically to `blogs get --json` (`cat`s
+the pretty-printed cache file directly, bypassing `gr::book_json`'s own
+compacted stdout). The default pretty rendering is a `{meta, series}`
+object from one jq call (same "build a JSON object, format it in bash"
+shape `blogs get` already uses for its own book-sections table).
+
+`meta` is a flat list of present-only lines, each built so an absent
+field just contributes nothing (`map(select(. != null and . != ""))`),
+same "no stray separators from a fixed template" approach `blogs get`'s
+own byline line uses — in order: title; the byline `by <contributors> ·
+<published>[ · work first published <work.published>, only when it
+actually differs] · <numberOfPages> pages · <ratingValue>
+(<ratingCount> ratings)` (page count and rating are JSON-LD-only fields,
+per the "Open design questions" note above — pulled straight off
+`.numberOfPages`/`.aggregateRating`, not otherwise renamed or reshaped;
+`ratingValue` is a bare number, no `★` — briefly added, then dropped
+again per explicit direction; no thousands-separator formatting on
+`ratingCount`, kept as the plain number); `Genres: ...`; `ISBN: ...`;
+and, **last, per explicit
+direction** (moved down from originally being the second line, right
+after the title), `URL: <url>` — deliberately the very last `meta` line
+so it sits immediately before the `series` table (below) in the actual
+printed output, not just last in the array by coincidence.
+
+**`series` is its own table, per explicit direction** — not folded into
+`meta` as a single joined line the way an earlier version had it.
+Columns: `series_id` (read directly off the cached `series[].series_id`
+field — already extracted at fetch time, see the book cache section
+above — right-aligned, `column -t -R 1`, same convention as every other
+id column in this project), `title` (each entry's `name` plus `
+#<position>` when present — the *series* index, not to be confused with
+`published`), and `url`, built fresh as `"https://goodreads.com/series/"
++ .series_id` rather than read off the cached `series[].url` field — that
+field is inconsistent (sometimes carries the older
+`<id>-slug`-style path, sometimes just the bare id, confirmed directly on
+a real book with two series entries) and always allows `www.`; a short,
+consistently-shaped id-only url without `www.` was explicitly what was
+asked for, same convention `books list`'s own book urls already use (see
+above — tested there that `www.` is genuinely superfluous for
+goodreads.com, at least for `/book/show/`; not separately re-tested for
+`/series/` specifically, but kept consistent regardless). Printed under
+its own `Series:` header, indented two spaces (`sed 's/^/  /'` over the
+already-`column -t`-aligned table), only when the book actually has at
+least one series entry — nothing printed at all otherwise, confirmed
+directly against a real standalone (non-series) book.
+
+`description` (often a full paragraph) is printed last, after a blank
+line, on its own — not folded into `meta` at all — prefixed with
+`"Description: "` (per explicit direction, matching the `"URL: "`/
+`"Genres: "`/`"ISBN: "` labeling convention the other `meta` lines
+already use).
+
+**`delete`** is a straight copy of `blogs delete`'s shape (`book_id...` or
+`--all`, mutually exclusive, an error if neither is given, per-id outcome
+plus a summary, exits 1 if anything requested wasn't cached) — nothing
+book-specific to say about it beyond substituting `gr::book_dir`/
+`gr::book_file` for their blog equivalents.
 
 ## Blog post cache (implemented — no CLI surface yet, see below)
 

@@ -274,15 +274,18 @@ gr::refresh_book() {
 # the exact expected path handles "missing" and "stale" as a single check: it
 # prints the path only if the file exists AND is newer than the threshold,
 # so empty output means "needs a refresh" either way — no separate
-# existence/age checks needed. Refresh always runs via gr::refresh_book when
-# needed — --offline is gr::http_get's problem (see there), not this
-# function's; a refresh that fails for any reason, offline included, fails
-# gr::book_json outright rather than silently falling back to stale/missing
-# data. Never holds the JSON in a shell variable — the file is the single
-# source of truth, and jq is what reads and re-emits it (which doubles as a
-# "is this valid JSON" check).
+# existence/age checks needed. A second "--force" argument bypasses the TTL
+# check and always refreshes — same force-parameter shape as gr::blog_json,
+# used by the `books update` command. Refresh always runs via
+# gr::refresh_book when needed — --offline is gr::http_get's problem (see
+# there), not this function's; a refresh that fails for any reason, offline
+# included, fails gr::book_json outright rather than silently falling back
+# to stale/missing data. Never holds the JSON in a shell variable — the file
+# is the single source of truth, and jq is what reads and re-emits it (which
+# doubles as a "is this valid JSON" check).
 gr::book_json() {
   local id="$1"
+  local force="${2:-}"
   local book_file
   book_file="$(gr::book_file "$id")"
   mkdir -p "$(gr::book_dir)"
@@ -296,7 +299,7 @@ gr::book_json() {
   local fresh
   fresh="$(find "$book_file" -newermt "$threshold" 2>/dev/null)" || true
 
-  if [[ -z "$fresh" ]]; then
+  if [[ -z "$fresh" || "$force" == "--force" ]]; then
     gr::refresh_book "$id" > /dev/null || return 1
   fi
 
