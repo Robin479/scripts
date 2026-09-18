@@ -19,6 +19,24 @@ readonly GR_CHALLENGE_POTENTIAL_THRESHOLD=0.5
 # shellcheck disable=SC2034 # used cross-file by blogs_list_command.sh/blogs_get_command.sh's jq programs
 readonly GR_CHALLENGE_JQ_DEFS="def gr_challenge_status: if .challenge != null then .challenge else (.challenge_potential >= ${GR_CHALLENGE_POTENTIAL_THRESHOLD}) end; def gr_challenge_marker: if .challenge == false then \"°\" elif .challenge == true then \"*\" elif gr_challenge_status then \"?\" else \" \" end;"
 
+# xidel >=0.9.9 disabled the JSONiq bare-object-literal syntax ({"a": 1}) by
+# default under --extract-kind=xquery3, requiring an explicit
+# --json-mode=jsoniq to allow it — confirmed directly: gr::refresh_blog's
+# book_sections XQuery below (which relies on that syntax) silently got back
+# an "_error" JSON blob instead of real data on 0.9.9 without the flag, which
+# then broke jq --argjson downstream. xidel 0.9.8 has no --json-mode option
+# at all (errors "Unknown option" — but exits 0 and prints its usage text to
+# stdout, so this would silently reappear as the same downstream jq failure,
+# just for a different root cause) and doesn't need one — the same bare-object
+# syntax already works there with no flag. Detected once here via `xidel
+# --help` rather than a hardcoded version check, so this keeps working across
+# whichever xidel version is actually installed.
+if xidel --help 2>/dev/null | grep -q -- '--json-mode'; then
+  readonly GR_XIDEL_JSONIQ_FLAG="--json-mode=jsoniq"
+else
+  readonly GR_XIDEL_JSONIQ_FLAG=""
+fi
+
 gr::blog_dir() {
   echo "$(gr::data_dir)/blogs"
 }
@@ -273,7 +291,8 @@ gr::refresh_blog() {
   # ancestor/descendant relationship).
   local book_sections
   # shellcheck disable=SC2016 # $a/$section below are xidel's own XQuery variables, not bash expansions — single quotes are deliberate
-  book_sections="$(xidel -s "$html" --extract-kind=xquery3 -e '
+  # shellcheck disable=SC2086 # GR_XIDEL_JSONIQ_FLAG is a single flag or empty — word-splitting is exactly what's wanted so an empty value contributes no argument
+  book_sections="$(xidel -s "$html" --extract-kind=xquery3 ${GR_XIDEL_JSONIQ_FLAG} -e '
     [for $a in (//div[@class="newsShowColumn"])[1]//a[contains(@href,"/book/show/")]
      let $section := ($a/preceding::h1[contains(@style,"text-align:center")])[last()]
      return {

@@ -145,6 +145,18 @@ commands:
     - long: --all
       short: -a
       help: Force-refresh every already-cached book
+    - long: --blog
+      short: -b
+      arg: blog_id
+      repeatable: true
+      help: Fetch every book referenced by this blog post (see 'goodreads blogs list'); repeatable
+      # Known blog ids from the data dir — same dynamic-candidate convention
+      # blogs list/books list already use for their own id args, just scoped
+      # to this flag's own value instead of a whole command (bashly's flag
+      # completions: is a plain list, unlike args:, which supports none at
+      # all — see CLAUDE.md).
+      completions:
+      - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
   - name: list
     alias: ls
     help: List cached books, sorted by title
