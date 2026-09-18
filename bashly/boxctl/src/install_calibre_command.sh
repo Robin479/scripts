@@ -2,6 +2,7 @@
 # shellcheck disable=SC2154 # args is bashly's global associative array
 update="${args[--update]:-}"
 version="${args[--version]:-}"
+explicit_version="$version"
 
 # --update is shorthand for --version=latest; declaring them as conflicting
 # flags in bashly.yml already rejects any other combination of the two
@@ -20,7 +21,12 @@ if [[ -z "$version" && -n "$INSTALLED_VERSION" ]]; then
   exit 0
 fi
 
-if [[ "$INSTALLED_VERSION" == "$AVAILABLE_VERSION" ]]; then
+# An explicit --version pin is a deliberate request for *that* version, so
+# it reinstalls even if it happens to match what's already there (repair);
+# --update converging to an already-current latest is the one case that
+# still no-ops (asking for latest when you're already on latest isn't an
+# error -- see CLAUDE.md).
+if [[ -z "$explicit_version" && "$INSTALLED_VERSION" == "$AVAILABLE_VERSION" ]]; then
   echo "calibre ${AVAILABLE_VERSION} is already installed at ${INSTALL_DIR}."
   exit 0
 fi

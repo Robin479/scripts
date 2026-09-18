@@ -383,21 +383,34 @@ boxctl::install_calibre_install() {
   local archive_path="${tmp_dir}/${FILENAME}"
   curl -fL --progress-bar -o "${archive_path}" "${DOWNLOAD_URL}"
 
-  echo "Extracting to ${INSTALL_DIR}..."
-  # shellcheck disable=SC2016 # $1/$2 below are the inner bash -c script's own positional params, filled in via the trailing "_" "$1" "$2" args, not this outer bash's expansion
-  boxctl::run_as_root bash -c 'mkdir -p "$1" && tar xf "$2" -C "$1"' _ "${INSTALL_DIR}" "${archive_path}"
-
+  # Uninstall the previous version *before* extracting the new one, not
+  # after: BOXCTL_CALIBRE_UNINSTALL_BIN's recorded install path is whatever
+  # was current when it was generated, which for a same-version reinstall
+  # is the very ${INSTALL_DIR} we're about to (re-)populate -- uninstalling
+  # after extraction would delete the files just extracted. Uninstalling
+  # first also means a reinstall of the currently-installed version is a
+  # clean remove-then-recreate rather than an extract-over-a-live-install.
+  # curl above already ran (and would have aborted the script via set -e
+  # on failure) before anything destructive happens, so a download failure
+  # still leaves the old install untouched.
   if [[ -e "${BOXCTL_CALIBRE_UNINSTALL_BIN}" ]]; then
-    if [[ -x "${BOXCTL_CALIBRE_UNINSTALL_BIN}" ]]; then
-      echo "Running uninstall of previous calibre version..."
-      # calibre-uninstall unconditionally reopens /dev/tty for its [y/n]
-      # prompts, ignoring piped stdin entirely; expect gives it a pty of
-      # its own so the prompts can be answered automatically.
-      local uninstall_status
-      # shellcheck disable=SC2016 # $uninstall_bin/$result below are expect's own Tcl variables, not bash expansions — single quotes are deliberate
-      if boxctl::run_as_root expect -c 'set uninstall_bin "'"${BOXCTL_CALIBRE_UNINSTALL_BIN}"'"
-          set timeout -1
-          spawn -noecho $uninstall_bin
+    echo "Running uninstall of previous calibre version..."
+    # calibre-uninstall unconditionally reopens /dev/tty for its [y/n]
+    # prompts, ignoring piped stdin entirely; expect gives it a pty of its
+    # own so the prompts can be answered automatically. The executability
+    # check and the uninstall itself are two tightly-coupled root-needing
+    # steps -- calibre_postinstall leaves this script mode 0744 (root-only
+    # execute), so -x has to be checked as root, not the invoking user, and
+    # it always runs right into the same root call -- so both are combined
+    # into one bash -c (one sudo prompt instead of two), with the binary
+    # path passed positionally rather than interpolated into the string.
+    # The path reaches expect via $env(), not by splicing it into the Tcl
+    # source, to dodge nested quote-escaping entirely.
+    # shellcheck disable=SC2016 # $env(UNINSTALL_BIN)/$result below are expect's own Tcl variables, not bash expansions -- single quotes are deliberate
+    boxctl::run_as_root bash -c '
+      if [[ -x "$1" ]]; then
+        UNINSTALL_BIN="$1" expect -c '"'"'set timeout -1
+          spawn -noecho $env(UNINSTALL_BIN)
           expect {
             -re {\[y/n\]:} {
               send "y\r"
@@ -407,20 +420,20 @@ boxctl::install_calibre_install() {
           }
           catch wait result
           exit [lindex $result 3]
-      '; then
-        uninstall_status=0
+        '"'"'
       else
-        uninstall_status=$?
-      fi
-      if [[ "${uninstall_status}" -ne 0 ]]; then
-        echo "error: '${BOXCTL_CALIBRE_UNINSTALL_BIN}' failed; aborting before installing the new version." >&2
+        echo "error: $1 exists but is not executable." >&2
         exit 1
       fi
-    else
-      echo "error: '${BOXCTL_CALIBRE_UNINSTALL_BIN}' exists but is not executable." >&2
+    ' _ "${BOXCTL_CALIBRE_UNINSTALL_BIN}" || {
+      echo "error: '${BOXCTL_CALIBRE_UNINSTALL_BIN}' failed; aborting before installing the new version." >&2
       exit 1
-    fi
+    }
   fi
+
+  echo "Extracting to ${INSTALL_DIR}..."
+  # shellcheck disable=SC2016 # $1/$2 below are the inner bash -c script's own positional params, filled in via the trailing "_" "$1" "$2" args, not this outer bash's expansion
+  boxctl::run_as_root bash -c 'mkdir -p "$1" && tar xf "$2" -C "$1"' _ "${INSTALL_DIR}" "${archive_path}"
 
   local postinstall="${INSTALL_DIR}/calibre_postinstall"
   [[ -x "${postinstall}" ]] || {
@@ -770,6 +783,7 @@ boxctl_install_calibre_command() {
   # shellcheck disable=SC2154 # args is bashly's global associative array
   update="${args[--update]:-}"
   version="${args[--version]:-}"
+  explicit_version="$version"
 
   # --update is shorthand for --version=latest; declaring them as conflicting
   # flags in bashly.yml already rejects any other combination of the two
@@ -788,7 +802,12 @@ boxctl_install_calibre_command() {
     exit 0
   fi
 
-  if [[ "$INSTALLED_VERSION" == "$AVAILABLE_VERSION" ]]; then
+  # An explicit --version pin is a deliberate request for *that* version, so
+  # it reinstalls even if it happens to match what's already there (repair);
+  # --update converging to an already-current latest is the one case that
+  # still no-ops (asking for latest when you're already on latest isn't an
+  # error -- see CLAUDE.md).
+  if [[ -z "$explicit_version" && "$INSTALLED_VERSION" == "$AVAILABLE_VERSION" ]]; then
     echo "calibre ${AVAILABLE_VERSION} is already installed at ${INSTALL_DIR}."
     exit 0
   fi

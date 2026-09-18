@@ -69,11 +69,19 @@ has a real third state:
   directly as the preferred behavior over pip's silent-skip: it tells you
   an update exists without ever taking the update-or-install action on its
   own initiative.
-- **Installed, `--update` given** (or an explicit version pin, see
-  calibre below): resolves and installs/upgrades — but still no-ops with
-  a plain "already installed" message if `AVAILABLE_VERSION` turns out to
-  equal `INSTALLED_VERSION` (asking for latest when you're already on
-  latest isn't an error).
+- **Installed, `--update` given**: resolves and installs/upgrades — but
+  still no-ops with a plain "already installed" message if
+  `AVAILABLE_VERSION` turns out to equal `INSTALLED_VERSION` (asking for
+  latest when you're already on latest isn't an error).
+- **Installed, explicit version pin given** (calibre's `--version=X.Y.Z`):
+  always reinstalls, even when `X.Y.Z` equals `INSTALLED_VERSION` —
+  confirmed directly as the preferred behavior: pinning to the exact
+  version you already have is a deliberate repair/reinstall request, not
+  an "am I up to date" check, so it must not be swallowed by the
+  already-latest no-op that `--update` gets. The command file distinguishes
+  this from `--update` by checking the raw `--version` flag value, not the
+  `--update`-aliased-to-`--version=latest` one used for the actual install
+  call (`explicit_version` vs. `version` in `install_calibre_command.sh`).
 
 A tool with its own version-pinning flag (calibre's `--version=X.Y.Z`)
 should treat *any* explicit version request the same as `--update` for
