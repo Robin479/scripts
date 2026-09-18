@@ -1,0 +1,6 @@
+# Both default to true, and both rewrite raw input tokens before catch_all
+# even gets a look at them -- e.g. "-DskipTests" -> "-D -s -k -i -p -T ..."
+# or "--flag=value" -> "--flag value". Since the whole point of 'mvn'/'exec'
+# is to forward the remote command's own args verbatim, both are disabled.
+compact_short_flags: false
+conjoined_flag_args: false

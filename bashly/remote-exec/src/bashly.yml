@@ -1,0 +1,60 @@
+name: remote-exec
+help: Rsync the current project directory to a scratch location on a remote host, then run a command there
+version: 0.1.0
+
+environment_variables:
+- name: remote_exec_host
+  help: Default remote ssh host
+  default: kiwi
+- name: remote_exec_root
+  help: "Default remote scratch root (this directory's own absolute local path gets appended to it)"
+  default: /tmp/remote-exec
+
+flags:
+- long: --host
+  arg: host
+  help: "Remote ssh host (default: $REMOTE_EXEC_HOST)"
+- long: --root
+  arg: root
+  help: "Remote scratch root (default: $REMOTE_EXEC_ROOT); this directory's own absolute local path gets appended to it, resolved relative to the remote host's \\$HOME unless it's absolute"
+- long: --dry-run
+  short: -n
+  help: Pass -n (and -v) to rsync to preview the sync, then stop -- the remote command is skipped entirely
+
+commands:
+# Run `eval "$(remote-exec completions)"` to enable completions in the current shell.
+- name: completions
+  help: Print a bash completions script
+  args:
+  - name: shell
+    help: Shell to generate completions for (only bash is currently supported)
+    allowed: [bash]
+    default: bash
+
+- name: mvn
+  help: "Run Maven remotely: ./mvnw if present locally, else the remote host's own system mvn"
+  catch_all:
+    label: MAVEN_GOAL
+    help: "Maven goals/args to run remotely (default: dependency:resolve-sources dependency:go-offline)"
+  examples:
+  - remote-exec mvn
+  - remote-exec mvn package -DskipTests
+  - remote-exec --dry-run mvn
+
+- name: exec
+  help: Run an arbitrary command remotely, verbatim -- no defaulting, unlike 'mvn'
+  default: true
+  catch_all:
+    label: COMMAND
+    help: The command (and its args) to run remotely
+    required: true
+  examples:
+  - remote-exec ls -la
+  - remote-exec -- mvn --version
+  - remote-exec exec mvn --version
+
+- name: clean
+  help: Remove the remote scratch directory (and any now-empty parent directories up to the root) -- skips rsync entirely
+  examples:
+  - remote-exec clean
+  - remote-exec --dry-run clean
