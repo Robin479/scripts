@@ -12,12 +12,17 @@ selecting books to read towards their goals), and managing shelves and
 reading progress.
 
 Status: `auth` (login-session management), the book metadata cache
-(schema.org JSON-LD + our own fields), and the blog post cache are
-implemented. `auth`, `blogs` (`blogs
-update`/`list`/`get`/`delete`/`challenge`), and `books` (`books
-update`/`list`/`get`/`delete`) all have a CLI surface. Shelves,
-reading progress, and
-reading-challenge support are not designed yet. The blog post cache exists
+(schema.org JSON-LD + our own fields), the blog post cache, and reading
+challenges (manually curated, see below) are all implemented, each with a
+CLI surface — `auth`, `blogs` (`blogs
+fetch`/`list`/`get`/`remove`/`challenge`), `books` (`books
+fetch`/`list`/`get`/`remove`), and `challenges` (`challenges
+create`/`list`/`get`/`edit`/`remove`, plus `challenges
+blogs`/`badges add`/`remove`). Shelves and reading progress are not
+designed yet, nor is the actual challenge-*goal* book-selection logic
+(picking specific books toward a badge) — `challenges` only manages a
+challenge's own metadata (title, time window, badge-linked blog posts,
+book-count badges), see its own section below. The blog post cache exists
 specifically as groundwork for reading-challenge support: challenge detail
 data (which books count toward which badge) turned out to be locked behind
 a step-up-auth requirement no long-lived session can satisfy (see "Blog
@@ -74,27 +79,164 @@ belong to — rather than fully automated association.
   attempts over ~3s — confirms the config plumbing itself is correct
   regardless of which literal numbers are the current default.
 
+  **The curl binary itself is auto-detected via a priority cascade,
+  `gr::init_curl_cmd` (`lib/http.sh`), shared by `gr::http_get`/
+  `gr::http_status`** — added to let
+  [curl-impersonate](https://github.com/lwthiker/curl-impersonate) (a
+  patched curl/libcurl build that replicates a real browser's exact TLS
+  handshake — cipher suites, extension order, GREASE values — and HTTP/2
+  frame settings) be used automatically when available, addressing AWS
+  WAF's TLS/JA3-fingerprint detection layer specifically — confirmed via
+  outside research that plain curl's own TLS signature is immediately
+  recognizable as non-browser, a layer entirely separate from (and not
+  fixed by) the empty-body retry handling above. **Not a full fix** — the
+  research also confirmed no plain HTTP client, curl-impersonate
+  included, can pass AWS WAF's actual JS challenge (there's no JS engine
+  to mint the `aws-waf-token` cookie); this only reduces how often the
+  *heuristic* layers trigger a challenge in the first place, the same
+  category as the fake book-slug/throttle-spacing mitigations already in
+  place, not a replacement for the retry backoff. Priority order, per
+  explicit direction:
+
+  1. The `curl_bin` config key, if set at all — an explicit choice always
+     wins over auto-detection, whatever it is (a single binary name, or a
+     full multi-word command line — see the Docker case below).
+  2. The first of `GR_CURL_IMPERSONATE_CANDIDATES` (curl-impersonate's own
+     wrapper script names, newest/most-common Chrome build first, then
+     Edge, then Firefox, then Safari last — Safari's wrappers are only an
+     *approximation* via the Chrome/BoringSSL binary, curl-impersonate
+     never got a genuine Safari/Apple-TLS port) found on `$PATH`.
+  3. A `docker run` command **auto-crafted fresh each process** (not a
+     static config string) around `GR_CURL_IMPERSONATE_DOCKER_IMAGE`'s own
+     `GR_CURL_IMPERSONATE_DOCKER_WRAPPER`, if `docker` is on `$PATH` *and*
+     its daemon actually answers (`docker info`, not just the binary
+     existing).
+  4. Plain `curl` (`GR_CURL_BIN_DEFAULT`), if that's on `$PATH`.
+  5. A hard error — `error: no usable curl found -- install curl,
+     curl-impersonate, or Docker` — nothing usable found at all.
+
+  `-A "$GR_USER_AGENT"` is added only when the resolved command is
+  literally plain `curl` (cases 1 or 4 landing there) — any impersonate
+  target already bakes in its own matching User-Agent (calibrated to
+  agree with the fake TLS handshake it produces) plus a full set of other
+  Chrome-shaped headers, and layering a *different* User-Agent on top
+  would itself create the kind of mismatch bot detection looks for.
+
+  **Memoized for the lifetime of the process** (`$GR_CURL_CMD_RESOLVED`),
+  resolved lazily on the first actual call rather than unconditionally at
+  startup — most commands (`books list`, anything under `--offline`, ...)
+  never touch the network at all, so there's nothing to gain probing
+  `$PATH`/Docker up front. **This memoization does not survive a
+  subshell**, which mattered in practice: `gr::run_fetch`'s own per-item
+  loop (see "books"/"blogs commands" above) calls each item's `fetch_fn`
+  via `$(...)` specifically to capture its outcome text — meaning every
+  single item runs in its own freshly-forked subshell, and a variable set
+  *inside* one of those (like `GR_CURL_CMD_RESOLVED=1`) is discarded the
+  moment that subshell exits, never reaching the parent process. Found by
+  testing directly, with a stub `docker` that logs every invocation: a
+  4-book `fetch` ran the full `docker info` resolution check **four
+  times**, once per book, instead of once for the whole run. Fixed by
+  having `books_fetch_command.sh`/`blogs_fetch_command.sh` each call
+  `gr::init_curl_cmd` once themselves, *before* their own `gr::run_fetch` call
+  (guarded by `gr::offline ||`, so an all-`--offline` run skips the probe
+  entirely) — a subshell forked *after* that point inherits the
+  already-resolved arrays via ordinary shell-forking semantics (a
+  same-process fork copies all current shell state, unlike a genuinely
+  separate `exec`'d process, which would only see `export`ed — and,
+  critically, never array — variables). Re-verified with the same stub:
+  exactly one `docker info` call across a 4-book run, four separate
+  `docker run` calls (the real per-item fetches) alongside it.
+
+  **`curl_bin` also has to support a full command line, not just one
+  binary name** — e.g. `docker run --rm -u 1000:1000 -v
+  /home/kai/.goodreads:/home/kai/.goodreads
+  lwthiker/curl-impersonate:0.6.1-chrome curl_chrome116` — so it's
+  whitespace-split via `read -a`, not treated as one literal token
+  (that used to be a real bug: a multi-word string would try to exec a
+  single, nonexistent binary whose name contained spaces). Plain
+  whitespace-splitting, not `eval`, is good enough for a docker-run-style
+  command line, and this is the user's own local config, not adversarial
+  input, so there's no injection concern either way.
+
+  **Docker specifics, all confirmed directly**: `lwthiker/curl-impersonate
+  :latest` is the **Firefox** build (`curl_ff*` wrappers only, no
+  `curl_chrome*` at all) — the Chrome build needs the exact
+  `0.6.1-chrome` version+flavor tag instead, hence
+  `GR_CURL_IMPERSONATE_DOCKER_IMAGE`'s own value. A bind mount is
+  required for cookie persistence — without one, `--rm` discards the
+  container's entire filesystem (including whatever `-c`/`-b` cookie jar
+  path curl wrote inside it) the moment the request finishes, so the host
+  jar just silently stays empty forever, no error at all. The mount has
+  to land at the *same absolute path* inside the container as on the host
+  (`-v <data_dir>:<data_dir>`) so the literal `$COOKIE_JAR` string curl
+  receives resolves correctly on both sides — this is why the command is
+  crafted fresh per process from `gr::data_dir` rather than being a
+  static string, unlike a hand-written `curl_bin` override, which can't
+  adapt to whatever `--data-path` a given run actually uses. A second,
+  independent gotcha: the container runs as **root** by default, so
+  anything it writes into that mount comes back root-owned on the host,
+  unreadable by the invoking user afterward — same problem this repo's
+  own `Makefile` already solved for its dockerized-bashly fallback
+  (`-u $(id -u):$(id -g)`, confirmed identical fix needed here).
+
+  **Installing curl-impersonate locally** (case 2 above): prebuilt
+  release binaries (no build toolchain needed) — e.g.
+  `curl-impersonate-v0.6.1.x86_64-linux-gnu.tar.gz` from the project's
+  GitHub releases — ship both a real binary (`curl-impersonate-chrome`)
+  and browser-version-specific wrapper scripts (`curl_chrome116`, etc.)
+  that call it with the right ciphers/headers/HTTP2 flags baked in; the
+  wrapper finds its sibling binary via `$0`'s own directory, so both files
+  must be extracted into the same directory — and, for `gr::init_curl_cmd` to
+  actually find one this way, that directory needs to be on `$PATH`
+  (unlike `curl_bin`, which takes an exact path/command, `$PATH`-based
+  detection only ever checks bare command names via `command -v`). A copy
+  was installed at `.local/bin/` at the repo root for testing (gitignored,
+  same "local-machine-specific tool override, never committed" convention
+  the top-level `CLAUDE.md`'s own `.local/bin/bashly` already
+  establishes) — **not on `$PATH` by default**, so it's exercised via an
+  explicit `curl_bin` config value in practice, not case 2's
+  auto-detection, unless `.local/bin` is separately added to `$PATH`.
+  Verified directly: `curl_chrome116 --version` reports BoringSSL
+  (Chrome's actual TLS library, not OpenSSL), and a real fetch through it
+  returns real book data — and, to confirm a configured value is
+  genuinely what's driving the invocation and not silently falling back,
+  pointing `curl_bin` at a nonexistent path produces a clear "No such
+  file or directory" failure from that exact path.
+
+  Set it via `goodreads config set curl_bin <value>` (see "Config file"
+  below) — back to auto-detection via `goodreads config unset curl_bin`.
+
   **Minimum request spacing** (`gr::throttle <url>`, called right before
   every actual `curl` invocation in `gr::http_get` — including retries, not
   just the first attempt): sleeps if needed so that returning from this
   function never happens sooner than a random point between
   `http_request_delay_min` and `http_request_delay_max` seconds (config
-  keys, seconds; defaults 1/5, in `GR_HTTP_REQUEST_DELAY_MIN_DEFAULT`/
+  keys, seconds; defaults 3/10, in `GR_HTTP_REQUEST_DELAY_MIN_DEFAULT`/
   `GR_HTTP_REQUEST_DELAY_MAX_DEFAULT` — renamed from the original
   `min_request_delay`/`max_request_delay` to match the `http_`-prefixed
   naming already used by `http_retry_delays`) after this same function's
   own *previous* return — a separate, always-on mechanism from the
   WAF-challenge backoff above, meant to avoid triggering that
   burst-then-block behavior in the first place rather than recovering from
-  it. Default lowered from an initial 5/10 to 1/5 after two real 10-book
-  batches at 1/5 (once the fake-slug URL, see below, was already in place)
-  both completed with zero WAF challenges — suggestive that the fake slug
-  is what's actually avoiding the challenge, making the wider spacing
-  unnecessary, but not conclusively isolated (both changes landed close
-  together; not yet tested at 1/5 without the fake slug, or vice versa).
-  The target URL
-  is passed in ($1) but currently only used for the log message — a hook
-  for possible future per-host pacing, not implemented. State (the
+  it.
+
+  **Briefly lowered to 1/5, then reverted — real-world evidence
+  contradicted the earlier test result.** Two real 10-book batches at 1/5
+  (once the fake-slug URL, see below, was already in place) had both
+  completed with zero WAF challenges, which read as evidence the fake
+  slug was doing the real work and the wider spacing was unnecessary. Not
+  conclusively isolated even then (both changes had landed close
+  together), and the user subsequently reported apparently being
+  blacklisted after running with 1/5 for real — enough to treat the
+  earlier two-batch result as **not representative** (too small a sample
+  against a heuristic, possibly IP-reputation-based system, not a stable
+  finding) rather than chase it further. Reverted straight back to the
+  original 3/10 rather than something in between or more conservative
+  still, per explicit direction — no further tightening planned without
+  new evidence it's actually safe.
+  The target URL is passed in ($1) but currently unused (it used to
+  appear in a log message, no longer — see just below) — a hook for
+  possible future per-host pacing, not implemented. State (the
   last-return timestamp) is a plain integer-seconds file at
   `.last_request_at`, root of the data directory (see "Data directory"
   below) — deliberately on disk, not a shell variable, since each
@@ -108,6 +250,25 @@ belong to — rather than fully automated association.
   separate process invoked later) also returns immediately — and the
   timestamp read via a brand-new process confirms the file (not a
   variable) is really what's being read.
+
+  **`gr::throttle`'s own wait is deliberately silent — it used to print
+  `"throttling request to <url> — waiting Ns before continuing"` every
+  time, and that was removed, per a direct user report.** This is
+  routine, by-design pacing that fires on nearly *every single* request
+  at its default few-second spacing — not an anomaly worth announcing,
+  unlike `gr::http_get`'s own WAF-retry warning (above), which is rare and
+  can run to minutes. During a `fetch` command's self-updating status
+  line (see "`books`/`blogs` commands", below), that routine message
+  printing every time turned into exactly the "wall of text" the status
+  line was built to replace — confirmed directly: a user restarted a
+  `fetch --update` run right after the WAF-retry fix below shipped, and
+  instead of a hung-looking single line got a scrolling pile of
+  `throttling request to ...` lines instead, one per book, since each
+  one's routine multi-second wait almost always exceeds how long the
+  actual fetch itself takes. Silenced outright rather than routed through
+  the status line itself — `gr::throttle` has no way to know whether one
+  is even active, being generic and used by plenty of single-shot callers
+  with no status line at all (e.g. `auth status`'s live check).
 
   The cookie jar is **not** a parameter — it's read from the `COOKIE_JAR`
   environment variable, set as a one-off prefix on the call:
@@ -146,14 +307,21 @@ belong to — rather than fully automated association.
   bashly): `goodreads.sh` holds truly generic bits used by everything
   (`gr::data_dir`, `gr::offline`, `gr::config_*`); `http.sh` holds everything
   HTTP-request-specific — all `readonly` constants grouped at the very top
-  (`GR_USER_AGENT`, `GR_HTTP_RETRY_DELAYS_DEFAULT`,
+  (`GR_USER_AGENT`, `GR_CURL_BIN_DEFAULT`, `GR_CURL_IMPERSONATE_CANDIDATES`,
+  `GR_CURL_IMPERSONATE_DOCKER_IMAGE`/`GR_CURL_IMPERSONATE_DOCKER_WRAPPER`,
+  `GR_HTTP_RETRY_DELAYS_DEFAULT`,
   `GR_HTTP_REQUEST_DELAY_MIN_DEFAULT`/`GR_HTTP_REQUEST_DELAY_MAX_DEFAULT` — this is the
   convention to follow for any new constant added here, not scattered next
   to whichever function happens to use it), then `gr::generic_cookie_jar`/
   `gr::init_cookie_jar`, then `gr::throttle`, then `gr::http_get`;
   `goodreads_auth.sh` holds the
   account/session functions; `goodreads_books.sh`
-  holds the book-cache functions; `config.sh`/`ini.sh` are bashly's own
+  holds the book-cache functions; `goodreads_config.sh` holds the
+  `config` command group's own user-facing registry (`GR_CONFIG_KEYS`,
+  `gr::config_describe`, `gr::config_default_display`) — deliberately its
+  own file rather than folded into `goodreads.sh`'s generic `gr::config_*`
+  wrappers, since it's specific to the `config` CLI commands, not
+  something every area needs; `config.sh`/`ini.sh` are bashly's own
   library (`bashly add config`), untouched, wrapped rather than modified so
   `bashly add config` can still refresh them later. Split by topic as each
   area was built — follow the same pattern for future areas (shelves,
@@ -217,24 +385,112 @@ library's own functions
 off a global `CONFIG_FILE` variable that's normally set once via a hook —
 but bashly's `initialize()` hook runs *before* argument parsing, so
 `--data-path` isn't resolved yet at that point and a one-time global doesn't
-work here. Instead, `gr::config_get`/`gr::config_set`
-(`src/lib/goodreads.sh`) wrap the real ones and set
+work here. Instead, `gr::config_get`/`gr::config_set`/`gr::config_del`/
+`gr::config_keys` (`src/lib/goodreads.sh`) wrap the real ones and set
 `CONFIG_FILE="$(gr::data_dir)/config.ini"` on every call — always call these
-`gr::`-prefixed wrappers, never `config_get`/`config_set` directly, or
+`gr::`-prefixed wrappers, never `config_get`/`config_set`/etc. directly, or
 `--data-path` gets silently ignored.
 Keys are dotted (`section.key`) INI-style;
 `gr::config_get key.name [default]` / `gr::config_set key.name value`.
-No CLI command exposes this yet, and no actual settings have been designed
-(next step) — this is scaffolding only, verified by driving the wrapper
-functions directly (round-tripped a value, confirmed the `[section]`/`key =
-value` file format, confirmed it persists correctly across separate
-processes).
+
+**Exposed via `goodreads config {list,get,set,unset}`** (`unset`, not
+`remove`/`rm` like every other command group's own deletion verb — a
+setting reverting to its default reads more like `git config --unset`/
+`env -u` than "removing" something). `GR_CONFIG_KEYS`
+(`src/lib/goodreads_config.sh`) is the single user-facing registry of
+every key goodreads itself actually reads — deliberately kept separate
+from where each key's real default is asserted (`http.sh`'s
+`GR_HTTP_REQUEST_DELAY_MIN_DEFAULT`, etc., `goodreads_books.sh`'s
+`GR_BOOK_CACHE_TTL_DEFAULT`), so this file is purely a catalog, not a
+second source of truth for behavior — `gr::config_describe`/
+`gr::config_default_display` (case statements, not a second array kept
+parallel to `GR_CONFIG_KEYS`, so a key present in one but not the other
+fails loudly instead of silently misaligning by index) drive `config
+list`'s pretty-print of each key's description and effective default.
+`config set` on a key outside this registry still works (a plain,
+generic `gr::config_set` passthrough underneath) but prints a `note:` to
+stderr first — deliberately a warning, not a hard error, since the
+registry is just a documentation aid, not a schema the underlying INI
+file itself enforces. `config unset --all` clears every key currently
+*set* (via `gr::config_keys`, the real on-disk keys — not every key in
+`GR_CONFIG_KEYS`, most of which are normally never set at all, sitting on
+their default instead).
+
+Tab-completion for the `key` argument is a plain static word list (`get`/
+`unset`), not derived from `GR_CONFIG_KEYS` at completion-time — the
+generated completions script doesn't source the app's own libs (see the
+dynamic id-completion entries elsewhere in this file), so it's a literal,
+hand-kept-in-sync duplicate instead. **`config set`'s own `key`/`value`
+args deliberately have no completions at all** — confirmed directly that
+a command-level `completions:` block in `bashly.yml` applies to *every*
+positional argument of that command, not just the one it conceptually
+describes (`goodreads config set <TAB>` and the `value` slot after it
+both resolved to the same candidate node in the generated script), so
+attaching one here would incorrectly offer key names as candidate
+*values* too.
 
 The directory key is the **numeric id only**, never `<id>-<username>`.
 Goodreads usernames can change; the username is still captured in
 `profile.json`, just never used as a filesystem/storage key. Re-running
 account identification (re-`auth import`) refreshes `profile.json` without
 touching the account's directory name or any already-cached data.
+
+**Every command group's own `list` is its `default: force` command in
+`bashly.yml`** (`auth list`, `blogs list`, `books list`, `challenges
+list`) — per explicit direction, "make list the default in all groups."
+`default: force` (not plain `default: true`) is the one that actually
+runs the command when the group is invoked bare with *no* further
+tokens at all, not just when an unrecognized one follows (confirmed
+directly against the local bashly source at the exact version this
+project builds with, `v1.4.0` — `examples/command-default-force/` there
+demonstrates precisely this; plain `default: true`'s own example only
+covers the "unrecognized token falls through" case, not "invoked with
+nothing"). So `goodreads books`, `goodreads blogs`, `goodreads
+challenges`, and `goodreads auth` each now behave exactly like their own
+explicit `... list` — safe here since none of the four `list` commands
+have any *required* argument that bare invocation could leave unsatisfied.
+`--help` at the group level is unaffected either way (still shows the
+normal command listing, marking the default one `(default)` in its own
+summary) — only a bare, help-less invocation is redirected. Top-level
+bare `goodreads` (no group at all) is untouched — no top-level command
+carries `default: force`, so that still shows the root help as before.
+
+**Tab completion filters a short-form alias (`ls`/`rm`/`new`) out of the
+candidate list whenever its own long form is *also* a candidate at that
+same position** — per explicit direction: bashly's own generated
+completion script (`send_completions`, `lib/send_completions.sh` —
+fully bashly-generated/vendored, never hand-edited, confirmed via each
+generated file's own `# generated by bashly <version>` header) always
+lists a command's long form and its alias as two equally-weighted plain
+words in the same `compgen -W "..."` candidate string, so a bare TAB
+(nothing typed yet) lists both side by side — checked directly against
+the local bashly source at the version this project actually builds
+with (`v1.4.0`); there's no YAML-level key to suppress an alias from
+this, in either this version's "completely"-DSL generator or the newer
+2.x pattern-based one. **`src/completions_command.sh`** (a normal,
+hand-edited per-command file, *not* itself part of the generated
+artifact — only its one line calling `send_completions` is) is where
+this gets fixed, by appending extra script text after that call:
+declares `_goodreads_alias_pairs` (the 3 unique `long:short` pairs in
+this project — `list:ls`, `create:new`, `remove:rm`, each appearing at
+several different command levels but only ever needing to be listed
+once) and a wrapper, `_goodreads_completions_filtered`, that runs the
+real `_goodreads_completions` first and then drops a pair's short form
+from `COMPREPLY` whenever its long form also ended up in that same
+result — then re-registers `complete -F` to point at the wrapper
+instead. This is deliberately **not** scoped by command path at all: a
+pair only ever matters when both of its forms are simultaneously valid
+candidates for whatever's actually being completed right now, so a flat,
+unscoped list works correctly everywhere it's declared (`challenges
+badges remove`'s own `rm` alias and `blogs remove`'s own `rm` alias never
+interfere with each other — each position's own `COMPREPLY` only ever
+contains whatever's valid *there*). Verified directly against the real
+`eval "$(goodreads completions)"` output, across multiple command
+levels: a bare TAB after `books`/`challenges`/`auth` shows only the long
+forms; typing enough of a short form that its long form no longer
+matches (e.g. `blogs r` — matches both `remove` and `rm`, `rm` dropped;
+`blogs rm` — the 2nd character no longer matches `remove` at all, so
+`rm` alone survives) correctly still offers it.
 
 ## `auth` commands (implemented)
 
@@ -663,32 +919,308 @@ directly/standalone (its own doc comment invites this) failed with a plain
 
 ## `books` commands (implemented)
 
-`books update [book_id...] [--all]`, `books list [book_id...] [--limit n]`,
-`books get <book_id> [--json]`, `books delete [book_id...] [--all]`. Source:
-`src/bashly.yml` (command tree), one `src/books_*_command.sh` per leaf
-command — same one-file-per-command pattern `auth`/`blogs` use, all thin
-wrappers directly over `gr::book_json`/`gr::book_dir`/`gr::book_file` (unlike
-`blogs update`, there's no `gr::discover_*` equivalent backing any of these
-— see below for why).
+`books fetch [book_id...] [--blog <blog_id>...] [--challenge <challenge_id>]
+[--all|-A] [--update|-U] [--batch|-B]`, `books list [book_id...] [--limit
+n]`, `books get <book_id> [--json] [--update|-U]`, `books remove
+[book_id...] [--all]`. Source: `src/bashly.yml` (command tree), one
+`src/books_*_command.sh` per leaf command — same one-file-per-command
+pattern `auth`/`blogs` use, all thin wrappers directly over
+`gr::book_json`/`gr::book_dir`/`gr::book_file` (unlike `blogs fetch`,
+there's no `gr::discover_*` equivalent backing any of these — see below
+for why).
 
-**No discovery, unlike `blogs update`** — there's no goodreads.com listing
+**No discovery, unlike `blogs fetch`** — there's no goodreads.com listing
 page enumerating "all books"; a book only ever becomes known to this cache
-by being fetched via an explicit id (from a blog post's own `book_sections`,
-or hand-entered). So `update` only ever operates on ids it's actually
-given: either explicit `book_id...` args (works whether or not each was
-already cached — same "add or force-refresh" duality `blogs update`'s
-explicit-id branch has) or `--all` (force-refreshes every already-cached
-book, nothing more) — mutually exclusive, and giving neither is a plain
-usage error (`update` with truly nothing to do isn't meaningful here, unlike
-`blogs update`'s bare-discovery-scan default). Both branches always pass
-`--force` to `gr::book_json` — added to it for this purpose (previously
-`gr::book_json` had no force parameter at all, since nothing needed one
-before this): same `force="${2:-}"` / `[[ ... || "$force" == "--force" ]]`
-shape as `gr::blog_json` already had. `report_outcome`'s
-`removed_remotely`-vs-`refreshed` distinction (`blogs update`) has no
+by being fetched via an explicit id (from a blog post's own
+`book_sections`, or hand-entered). So `fetch` only ever operates on ids
+it's actually given: explicit `book_id...` args, `--blog <blog_id>`
+(repeatable — expands to every book referenced by that blog post's
+`book_sections`), `--challenge <challenge_id>` (expands to every book
+referenced by *any* blog post linked to that challenge — see below), or
+`--all` — the first three freely combine and are deduped together into
+one `book_ids` pool, `--all` is mutually exclusive with all of them, and
+giving none of the four at all is a plain usage error.
+
+**`--challenge <challenge_id>`** resolves the challenge's own `.blogs[]`
+(`gr::require_challenge_file`, same lookup `challenges get` uses — an
+unknown id fails the same way, `error: no challenge <id>`) into their
+`blog_id`s, merges those into `$blog_ids` (deduped there too, in case a
+blog id was also given directly via `--blog`), then falls into the exact
+same `--blog` expansion loop below — no separate code path, `--challenge`
+is purely an alternate way to seed the same `blog_ids` variable. A
+challenge with no linked posts at all gets `note: challenge <id> has no
+linked blog posts` (same shape as `--blog`'s own "no books to extract"
+note) rather than an error — an empty result is a normal, valid outcome,
+not a mistake. **Books very much do repeat across a challenge's own
+linked posts** — confirmed directly against the real `2026Q3` challenge's
+8 linked posts: several books appear in 3 of them, and the final,
+deduped set (850 unique ids) is exactly the same as manually
+concatenating and deduping all 8 posts' own book lists by hand — the
+existing dedup (already needed for plain `--blog`, just as relevant here)
+handles it for free, no `--challenge`-specific logic needed.
+
+**`fetch`'s default changed from "always force-refetch every given id" to
+"only actually touch the network for an id that genuinely needs it,"
+alongside its rename from `update`** — per explicit direction, in two
+separate steps (the second one narrower than the first, see below).
+`fetch_one` (`books_fetch_command.sh`) is driven by a `force` **policy**
+string computed once up front (`force_policy`, one of `""`/`"ttl"`/
+`"force"`), not a plain boolean — `--all` needs a genuinely third
+behavior, distinct from both explicit-id defaults:
+
+- **`""`** (explicit ids, no `--update`) — an id already cached, *at any
+  freshness*, is skipped entirely (`-> already cached`, no network
+  touched); a missing one gets a plain `gr::book_json "$id"` call (`->
+  fetched`). This was the first step's change: every explicit id used to
+  always force-refetch unconditionally before this.
+- **`"force"`** (`--update`, alone or combined with `--all`) — always
+  `gr::book_json "$id" --force`, bypassing the cache TTL entirely; `->
+  refreshed` if it was already cached going in, `-> fetched` otherwise
+  (only reachable via explicit ids + `--update` — never via `--all`,
+  which only ever operates on ids that are already cached to begin with).
+- **`"ttl"`** (`--all`, *without* `--update`) — **the second, narrower
+  change: `--all` itself now honors the cache TTL by default too, instead
+  of unconditionally force-refreshing every cached book the way it did
+  right after the rename above** (which had only changed the *explicit*
+  id path, leaving `--all` at its own prior "sync everything
+  unconditionally" behavior) — per explicit follow-up direction, once
+  more per-command consistency was wanted. Every already-cached book is
+  still asked about here (never skipped outright the way `""` does), but
+  via a plain `gr::book_json "$id"` call, no `--force` — so gr::book_json
+  itself decides whether a real refetch happens, based on its own TTL
+  check. `fetch_one` separately calls `gr::book_fresh "$id"` *before*
+  that, purely to tell "already cached (fresh)" apart from "was stale,
+  genuinely refreshed" in its own report — a distinction `gr::book_json`'s
+  return value alone can't make, since it succeeds identically either
+  way. **`gr::book_fresh`** (`goodreads_books.sh`) is that TTL/staleness
+  check itself, factored out of `gr::book_json` for exactly this reuse —
+  the same "missing or stale, one `find -newermt` check" logic as before,
+  just now callable on its own; `gr::book_json` itself is otherwise
+  unchanged, just calling `gr::book_fresh` instead of inlining the same
+  check.
+
+`--update`/`-U` is genuinely the *only* way to still bypass a book's cache
+TTL on demand — `-A`/`--all` alone no longer implies that. **`-A`, not
+`-a`, for `--all` on these two renamed commands specifically** — chosen to
+read consistently alongside `--update`/`-U`'s own capital short flag;
+every other command's unrelated `--all`/`-a` (`books list`/`remove`,
+`blogs list`/`remove`, etc.) is untouched. `outcome_text`'s
+`removed_remotely`-vs-`refreshed` distinction (`blogs fetch`) has no
 counterpart here — `gr::refresh_book` doesn't implement that concept at
-all, so every success is reported as a plain `-> refreshed` regardless of
-whether the id was new or already cached.
+all, so a forced re-fetch is always reported as a plain `-> refreshed`, a
+first-time fetch as `-> fetched`, regardless of anything else.
+
+**`get --update`/`-U`** forces `gr::book_json "$id" --force` instead of the
+plain, TTL-respecting call — the one place a book's cache TTL can still be
+bypassed on demand for a single item outside of `fetch`.
+
+**Progress during `fetch` is shown as a single, self-updating status
+line, not a scrolling per-id list — `--batch`/`-B` (or stdout not being a
+terminal at all) suppresses it entirely, per explicit direction.** Shared
+verbatim with `blogs fetch` via four small helpers in `lib/goodreads.sh`
+(nothing books- or blogs-specific about any of them):
+
+- **`gr::fetch_quiet <batch_flag>`** — true (exit `0`) when the live line
+  should be suppressed: an explicit `--batch`, or `[[ ! -t 1 ]]` (stdout
+  isn't a terminal at all — a live, `\r`-based line would just corrupt a
+  redirected/piped log with a churn of overwritten partial lines; this
+  half is automatic, not something the user has to remember `--batch`
+  for). Each fetch command computes this once, into a plain `quiet`
+  variable, right after parsing its own flags — **as a real `if
+  gr::fetch_quiet ...; then quiet=1; fi`, never
+  `quiet="$(gr::fetch_quiet ...)"` or a bare `gr::fetch_quiet ... &&
+  quiet=1`** — see the dedicated "round three" bug writeup further below
+  for exactly why a command substitution here silently breaks the whole
+  feature (it took a real, user-reported bug to find: the live status
+  line was never able to draw at all, for anyone, until this was fixed).
+- **`gr::status_line <message> <quiet>`** — `\r` plus `\033[K`
+  (clear-to-end-of-line, so a shorter message never leaves a stray tail of
+  a longer previous one) then `$message`, no trailing newline; a no-op
+  when `$quiet` is non-empty.
+- **`gr::status_line_clear <quiet>`** — clears the line without printing a
+  replacement; called right before a genuine failure message, so it can
+  never garble together with (or get silently overwritten by) whatever
+  the status line was last showing. No-op when `$quiet` is non-empty, same
+  as `gr::status_line`.
+- **`gr::run_fetch <quiet> <fetch_fn> <force> <id...>`** — the actual
+  per-id loop, calling `"$fetch_fn" <id> <force> <quiet>` for each
+  remaining id and showing `"[<n>/<total>] <id>..."` on the status line
+  *before* each call (so it's visible while a potentially slow network
+  fetch is in flight) and `"[<n>/<total>] <outcome>"` after (overwriting
+  the same line) when the call actually printed one. **Calling convention
+  `fetch_fn` must follow**: print outcome text to stdout on success (`0`)
+  or skip (`2`) — shown transiently on the status line, or dropped
+  entirely under `--batch`/non-tty; print nothing to stdout on any other
+  (failure) exit status, having already printed the failure straight to
+  stderr itself, via `gr::status_line_clear` first. Leaves totals in
+  `$GR_FETCH_OK`/`$GR_FETCH_SKIPPED`/`$GR_FETCH_FAIL` for the caller's own
+  summary line (different call sites want different wording, e.g. `books
+  fetch`'s single summary vs. `blogs fetch`'s three separate ones — new
+  posts, `--all`'s already-cached sweep, and the explicit-id path each
+  print their own). **Clears the status line before returning, rather
+  than ending it with a newline** (`gr::status_line_clear`, not
+  `printf '\n'`) — per explicit direction, so the caller's own summary
+  line, printed immediately after, *replaces* the last status update
+  instead of leaving it behind as a stray permanent line with the summary
+  printed underneath it. Every call site prints its own summary right
+  after calling this with nothing else in between, so this always lands
+  on the right line. **Calls `$fetch_fn` — a bare statement — inside an
+  `if`, never directly**: bashly's generated scripts run under `set -e`
+  (see the `auth` section, way above), and a bare call would abort the
+  *entire* command on `fetch_one`'s very first "skipped" return (`2`) —
+  routine here, not even a failure — rather than just ending that one
+  iteration. Found by testing directly: an early version called it bare
+  and a mixed cached/uncached id list silently stopped after the first
+  cached one, with no error at all.
+
+**A single slow `gr::book_json`/`gr::blog_json` call must still be able to
+explain itself live, even with a status line active — this took two
+rounds of real, user-reported bugs to get right.**
+
+Round one: `fetch_one`'s first version captured the whole call's stderr
+(`err="$(gr::book_json ... 2>&1 > /dev/null)"`), meaning to defer it past
+`gr::status_line_clear` and only ever print it on an actual failure. That
+broke exactly the case that matters most: a call that's *slow* — an AWS
+WAF bot-challenge retry (`gr::http_get`, up to `20+100+480` ≈ 10 minutes
+total, see "Interaction stack" above) — but eventually *succeeds*. Its own
+retry warning, the only thing that would explain the delay, was being
+captured right alongside the real payload and then silently discarded the
+moment the call returned success, since only the failure path ever
+printed `$err`. A user saw the live symptom directly: `books fetch --blog
+<id> --update` sat on `[1/9] <first id>...` for minutes with zero output,
+looked indistinguishable from hung, and the only way to actually confirm
+it wasn't was `ps`/`pstree` on the real box, finding a `sleep 100` child —
+exactly `GR_HTTP_RETRY_DELAYS_DEFAULT`'s own middle value. **Fixed by no
+longer capturing that stderr at all** — `fetch_one` now just does
+`gr::book_json "$id" ... > /dev/null` (stdout only) and lets stderr flow
+straight through live, the same as before this whole feature existed.
+That reintroduced a garbling risk instead — a live warning landing mid-line,
+right after the status line's own un-terminated `[n/total] id...` text —
+handled at the source: **`gr::term_clear_line`** (`lib/goodreads.sh`) is
+called by `gr::http_get` itself, immediately before its own retry
+warning, clearing the line if stderr is a real terminal (`[[ -t 2 ]]`)
+before printing. Deliberately **not** threaded through `fetch_one`'s own
+`$quiet` — `gr::http_get` is generic, used by plenty of things that know
+nothing about a `fetch` command's own `--batch` state (`auth status`'s
+live check, `gr::refresh_blog`, etc.), so coupling it to that would be the
+wrong layer; checking `-t 2` directly gets the *important* case right (a
+redirected/piped log, where `-t 2` is false, never gets raw escape bytes
+injected) at the cost of a harmless-but-imperfect one (an interactive
+terminal combined with an explicit `--batch` still emits one no-op clear
+sequence per warning, since nothing was ever drawn there to begin with —
+not worth plumbing `$quiet` this deep just to avoid).
+
+Round two, found immediately after restarting with round one's fix live:
+letting stderr flow through uncaptured also unmasked `gr::throttle`'s own
+*routine* wait message again — which, unlike the WAF retry, fires on
+nearly every single request (default spacing is a few seconds, almost
+always longer than one item's actual processing time), so it printed a
+persisted line for nearly every id in the loop, right back to a scrolling
+wall of text instead of a clean single line. **Fixed by silencing
+`gr::throttle`'s message outright** (see "Minimum request spacing",
+above) rather than routing it through the status line — it's expected,
+by-design pacing, not worth announcing at all, unlike the genuinely
+anomalous WAF backoff. Verified directly, end-to-end, with a stubbed
+slow-then-successful fetch: `gr::throttle`'s own wait now produces no
+output at all (confirmed with real elapsed time via `time`), while
+`gr::http_get`'s retry warning still prints as its own clean, persisted
+line — clearing the pending `[n/total] id...` first — and the outcome
+line still draws correctly right after, with nothing swallowed.
+
+**Round three, after the user reported the status line* still* wasn't
+overwriting even with rounds one and two both live: the status line had
+never actually been able to draw at all, for anyone, ever — the real bug
+was in `gr::fetch_quiet` itself, not in anything downstream of it.** Its
+original form communicated "suppressed" by echoing `"1"` to stdout (or
+nothing), meant to be read back via `quiet="$(gr::fetch_quiet
+"${args[--batch]:-}")"` — but **a command substitution's subshell has its
+own stdout redirected to the capture pipe**, so the `[[ -t 1 ]]` check
+*inside* `gr::fetch_quiet` was testing whether *that pipe* was a
+terminal — which it structurally never is — rather than the real
+script's actual stdout. `quiet` therefore came out non-empty
+*unconditionally*, on every single invocation, regardless of whether the
+real terminal was interactive or not, forcing every `fetch` command into
+silent/`--batch`-equivalent mode from the moment the feature was first
+built. Every manual/stubbed test in rounds one and two above (all of
+which called `gr::fetch_quiet`, `gr::status_line`, etc. directly, never
+through the real `$(...)`-wrapped call site the actual command scripts
+use) validated the *downstream* logic correctly but never exercised this
+specific bug at all — a sharp lesson in why testing a helper function
+directly isn't the same as testing how it's actually invoked. Confirmed
+directly with a real pty (`python3 -c 'import pty; pty.fork()...'`, since
+neither plain output redirection nor `script` allocates a real one in
+this environment): the old version produced **zero** status-line bytes
+even when genuinely connected to a terminal — only the unconditional
+failure lines (and, before round two's fix, `gr::throttle`'s own message)
+were ever visible, which is exactly the symptom reported throughout this
+whole saga.
+
+**Fixed by switching `gr::fetch_quiet` to communicate via exit status
+instead of stdout**, callable as a plain statement with no subshell at
+all: `quiet=""; if gr::fetch_quiet "${args[--batch]:-}"; then quiet=1;
+fi` (both `books_fetch_command.sh` and `blogs_fetch_command.sh`) — note
+this is deliberately a real `if`, not a bare `gr::fetch_quiet ... &&
+quiet=1`: the latter's own overall exit status would be `1` whenever
+*not* quiet, tripping `set -e` and aborting the whole command in exactly
+the normal, interactive case that most needs to work — the same class of
+bug the `auth`/`fetch` sections above already call out repeatedly.
+Re-verified with the same real-pty harness: the byte stream now shows the
+expected `\r\033[K[n/total] id...` / `\r\033[K[n/total] id -> outcome`
+sequence for every item, with a single real newline only once, right
+before the final summary — confirmed correct for both `books fetch` and
+`blogs fetch`.
+
+**Round four, once round three actually let the status line draw: the
+retry warning itself started piling up instead of updating in place.**
+With the line finally working, `gr::http_get`'s own retry warning (kept
+deliberately persisted back in round two, as the one genuinely-exceptional
+case worth a real scrolling line) turned out to still be too noisy in
+practice — a sustained bot-challenge block, per its own documented
+behavior ("a burst allowance then a hard block outlasting any reasonable
+retry window"), tends to affect *every* item in a loop, not just one, and
+each one can retry up to `${#delays[@]}` times — so a real blocked run
+could print many near-identical `warning: empty response for ...
+retrying in Ns` lines back to back, overwhelming the very `[n/total]`
+marker it was meant to explain. Reported directly by the user right after
+confirming the marker itself finally worked.
+
+**Fixed with a new `gr::term_status`** (`lib/goodreads.sh`, alongside
+`gr::term_clear_line`): same idea as `gr::status_line`, but independent of
+any command's own `$quiet` (checks `[[ -t 2 ]]` itself, since generic
+code like `gr::http_get` has no way to reach a particular `fetch`
+command's `--batch` state) — prints `\r\033[K$1` (no trailing newline,
+overwriting in place) when stderr is a terminal, or an ordinary persisted
+line otherwise (a redirected/piped log still benefits from seeing every
+retry, not just the last one — there's no "in place" to overwrite there
+regardless). `gr::http_get`'s retry warning now goes through this instead
+of a plain `echo`, so repeated retries — whether from the same URL or
+different ones later in the same loop — update a single line instead of
+scrolling. The *final*, conclusive "kept returning an empty response
+after retries" message (once, not repeated, genuinely worth a permanent
+line) still goes through `gr::term_clear_line` first, to end that live
+line cleanly before printing it. Verified directly with a stubbed `curl`
+that always returns an empty body: two retry attempts against the same
+URL now overwrite each other in place, and the final error prints as its
+own clean, separate line right after.
+
+**Round five, reported directly by the user: a genuine parse/validation
+failure inside `gr::refresh_book`/`gr::refresh_blog` itself (e.g. "no
+canonical link found") still garbled the status line**, even after all
+four rounds above. Those functions' own `error: ...` messages (there are
+several per function — fetch failure, missing canonical link, missing
+`__NEXT_DATA__`/JSON-LD, id mismatch, JSON-build failure) were plain
+`echo ... >&2` with no clear first — round one/four's fix only ever
+covered `gr::http_get`'s *own* messages (the WAF-retry warning and its
+final "kept returning an empty response" failure), never the messages
+its *callers* print after `gr::http_get` already returned successfully
+but a later parsing step then fails. **Fixed the same way as `gr::http_get`
+'s own final failure line**: `gr::term_clear_line` right before every one
+of these `echo "error: ..."` calls in both functions — cheap and safe to
+add unconditionally (a no-op if stderr isn't a terminal, or if there's
+nothing on the current line to clear), rather than auditing which of
+these specific error paths can *actually* fire while a status line is
+live (in practice: all of them can, since every one is reachable from
+`books fetch`/`blogs fetch`'s own per-item loop).
 
 **`list` sorts by title, not by a recency date, unlike `blogs list`** — a
 book's own `published` field is the *edition's* publish date, not remotely
@@ -833,7 +1365,7 @@ line, on its own — not folded into `meta` at all — prefixed with
 `"Genres: "`/`"ISBN: "` labeling convention the other `meta` lines
 already use).
 
-**`delete`** is a straight copy of `blogs delete`'s shape (`book_id...` or
+**`remove`** is a straight copy of `blogs remove`'s shape (`book_id...` or
 `--all`, mutually exclusive, an error if neither is given, per-id outcome
 plus a summary, exits 1 if anything requested wasn't cached) — nothing
 book-specific to say about it beyond substituting `gr::book_dir`/
@@ -1095,7 +1627,7 @@ field claims to settle on its own. That confirmation step is `challenge`,
 below.
 
 Retroactively re-applied across the whole cache every time the heuristic
-itself hardened (`blogs update --all`, since the value is computed at
+itself hardened (`blogs fetch --all`, since the value is computed at
 fetch time from body HTML that isn't persisted — there's no way to
 recompute it without a real re-fetch) — not just the one or two posts
 spot-checked directly. The rename to `challenge_potential` itself (this
@@ -1119,9 +1651,9 @@ Unlike `challenge_potential`, this is never touched by
 value (or absence) was already on disk across a refresh, read from the
 old cache file before that file gets rebuilt from scratch (`gr::refresh_blog`
 always does a full `jq -S -n` rebuild, not a merge — without this explicit
-carry-forward step, a routine `blogs update --all` would silently wipe
+carry-forward step, a routine `blogs fetch --all` would silently wipe
 out every manual decision made since the last full re-fetch). Confirmed
-directly: marking a post, then force-refreshing it (`blogs update
+directly: marking a post, then force-refreshing it (`blogs fetch
 <blog_id>`, a real re-fetch over the network) left `challenge` untouched
 while `challenge_potential` still got freshly recomputed as normal.
 
@@ -1218,56 +1750,91 @@ support is still next-step work, not yet built.
 
 ## `blogs` commands (implemented)
 
-`blogs update [blog_id...] [--all]`, `blogs list [blog_id...] [--all |
---since <date> --until <date> --limit <n>] [--reverse]`, `blogs get
-<blog_id> [--json]`, `blogs challenge <blog_id...> (--yes | --no |
---auto)`,
-`blogs delete [blog_id...] [--all]`. Source: `src/bashly.yml` (command
+`blogs fetch [blog_id...] [--all|-A] [--update|-U] [--batch|-B]`, `blogs
+list [blog_id...] [--all | --since <date> --until <date> --limit <n>]
+[--reverse]`, `blogs get <blog_id> [--json] [--update|-U]`, `blogs
+challenge <blog_id...> (--yes | --no | --auto)`,
+`blogs remove [blog_id...] [--all]`. Source: `src/bashly.yml` (command
 tree), one `src/blogs_*_command.sh` per leaf command — same
 one-file-per-command
-pattern `auth` uses; `update` is the one command backed by real logic in
+pattern `auth` uses; `fetch` is the one command backed by real logic in
 `src/lib/goodreads_blogs.sh` (`gr::discover_blog_ids`) rather than being a
 thin wrapper — every other command is just that, directly over
 `gr::blog_json`/`gr::blog_dir`/`gr::blog_file`.
 
-**`update`** started out as two separate commands (`refresh`/`discover`)
+**Progress during `fetch` (all three branches below) is shown as a
+self-updating status line, suppressed by `--batch`/`-B`, shared verbatim
+with `books fetch`** — see the "`books` commands" section, above, for the
+full `gr::run_fetch`/`gr::status_line`/`gr::status_line_clear`/
+`gr::fetch_quiet` mechanics (nothing books-specific about any of them);
+this section only covers what's actually different here.
+
+**`fetch`** started out as two separate commands (`refresh`/`discover`)
 and was deliberately collapsed into one, per explicit direction — its
 behavior branches on what's passed, in priority order:
 
 1. **One or more `blog_id`s** (`repeatable: true` in `bashly.yml` — bashly
    exposes this at runtime as `args[blog_id]`, a single space-separated
    string, not a real array; word-split back apart deliberately, not
-   quoted): force-refetches exactly those posts
-   (`gr::blog_json <id> --force`) — works identically whether or not a
-   given id was already cached, so this doubles as "add a new post by id"
-   too (no separate "add" needed). Mutually exclusive with `--all` —
-   checked explicitly and rejected with an error, since bashly itself
-   doesn't enforce that (confirmed directly: both can be set
-   simultaneously as far as arg parsing is concerned).
-2. **`--all`**: does a **full** discovery pass (`gr::discover_blog_ids
-   --full` — see below for what that means) *and* additionally
-   force-refreshes every post that was already cached before this run
-   started — a real "sync everything" pass, not just "check known ones are
-   still good" (that used to be all `--all` did, back when this was a
-   separate `refresh` command with no id — changed on explicit direction
-   that `--all` should include discovering new posts too, not skip that
-   half). The set force-refreshed is deliberately *only* what was cached
-   going in, not including whatever this same run just discovered — no
-   point force-refetching something that's already fresh from the
-   discovery pass moments earlier. Also the *only* mode that reports
-   which cached ids no longer turn up in the current listing — see below
-   for why that specifically needs `--full`'s guaranteed-complete scan, not
-   available on plain `blogs update` at all anymore.
-3. **Neither** (plain `blogs update`): a discovery pass only — scans the
+   quoted): `fetch_one` (`blogs_fetch_command.sh`, called via
+   `gr::run_fetch` — see above) handles each one with the `""`/`"force"`
+   force policy — no `"ttl"` on this path, that's `--all`-only, below — a
+   post not already cached always gets a plain `gr::blog_json <id>` call
+   (reported `-> fetched`, doubling as "add a new post by id", no
+   separate "add" needed); one *already* cached is left alone (`->
+   already cached`, no network touched) **unless `--update`/`-U` is
+   given**, which force-refetches it instead (`gr::blog_json <id>
+   --force`, reported `-> refreshed`, or `-> confirmed removed remotely`
+   if it 404s — see `outcome_text`). **This default — skip what's already
+   cached — is a behavior change from this command's former name,
+   `update`**, where an explicit id was *always* force-refetched
+   regardless of cache state; renamed to `fetch` alongside that change,
+   per explicit direction. Mutually exclusive with `--all` — checked
+   explicitly and rejected with an error, since bashly itself doesn't
+   enforce that (confirmed directly: both can be set simultaneously as far
+   as arg parsing is concerned).
+2. **`--all`/`-A`**: does a **full** discovery pass (`gr::discover_blog_ids
+   --full` — see below for what that means) *and* additionally checks
+   every post that was already cached before this run started, via
+   `fetch_one`'s `"ttl"` force policy by default, or `"force"` if
+   `--update` is also given (`refresh_force`, computed right before that
+   call). **`--all` alone no longer unconditionally force-refreshes
+   everything the way it always used to — per explicit follow-up
+   direction, for consistency with `books fetch --all` now also honoring
+   its own real TTL (see there).** The blog cache's own TTL is *infinite*
+   though (a published post's content never changes, see "Blog post
+   cache" below) — `gr::blog_fresh` (`goodreads_blogs.sh`) is trivially
+   just `gr::blog_file`'s own existence check, so under the `"ttl"` policy
+   *every* already-cached post is reported `-> already cached (fresh)`
+   without ever touching the network at all. **This makes plain `--all`
+   (without `--update`) unable to re-verify an existing post is still
+   there any more** — a real, acknowledged behavior loss, accepted
+   anyway for cross-command consistency, per explicit direction ("may
+   make the flag absurd, but consistent with `books fetch --all`"). Run
+   `--all --update` for the old "sync everything, confirm nothing's
+   gone" behavior — that combination still force-refreshes every
+   already-cached post exactly as `--all` alone always used to. The set
+   checked is deliberately *only* what was cached going in, not including
+   whatever this same run just discovered — no point re-asking about
+   something that's already fresh from the discovery pass moments
+   earlier. Also the *only* mode that reports which cached ids no longer
+   turn up in the current listing — see below for why that specifically
+   needs `--full`'s guaranteed-complete scan, not available on plain
+   `blogs fetch` at all anymore; that report suggests `fetch <id>
+   --update` specifically, since plain `fetch <id>` on an already-cached
+   id would otherwise just skip it without checking anything.
+3. **Neither** (plain `blogs fetch`): a discovery pass only — scans the
    `/news` listing (`gr::discover_blog_ids`, no flag — see below for how it
-   short-circuits) and fetches whatever comes back as genuinely new (plain
-   `gr::blog_json`, no `--force` needed — they're genuinely new, nothing to
-   force over). The short-circuit lets this stop *far* short of the full
-   ~18 pages once at least one discovery has ever completed (see below) —
-   no "no longer appears in the current listing" report on this path at
-   all, unlike an earlier version: a short-circuited scan can't tell an
-   older, never-(re)scanned id apart from one that quietly disappeared, so
-   it has nothing honest to say about that; run `--all` for that check.
+   short-circuits) and fetches whatever comes back as genuinely new
+   (`fetch_one` with the `""` force policy — they're genuinely new,
+   nothing to force over, so this behaves the same as the explicit-id
+   path's own default). The short-circuit lets this stop *far* short of
+   the full ~18 pages once at least one discovery has ever completed (see
+   below) — no "no longer appears in the current listing" report on this
+   path at all, unlike an earlier version: a short-circuited scan can't
+   tell an older, never-(re)scanned id apart from one that quietly
+   disappeared, so it has nothing honest to say about that; run `--all`
+   for that check.
 
 Formalizes what had been done ad hoc all session via one-off research
 scripts (see the "news catalog" research notes) into a real, reusable
@@ -1293,7 +1860,7 @@ cached-id set: a small on-disk state file
 directly in the data dir" convention as `gr::throttle`'s own
 `.last_request_at`) remembers the id of whatever post sat at the very top
 of page 1 as of the last **successfully completed** discovery. A later
-plain `blogs update` stops paginating as soon as it encounters that exact
+plain `blogs fetch` stops paginating as soon as it encounters that exact
 id again — the listing is recency-ordered, so reaching it means everything
 from that point on is guaranteed already-known, no need to keep walking
 the remaining ~17 pages just to re-discover ids already sitting in the
@@ -1352,7 +1919,7 @@ trusting the design on paper):
    `/blog/show/<id>` href in this markup (confirmed directly against real
    fetched pages) — which the header banner never carries.
 2. Even after that fix, the very first live re-run of a short-circuited
-   `blogs update` — genuinely nothing new since the marker was set — came
+   `blogs fetch` — genuinely nothing new since the marker was set — came
    back reporting a hard failure (exit 1) with no error message at all.
    Traced (via `bash -x`) to `gr::discover_blog_ids`'s own last line:
    `sort -n -u <<< "$all_ids" | grep -v '^$'` — when there's legitimately
@@ -1371,7 +1938,7 @@ the real on-disk cache at all** — a deliberate simplification over the
 earlier `$1`-seeded design (below): it only ever answers "what does the
 listing currently show, scanned this efficiently," never "what's not
 already cached." Diffing against the real `*.json` files present is the
-caller's job in both branches of `blogs_update_command.sh` now (`comm -23`
+caller's job in both branches of `blogs_fetch_command.sh` now (`comm -23`
 against a freshly-built `cached_ids`, built once, shared by both the
 `--all` and plain branches) — previously only `--all` needed to do this
 itself, since the old seeded design had the plain path do this filtering
@@ -1386,11 +1953,11 @@ against the real 172-post cache before this fix, and clean after.
 **Earlier design, superseded by the marker above**: `gr::discover_blog_ids`
 used to take an optional `$1` — a newline-separated set of already-known
 ids — and seed the "no new ids" per-page termination check with it
-directly, added per explicit direction so plain `blogs update` could stop
+directly, added per explicit direction so plain `blogs fetch` could stop
 paginating once it reached ids the local cache already had, rather than
 always walking the full ~18-page listing even when nothing past page 1 or
 2 was ever going to be new. Confirmed working at the time: a routine
-`blogs update` against an already-fully-populated 172-post cache dropped
+`blogs fetch` against an already-fully-populated 172-post cache dropped
 from walking all ~18 pages (several minutes, throttled) to ~2 seconds.
 Replaced because a single remembered marker id is simpler than carrying
 the *entire* known-id set through this function just to diff against it on
@@ -1433,7 +2000,7 @@ open for reading is fine (Linux keeps serving that process the original
 content through its already-open file descriptor; confirmed directly,
 several times, across this whole `blogs` feature's development, each time
 regenerating mid-run to pick up the next change without disrupting a
-several-minutes-long `blogs update --all` already in flight). But doing
+several-minutes-long `blogs fetch --all` already in flight). But doing
 that *repeatedly* during one single long-running invocation eventually
 desynced something: a real run left a stray
 `line 2845: logs_usage: command not found` at the very tail of its output
@@ -1453,13 +2020,16 @@ each time so far.
 A successful `gr::blog_json` call doesn't distinguish "fetched real
 content" from "confirmed permanently gone, marker written" (both are
 success from its own point of view — see `gr::refresh_blog` above), so
-`update`'s own `report_outcome` helper checks `removed_remotely` itself
+`fetch`'s own `outcome_text` helper checks `removed_remotely` itself
 afterward and reports `-> confirmed removed remotely` instead of a plain
-`-> refreshed` when that's what actually happened — found by testing
-against a real nonexistent id and noticing the plain "Refreshed blog post
-999999." message was misleading (nothing was actually fetched). Shared by
-both the `blog_id`-list path and `--all`'s own force-refresh pass — the
-only difference between those two is which ids get handed to it.
+`-> refreshed`/`-> fetched` when that's what actually happened — found by
+testing against a real nonexistent id and noticing the plain "Refreshed
+blog post 999999." message was misleading (nothing was actually fetched).
+Shared by every `fetch_one` call site (the explicit `blog_id...` path,
+the discovery loop's genuinely-new ids, and `--all`'s own already-cached
+sweep) via `gr::run_fetch` — see the "`books` commands" section for that
+mechanism, and above in this section for `--all`'s own `"ttl"`/`"force"`
+split.
 
 **`list`**: one line per post, sorted by `published` date, most recent
 first — changed from an id sort on explicit direction. Defaults to the 15
@@ -1620,6 +2190,10 @@ directly rather than re-emitting anything (the file on disk is already
 pretty-printed with sorted keys, `gr::refresh_blog`'s own write format —
 `gr::blog_json`'s own stdout is deliberately compacted to one line
 instead, for programmatic callers, so `--json` bypasses it too).
+`--update`/`-U` swaps the plain `gr::blog_json "$id"` call for
+`gr::blog_json "$id" --force`, force-refetching an already-cached post
+before printing it (e.g. to re-check whether it's since 404'd) — the only
+way to force this outside of `fetch <id> --update`.
 
 The pretty renderer is one `jq` call that emits a JSON object (`{removed,
 meta, sections, rows}`), not text directly — title/url/`author · published
@@ -1683,7 +2257,7 @@ section above for the full tri-state design and why it's a separate field
 from `challenge_potential`) on one or more posts — `blog_id` is
 `repeatable: true` here (renamed from an earlier single-id-only `mark`
 command per explicit direction, taking the same repeatable-id shape
-`update`/`delete` already use). Exactly one of `--yes`/`--no`/`--auto` is
+`fetch`/`remove` already use). Exactly one of `--yes`/`--no`/`--auto` is
 required — checked by hand in bash, same "bashly doesn't enforce this
 itself" pattern every other multi-flag `blogs` command uses — and unlike
 those, *no* flag given is rejected too rather than defaulting to anything,
@@ -1692,11 +2266,11 @@ recording an explicit human decision. Each id needs to already be cached
 (`gr::blog_file`'s path exists) — an uncached id is reported to stderr
 (`<id> -> not cached`) and counted as a failure rather than aborting the
 whole run, same "best-effort across the list, report the tally" shape
-`blogs delete`'s own multi-id loop uses (`mark_one`/`delete_one`, a shared
+`blogs remove`'s own multi-id loop uses (`mark_one`/`remove_one`, a shared
 helper plus a loop, in each case) — not fetched on this command's own
 initiative, since marking an as-yet-unseen post as a challenge listing (or
 not) isn't something it can meaningfully do sight unseen; the failure
-message points at `blogs update <blog_id>` instead. Implementation is a
+message points at `blogs fetch <blog_id>` instead. Implementation is a
 plain `jq '. + {challenge: true}'` / `'. + {challenge: false}'` /
 `'del(.challenge)'` **merge onto the existing cache file**, not a rebuild —
 unlike `gr::refresh_blog`'s own `jq -S -n`, every other field (including
@@ -1706,25 +2280,537 @@ this command only ever means to touch the one key it's actually about.
 tri-state is true/false/*absent*, and `del` is the operation that actually
 produces "absent" rather than a stored `null` value.
 
-**`delete`**: takes the same `blog_id...`/`--all` shape as `update` (added
-afterward, on explicit direction, to match) — one or more explicit ids, or
-`--all` for every cached post, mutually exclusive, and now an error if
-*neither* is given (a bare `blogs delete` with nothing to act on used to
-be impossible since `blog_id` was `required: true`; now that it's
-`repeatable` instead — optional by bashly's own rules — that "give me
-something to do" case has to be checked explicitly). `--all` builds its id
-list from `gr::blog_dir`'s contents and folds it into the exact same
-`blog_ids` code path the explicit-id case uses (word-split apart the same
-way) rather than being a separate branch, keeping only one place that
-actually does a delete (`delete_one`). Per-id outcome plus a summary line,
-same shape as `update`'s own reporting; unlike `update`'s failures (a
+**`remove`** (renamed from `delete`, per explicit direction — same
+command, same behavior, just the name; its own alias was already `rm`
+before the rename, so this only made the primary name match the alias
+family every other `remove` command in this project already uses):
+takes the same `blog_id...`/`--all` shape as `fetch` (added afterward, on
+explicit direction, to match) — one or more explicit ids, or `--all` for
+every cached post, mutually exclusive, and now an error if *neither* is
+given (a bare `blogs remove` with nothing to act on used to be impossible
+since `blog_id` was `required: true`; now that it's `repeatable`
+instead — optional by bashly's own rules — that "give me something to
+do" case has to be checked explicitly). `--all` builds its id list from
+`gr::blog_dir`'s contents and folds it into the exact same `blog_ids`
+code path the explicit-id case uses (word-split apart the same way)
+rather than being a separate branch, keeping only one place that
+actually does a removal (`remove_one`). Per-id outcome plus a summary
+line, same shape as `fetch`'s own reporting; unlike `fetch`'s failures (a
 network hiccup is worth tolerating and reporting on, not aborting over), a
 requested id that was never cached is treated as a real usage error here —
-`delete` exits 1 if anything requested wasn't found, `update` does not.
+`remove` exits 1 if anything requested wasn't found, `fetch` does not.
 Still no confirmation prompt even for `--all` (which can now wipe the
-*entire* local blog cache in one call) — same non-interactive-delete
+*entire* local blog cache in one call) — same non-interactive-removal
 precedent as `auth logout`, not changed just because the blast radius grew;
 revisit only if actually asked for.
+
+## Reading challenges (implemented — CLI surface: `challenges`)
+
+**Challenges are manually curated, not scraped** — the "Blog post cache"
+section above already established that challenge *detail* (which books
+count toward which badge) is largely locked behind a step-up-auth wall no
+long-lived session can satisfy, so there's no `gr::discover_challenges`-
+style listing scan the way `blogs` has. This is the human-in-the-loop half
+that groundwork was building toward: the user records a challenge's own
+title/time-window by hand, then links it to whichever `blogs`-cached
+posts and book-count badges actually apply — `challenges edit
+--add-blog`/`--add-badge` below, not automated discovery.
+
+**`challenge_id` is a purely local string** (`--arg id`-bound in the jq
+program that writes the file, so it's always a JSON string, never a
+number, regardless of whether it happens to look numeric) — unlike
+`book_id`/`blog_id`, which are goodreads.com's own ids, there is no
+external id to key off here at all. **Derived from the challenge's own
+`start`/`end`, not a sequential counter** (`gr::generate_challenge_id` in
+`src/lib/goodreads_challenges.sh`, called once by `gr::create_challenge`;
+there is no `.next_challenge_id` state file, unlike an earlier version of
+this design):
+
+- **Seasonal** (per `gr::challenge_season` — the exact same rule
+  `gr::default_challenge_title` uses to decide whether to name a challenge
+  after its season, so a challenge's id and its default title can never
+  quietly disagree about "is this seasonal"): `<year>Q<quarter>`, e.g.
+  `2026Q3` for a challenge whose `end` falls within a month of the
+  `2026-09-30` quarter-end (`<quarter>` is 1-4, `GR_QUARTER_END_MONTHDAY`'s
+  own index + 1). If that id is already taken, `-<counter>` is appended,
+  counting up from **2** (`2026Q3-2`, `2026Q3-3`, ...) — the bare id reads
+  as "the first one", so its first collision is naturally "the second one".
+- **Non-seasonal**: `<year>-<counter>`, keyed off `start`'s own year (no
+  quarter-end to anchor to) — counting up from **1** straight away, with
+  no bare `<year>`-only id ever attempted first (unlike the seasonal case,
+  where the bare `<year>Q<quarter>` id always exists and is only avoided
+  on an actual collision).
+
+Existence is checked directly against the real `challenges/*.json` files
+on disk (`gr::challenge_file "$candidate"`), not any separate counter
+state. **This means an id genuinely can be reused once its challenge is
+removed** — confirmed directly: creating `2026Q3`, removing it, then
+creating an equivalent challenge again produces `2026Q3` again, not
+`2026Q3-2` — a real behavior change from the sequential-integer scheme
+this replaced (which never recycled a removed id at all, see git history
+if that reasoning is ever needed again). Accepted deliberately here: this
+scheme's ids are meant to be recognizable/predictable content-derived
+labels (closer to a slug than an opaque counter), and a slug for a
+genuinely re-created challenge naturally lands back on the same slug.
+
+**An id is fixed at creation and never recomputed by `edit`** — editing a
+challenge's `start`/`end` later (`challenges edit`) does *not* rename its
+id to match, even if that changes which quarter (or year) it now falls
+into or whether it's still "seasonal" at all. This is the same general
+risk `[[feedback-stable-ids-over-mutable-slugs]]` warns about for
+mutable/human-readable identity keys (there: a Goodreads username
+changing out from under an `<id>-<username>` directory key) — accepted
+here anyway, per explicit direction to use this exact date/quarter-derived
+scheme, but worth remembering: after a significant `edit`, a challenge's
+id may no longer reflect its current window. Nothing currently depends on
+re-deriving it, so this is cosmetic (a possibly-stale-looking id), not a
+correctness problem — revisit only if something ever does start relying on
+an id's own shape matching its challenge's current data.
+
+**`create --id <id>`** overrides `gr::generate_challenge_id` entirely — the
+given string is used as-is (`gr::create_challenge`'s 4th, optional
+parameter), no `<year>Q<quarter>`/`<year>-<counter>` derivation at all.
+Checked *before* anything else in `challenges_create_command.sh` (ahead of
+the badges/blogs handling, start/end parsing, etc.) — an already-taken id
+fails outright with `error: challenge <id> already exists`, and an id
+containing `/` is also rejected (`error: --id must not contain '/':
+<id>`) since it becomes a filename component verbatim
+(`gr::challenge_file`), the one piece of input sanitization this command
+does that no other `challenges`/`books`/`blogs` id-taking command bothers
+with (those never derive a path from unvalidated user input the way a
+freshly-typed `--id` does here). No further format constraint — a manual
+id doesn't have to look anything like the auto-generated ones, e.g. `--id
+book-club-pick` is fine.
+
+**Schema** (`challenges/<id>.json`, pretty-printed with sorted keys, same
+convention as `books`/`blogs`): `challenge_id`, `title`, `start`, `end`
+(both plain `YYYY-MM-DD`, parsed liberally via `date -d` at the CLI layer
+the same way `blogs list --since`/`--until` already are), `blogs` (array
+of `{blog_id, name}`), `count_badges` (array of `{count, name}`). Per
+explicit direction: both list fields are genuinely allowed to stay empty
+(`[]`) forever — a challenge with no badge-linked posts yet, or no
+book-count badges at all, is a normal, valid state, not an error — and
+both are lists of *objects*, not bare ids/integers, specifically so a
+`name` (the badge each entry earns) can hang off either kind of entry.
+`blogs[].name` and `count_badges[].name` are each optional (`null` when
+not given, never `""` — same "absence is a real third state" stance
+blogs' own `.challenge` tri-state field takes) — a badge doesn't have to
+be named to be tracked.
+
+**`gr::add_challenge_blog`/`gr::add_challenge_count_badge` are upserts,
+keyed by `blog_id`/`count` respectively** — adding an id/count already on
+the challenge only replaces its `name` (in place, so add-order — and thus
+display order — is preserved) rather than appending a duplicate entry.
+`count_badges` is additionally kept `sort_by(.count)` after every write,
+so display order is always ascending (2, 3, 5, ...) regardless of the
+order badges were actually added in — `blogs` has no equivalent re-sort,
+since add-order (roughly, the order a human worked through a challenge's
+badges) is itself meaningful there, unlike a badge's numeric count.
+`gr::remove_challenge_blog`/`gr::remove_challenge_count_badge` each
+return 1 (nothing written) when the given id/count isn't actually present
+— `challenges edit`'s own `--remove-blog`/`--remove-badge` handling uses
+this to report a per-item outcome, same "best-effort across the list,
+report the tally" shape `blogs remove`'s own multi-id loop already uses.
+
+**Every write is a merge onto the existing file, never a full rebuild**
+(`gr::update_challenge`, `gr::add_challenge_blog`,
+`gr::add_challenge_count_badge`, and their `remove` counterparts all read
+the file, `jq`-transform just the relevant part, and `mv` a temp file back
+over it) — same principle as blogs' own `challenge` command merging onto
+its cache file rather than reusing `gr::refresh_blog`'s full
+`jq -S -n` rebuild. `gr::update_challenge` treats an empty string as
+"don't touch this field" for each of `title`/`start`/`end` independently
+— safe here specifically because none of the three is ever legitimately
+an empty string.
+
+**`$end` does not parse as a jq variable reference — a real, confirmed jq
+parser quirk, not a typo.** `end` is a bareword jq keeps for `if`/`end`;
+a bare object key `end: ...` and field access `.end` both compile fine
+(confirmed directly), but `--arg end "$value"` followed by `$end` in the
+program fails to compile (`syntax error, unexpected end, expecting IDENT`)
+— jq's grammar can't disambiguate a `$`-prefixed reference to the same
+reserved word. Fixed by naming the jq-side binding `end_date` instead
+everywhere a challenge's end date is threaded into a jq program
+(`gr::create_challenge`, `gr::update_challenge`) — purely a jq-side
+rename, the bash variable and the JSON field are both still plainly
+`end` throughout current code and on disk.
+
+**`GR_CHALLENGE_STATUS_JQ_DEF`** (`src/lib/goodreads_challenges.sh`) is a
+shared jq `def challenge_status($today): ...` constant, prepended to both
+`challenges list`'s and `challenges get`'s own jq programs the same way
+`GR_CHALLENGE_JQ_DEFS` (`goodreads_blogs.sh`) is — centralizing the
+planned/`ongoing`/`finished` computation in one place rather than
+duplicating it, so it can't quietly drift out of sync between the two
+commands. Deliberately unrelated to `GR_CHALLENGE_JQ_DEFS` despite the
+shared "challenge" word in both names: that one is about a *blog post's*
+own candidate-listing flag (`blogs`' `.challenge`/`.challenge_potential`),
+this is about a *reading challenge's* own lifecycle. Status is computed
+from plain `YYYY-MM-DD` string comparison against `$today` (passed in
+once per invocation via `--arg`, not recomputed per challenge) — the same
+lexical-date-comparison trick `blogs_list_command.sh`'s own
+`--since`/`--until` handling already relies on. Never stored on disk —
+purely a display-time computation, since "is this challenge currently
+ongoing" changes on its own as time passes, unlike anything actually
+persisted in the file.
+
+## `challenges` commands (implemented)
+
+`challenges create` (alias `new`) `[--id <id>] [--title <title>] [--start
+<date>] [--end <date>] [--badges <specs> | --badge <spec>... | --no-badges]
+[--blogs <specs> | --blog <spec>... | --no-blogs] [--no-goals]`,
+`challenges list`, `challenges get [challenge_id] [--json]`, `challenges
+edit <challenge_id> [--title <title>] [--start <date>] [--end <date>]
+[--add-blog <spec>...] [--remove-blog <blog_id>...] [--add-badge
+<spec>...] [--remove-badge <count>...]`, `challenges remove
+[challenge_id...] [--all]`. Source: `src/bashly.yml`, one
+`src/challenges_*_command.sh` per leaf command, same one-file-per-command
+pattern `auth`/`blogs`/`books` use. **No nested `challenges blogs`/
+`challenges badges` command groups any more** — those existed as a
+three-level command tree (`challenges` > `blogs`/`badges` > `add`/
+`remove`) in an earlier version of this design; per explicit direction,
+managing a challenge's badge-linked blog posts and book-count badges is
+now entirely folded into `edit`'s own flags instead (below), since it's
+still fundamentally "changing a challenge," not a separate concern —
+`edit <id> --add-blog <blog_id>:<name> --remove-badge <count>` now does
+in one call what used to take two separate command invocations.
+
+**`create`** parses `--start`/`--end` liberally via `date -d` (same as
+`blogs list`'s own date flags), rejects an end-before-start window
+up front, and delegates the actual id assignment + file write to
+`gr::create_challenge`, printing the new id in a confirmation message
+(there's no other way to learn a just-created challenge's id, since it's
+assigned internally, not chosen by the caller).
+
+**`--title`/`--start`/`--end` are all optional**, with defaults geared
+towards "just keep making quarterly challenges" (`gr::default_challenge_*`
+in `goodreads_challenges.sh`):
+
+- **`--start`** continues right after the latest existing challenge's own
+  end, if a hypothetical immediately-following challenge with
+  automatically selected bounds would still be ongoing right now (one
+  test, confirmed directly as covering both "the latest challenge is
+  still ongoing" and "it recently ended" at once — no separate check for
+  either). Otherwise, the start of the current calendar quarter (there's
+  either no prior challenge, or the trail went cold long enough ago that
+  picking back up from it doesn't make sense).
+
+  **Fails outright instead — naming the actual conflicting challenge —
+  if the latest existing challenge hasn't started yet ("planned")**,
+  rather than trying either of the above: there's nothing sensible to
+  chain off of yet, and falling back to the quarter start could just as
+  easily land back on top of an *earlier* challenge instead. Confirmed
+  directly: three successive no-arg `create` calls today (2026-09-19)
+  create #1 (covers the current quarter) then #2 (chains right after #1
+  into next quarter) — but #3's "latest" is #2, still merely *planned*
+  today, so #3 fails with `error: the latest challenge (challenge 2,
+  2026-10-01 to 2026-12-31) hasn't started yet -- can't auto-select
+  --start from it. Pass --start explicitly.`, rather than silently
+  falling back to a quarter start that would have collided with #1.
+- **`--end`** is the next quarter-end (Mar-31/Jun-30/Sep-30/Dec-31) at or
+  after `--start`, unless that's under 6 weeks away, in which case the
+  one after that — e.g. `--start=2024-09-15` selects `2024-12-31`, not
+  `2024-09-30` (only 15 days).
+- **`--title`** becomes `"<Season> Challenge <year>"` when the actual end
+  (given or selected) falls within one calendar month of a quarter-end
+  *and* the challenge is at least 6 weeks long — both conditions, not
+  either — else `"Unnamed Challenge"`. Season names are
+  Winter/Spring/Summer/Fall for Jan-Mar/Apr-Jun/Jul-Sep/Oct-Dec
+  respectively (explicit direction — not the Northern-Hemisphere
+  calendar seasons). `<year>` is the *matched quarter-end's* own year,
+  not necessarily the end date's — an end of `2025-01-15` is within a
+  month of `2024-12-31` (Fall), so the title says `2024`.
+- **`--badges`** is a comma-separated list of book-count badges to add
+  right after creating the challenge, each entry either a bare `<count>`
+  (unnamed) or `<count>:<title>` (each becomes its own
+  `gr::add_challenge_count_badge "$id" "$count" "$title"` call), defaulting
+  to `2:Page-Turner,3:Speed Reader,5:Book Boss` (`default_badges` in the
+  command script — note the space in `Book Boss`, a real title, not a
+  formatting mistake; the 3/5 titles were swapped from an earlier version
+  that had them backwards — `3:Book Boss,5:Speed Reader` — per explicit
+  correction, along with the existing real challenge(s) that had already
+  been created with the mixed-up names). Each spec's count is
+  validated as a positive integer *before* the challenge is created at
+  all, so a bad value can't leave one half set up with only some badges
+  applied. Deliberately has no `default:` in `bashly.yml` — bashly's own
+  default-application applies the YAML default whenever the value comes
+  out *empty*, not just when the flag is absent (confirmed directly), so
+  a real `default:` there would silently turn an explicit `--badges ""`
+  (the documented way to opt out of any badge, alongside `--no-badges`
+  below) right back into the default. `[[ -v args[--badges] ]]` (checking
+  the *key*, not the value) is what actually tells "never passed" apart
+  from "passed as an empty string" — same trick `--blogs` (below) uses.
+
+  **`--badge <count>[:<title>]`** is a repeatable alternative to `--badges`
+  for the same `<count>[:<title>]` shape, one badge per occurrence
+  (`--badge 2:Page-Turner --badge 5`) — mutually exclusive with `--badges`
+  itself (both given is a plain usage error, checked explicitly, same
+  "bashly doesn't enforce this itself" pattern used throughout this
+  project). **Needs `eval` to reassemble, unlike every other repeatable
+  flag/arg in this project** (`--blog`, `blog_id`, etc., all just
+  space-word-split via a bare `for x in $y`): those never carry a space
+  in any real value, but a badge title routinely does (`"7:Marathon
+  Reader"`). bashly's own generated flag-parsing case already
+  shell-escapes each repeated value with `printf '%q'` before
+  space-joining them into `args[--badge]`, specifically so this is
+  reversible — `eval "badge_specs=(${args[--badge]})"` is what actually
+  un-escapes and re-splits it back into the original per-occurrence
+  strings, verified directly with `--badge "2:Page Turner" --badge
+  "7:Marathon Reader" --badge 10` round-tripping as three distinct badges,
+  the two spaced titles intact.
+
+  **`--no-badges`** disables the default outright, equivalent to `--badges
+  ""` but without needing to know that trick. Combining it with an actual
+  `--badges`/`--badge` isn't an error — checked explicitly, but only to
+  print a warning to stderr and otherwise ignore `--no-badges`, then let
+  the explicit badges win. **The warning names the actual flags
+  involved, not a generic list of aliases** — `warn_superfluous_no_flag`
+  (shared with the `--blogs` case below) checks `-v args[...]` on each of
+  the two possible "no" flags separately (`--no-badges` and `--no-goals`
+  can both genuinely be given at once) to build the "ignoring ..." half,
+  and separately checks which of `--badges`/`--badge` is actually set
+  (mutually exclusive with each other, so exactly one) for the "...,
+  because ... was given explicitly" half — e.g. plain `--no-badges
+  --badges 1` warns `ignoring --no-badges, because --badges was given
+  explicitly`, while `--no-badges --no-goals --badges 1` (both "no" flags
+  at once) warns `ignoring --no-badges and --no-goals, because --badges
+  was given explicitly`. Never mentions a flag the user didn't actually
+  type. Explicit badges win since giving real badges already implies "not
+  the default" on its own,
+  `--no-badges` genuinely adds nothing in that case, and there's no
+  actually-conflicting *intent* here worth hard-erroring over (unlike
+  `--badges`/`--badge` given together, which really are two different,
+  incompatible ways of saying what the badges should be — that combination
+  still is a real error, above). `badge_specs`' own resolution
+  (`challenges_create_command.sh`) checks `--badge`/`--badges` *before*
+  `$no_badges` for exactly this reason — explicit input wins outright, the
+  warning is purely informational.
+- **`--blogs`** is the same `<id>`/`<id>:<title>` shape as `--badges`
+  (comma-separated, no `default:` in `bashly.yml` for the same reason,
+  same `[[ -v ]]` trick), with the same repeatable `--blog <id>[:<title>]`
+  alternative (mutually exclusive with `--blogs`, same %q/eval round-trip
+  to survive a spaced title — see `--badge` above, the exact same
+  reasoning applies verbatim). Two differences from `--badges`, though:
+
+  - **Every explicitly given post (`--blogs`/`--blog`, never the computed
+    default below) is fetched via plain `gr::blog_json "$blog_id"`** —
+    from cache if already there (cheap: the blog cache has no TTL, see
+    "Blog post cache" above), a real network fetch otherwise — both to
+    confirm it actually exists (a bad id fails the whole `create` with
+    `error: could not fetch blog post <id>`, before the challenge itself
+    is created, same "validate everything before creating anything"
+    ordering `--badges`' count check already follows) and, when no
+    `<title>` was given, to default to the post's own `.title` (`jq -r
+    '.title // empty'` on the fetched JSON — empty for a
+    `removed_remotely` stub, which has no title, same as giving no title
+    explicitly). `gr::add_challenge_blog "$id" "$blog_id" "$blog_title"`
+    then gets a real name either way, not left unnamed the way a bare
+    numeric id used to leave it.
+  - Its **default list** (when neither `--blogs` nor `--blog` is given at
+    all) is computed instead of fixed
+    (`gr::default_challenge_blogs`), and those auto-selected posts are
+    *not* additionally fetched/named this way — they already came from a
+    cache scan (so existence is a given) and are added unnamed, same as
+    before this change; only posts the user actually names on the command
+    line get the fetch-and-default-title treatment.
+
+  `gr::default_challenge_blogs`: every *cached* blog post (can't
+  discover ones never fetched) published within
+  `GR_CHALLENGE_BLOG_WINDOW_BEFORE_START_DAYS` (7) days before `--start`
+  through `GR_CHALLENGE_BLOG_WINDOW_BEFORE_END_DAYS` (14) days before
+  `--end` **or today, whichever is earlier**, whose `challenge_potential`
+  is at least `GR_CHALLENGE_BLOG_DEFAULT_MIN_POTENTIAL` (0.7) — the raw
+  likelihood score itself, not `gr_challenge_status`'s derived (and
+  manually overridable) boolean, since this is specifically a
+  *likeliness* threshold, and deliberately a higher bar than
+  `goodreads_blogs.sh`'s own `GR_CHALLENGE_POTENTIAL_THRESHOLD` (0.5,
+  which decides whether a post counts as a challenge listing at all, a
+  different question from whether to auto-link it to a brand new one).
+  This needs `--start`/`--end`/today already resolved, so it's decided
+  later in the command file than `--badges` is, even though it's
+  declared right after it in `bashly.yml`.
+
+  **The today cap is deliberate, not just a convenience**: real
+  challenges reveal their badges and backing posts gradually over their
+  own run (confirmed directly — a challenge created today typically has
+  only 3-5 of its eventual badges/posts known, with the rest revealed
+  later, sometimes well after the post for a later badge is even
+  published), so a post for a badge that hasn't been revealed yet
+  genuinely doesn't exist to be found — scanning past today is
+  meaningless, not just imprecise. This only *reduces* how much
+  `gr::default_challenge_blogs` can find, on top of the already-known
+  limitation that `challenge_potential` can't reliably predict the real
+  editorial curation on Goodreads' own (auth-walled) challenge hub page
+  at all (confirmed directly against real data: structurally-identical
+  posts, published the same day, one curated in and one not, with no
+  discoverable distinguishing feature). Both limitations point the same
+  way: treat this default as a rough, correctable starting point, not
+  an authoritative answer — `challenges edit --add-blog`/`--remove-blog`
+  (and `--add-badge`/`--remove-badge`) are the real mechanism for keeping
+  a challenge's badges/posts in sync as more get revealed over its
+  lifetime.
+
+  **`--no-blogs`** disables the default outright, equivalent to `--blogs
+  ""` but without needing to know that trick — same "superfluous, not
+  conflicting" treatment as `--no-badges` above when combined with an
+  actual `--blogs`/`--blog`: a warning to stderr, then the explicit list
+  wins (`blogs_given` — set from either flag — is checked before
+  `$no_blogs` in the blog-resolution `if`/`elif` chain, same ordering
+  principle).
+
+**`--no-goals`** is a plain shorthand for `--no-badges --no-blogs`
+together — `no_badges`/`no_blogs` (the command script's own two local
+flags, set from `args[--no-badges]`/`args[--no-blogs]`) are both forced to
+`1` up front whenever `args[--no-goals]` is set, *before* either flag's own
+superfluous-combination check against `--badges`/`--badge`/`--blogs`/
+`--blog` runs — so `--no-goals` alongside any of those four triggers the
+exact same warning `--no-badges`/`--no-blogs` alone already would, and
+still names only the flags actually typed (`warn_superfluous_no_flag`
+checks `args[--no-goals]` directly, same as `args[--no-badges]`/
+`args[--no-blogs]` — it doesn't matter *which* local variable a "no" state
+came from, only which literal flags are actually present in `args`), e.g.
+plain `--no-goals --badge 2` warns `ignoring --no-goals, because --badge
+was given explicitly` — never mentioning `--no-badges` at all, since it
+was never typed. Either way, the explicit badges/blogs still win. No
+separate `--no-goals` branch exists anywhere past that
+point — every later check/branch in the command script only ever looks at
+`$no_badges`/`$no_blogs`, never at `args[--no-goals]` directly.
+
+Two GNU `date` quirks confirmed directly while building this, both now
+baked into `gr::last_day_of_prev_month`/`gr::last_day_of_next_month` and
+`gr::days_between`:
+- A single chained relative-date string (`"$d +1 day +1 month -1 day"`)
+  is *not* applied strictly left-to-right — for `2024-03-31` it gives
+  `2024-05-01`, not the intended `2024-04-30`. Only re-parsing an
+  already-resolved intermediate date at each step (three separate
+  `date -d` calls) gets the "1 month after, clamped to that month's own
+  last day" result the "end near a quarter" check needs (matching the
+  worked example: a challenge ending `2024-04-30` is a "Winter Challenge
+  …", one month after `2024-03-31`).
+- A plain local-time `epoch / 86400` day-count is off by a day across a
+  DST transition (e.g. `2024-03-25` to `2024-04-01` in `Europe/Berlin`
+  comes out as 6, not 7 — that week is actually 23 hours short there).
+  `gr::days_between` pins both endpoints to UTC (`date -u`) to avoid this.
+
+**`gr::challenges_overlapping`** additionally refuses the whole creation
+if an *auto-selected* `--start` (never an explicit one — that's the
+documented way to force a window regardless) would still produce a
+window overlapping an existing challenge, naming the collision. Per the
+reasoning above, this shouldn't actually be reachable through `create`'s
+own defaulting any more (the "planned latest" case that used to trigger
+it now fails earlier, with a more specific message — see `--start`
+above); it's kept as a genuine safety net regardless, e.g. against
+manually edited challenge files or a future change to the defaulting
+rules, and was verified directly against a hand-crafted overlapping
+challenge file.
+
+**`list`** has no filtering/paging flags at all, unlike `books`/`blogs`
+list — deliberately: challenges are few and manually curated, so there's
+no "most recent N" or discovery-pagination concern driving a cap the way
+there is for books/blog posts. Sorted by `start` (chronological, the
+natural reading order for a list of time-windowed challenges) rather than
+alphabetically (`books`) or by recency (`blogs`). Columns: `id, title,
+start, end, status, blogs, badges` (`blogs`/`badges` are each entry's own
+list length, `id` and both counts right-aligned).
+
+**`get <challenge_id>` — the id is optional, per explicit direction.**
+Omitted, it defaults to `gr::next_ending_challenge` (`goodreads_challenges.sh`)
+— the existing challenge with the smallest `.end` that's still `>=` today,
+i.e. the next one to actually finish, covering both a currently *ongoing*
+challenge and a still-*planned* one uniformly (whichever ends soonest
+wins, regardless of which of those two states it's actually in — verified
+directly: a `planned` challenge ending sooner than an already-`ongoing`
+one is correctly preferred). If none qualify (every existing challenge
+has already ended), falls back to `gr::latest_challenge` — the one with
+the largest `.end` overall, i.e. the most recently ended one — same
+function `challenges create`'s own `--start` auto-defaulting already
+uses. If there are no challenges at all, neither function returns
+anything and this fails outright: `error: no challenges yet. Run
+'goodreads challenges create' to add one.` Both helpers return
+`"<id>\t<start>\t<end>"`; only the `<id>` field is actually used here
+(`IFS=$'\t' read -r id _ _`), the rest exists for `gr::default_challenge_start`'s
+own use of `gr::latest_challenge`. This defaulting runs *before*
+`gr::require_challenge_file`, so an explicitly-given id is still
+validated exactly as before — the new logic only ever fires when the
+argument is omitted entirely.
+
+**`get`**'s default pretty rendering follows the same "`{meta, ...}`
+object from one jq call, formatted in bash" shape `books get` uses:
+`meta` is `[title, "<start> to <end> (<status>)"]`; `blogs` and `badges`
+are each their own indented table (same `column -t -R 1` plus
+`sed 's/^/  /'` shape `books get`'s own `series` table uses) — `blogs`'
+columns are `blog_id, name (or "(unnamed)"), url` (the url built fresh as
+`"https://www.goodreads.com/blog/show/" + .blog_id`, same "no bare
+missing-field placeholder" stance as everywhere else in this project);
+`badges`' columns are `count, name (or "(unnamed)")`. Neither table is
+printed at all when its list is empty — same "nothing printed when
+there's nothing to show" rule `books get`'s own `series` table follows.
+`--json` behaves the same as `books get --json`/`blogs get --json`: `cat`s
+the on-disk file directly.
+
+**`edit`** requires at least one of `--title`/`--start`/`--end`/
+`--add-blog`/`--remove-blog`/`--add-badge`/`--remove-badge` (a bare
+`challenges edit <id>` with nothing to change is a plain usage error,
+checked explicitly) — folding badge-linked-blog and book-count-badge
+management into `edit` this way, rather than the separate `challenges
+blogs`/`challenges badges` nested command groups an earlier version of
+this design had, was per explicit direction: managing them is still just
+"changing a challenge," and a single `edit` call can now do several
+unrelated changes at once (rename it, add a blog, drop a badge) instead
+of needing one invocation per concern. Re-validates the *resulting*
+window before writing anything when `--start`/`--end` are involved —
+whichever of the existing/updated start and end actually apply after
+this edit — not just a changed pair in isolation: editing only `--end`
+still has to stay after the *existing*, unchanged `start`, and vice
+versa. `gr::update_challenge` itself does the actual `--title`/`--start`/
+`--end` field merge (see above); only invoked at all when at least one of
+those three was actually given, so a call that's *purely* about blogs/
+badges (e.g. `edit <id> --remove-badge 3`) never touches those fields.
+
+- **`--add-blog <blog_id>[:<name>]`** / **`--add-badge <count>[:<name>]`**
+  (both repeatable) use the exact same `<spec>[:<name>]` shape and
+  `%q`/`eval` round-trip `challenges create`'s own `--blog`/`--badge`
+  flags do (see there for why a plain word-split doesn't survive a name
+  containing a space) — parsed, and for `--add-badge` validated (count
+  must be a positive integer, same `^[1-9][0-9]*$` pattern used
+  throughout this project) *before* any write happens, same "a bad entry
+  can't leave the rest of this edit half-applied" principle `create`
+  follows. Each spec becomes its own `gr::add_challenge_blog`/
+  `gr::add_challenge_count_badge` call (an upsert — adding an id/count
+  already on the challenge just replaces its name in place, see above),
+  reported per item (`<id> -> blog <blog_id> added/updated ("<name>")`,
+  or without the parenthetical when no name was given).
+- **`--remove-blog <blog_id>`** / **`--remove-badge <count>`** (both
+  repeatable) — `--remove-badge`'s own values are validated as positive
+  integers up front too, for the same "don't half-apply this edit"
+  reason (a malformed `--remove-badge` fails the whole command before
+  anything — including any `--title`/`--add-blog`/etc. given in the same
+  call — is written, confirmed directly). Each removal reports its own
+  per-item outcome (`<id> -> blog <blog_id> removed` or `<id> -> blog
+  <blog_id> not on this challenge`, mirroring `gr::remove_challenge_blog`/
+  `gr::remove_challenge_count_badge`'s own return-1-if-absent shape) plus
+  its own summary line (`Removed N blog(s).`, `Removed N badge(s).`) —
+  same "best-effort across the list, report the tally" shape `blogs
+  remove`'s own multi-id loop uses; the whole command exits 1 if *any*
+  requested removal wasn't actually present, same as `blogs remove`.
+- Add and remove operations for the same kind (blogs or badges) can be
+  combined freely in one call (e.g. `edit <id> --add-blog 123 --remove-blog
+  456`) — adds are applied first, then removals, then the two kinds'
+  removal tallies print in blog-then-badge order; nothing about the
+  ordering is semantically load-bearing (an add and a remove can never
+  target the same key in one call in a way that would make order matter),
+  it's just the order the command happens to process things in.
+
+**`remove`** (renamed from `delete`, per explicit direction — same as
+`blogs`/`books remove` below) is the same shape `books`/`blogs remove`
+already use (`challenge_id...` or `--all`, mutually exclusive, an error
+if neither is given, per-id outcome plus a summary, exits 1 if anything
+requested wasn't found) — nothing challenge-specific to say about it
+beyond substituting `gr::challenge_dir`/`gr::challenge_file` for their
+book/blog equivalents. There's no counter state to roll back or leak —
+`gr::generate_challenge_id` checks the real files on disk (see above), so
+removing a challenge frees its id for reuse by a later `create` that
+happens to land on the same `<year>Q<quarter>`/`<year>-<counter>` id,
+rather than a freshly re-created challenge always getting a brand new one.
 
 ## Open design questions
 
@@ -1746,8 +2832,13 @@ revisit only if actually asked for.
 - Whether/when to auto-resolve+cache the *canonical* edition's own JSON
   when a requested book's `canonical_url` points elsewhere (deliberately
   not done automatically yet — see above).
-- Command surface for books, shelves, reading progress, and reading-challenge
-  scraping.
-- How challenge-goal book selection logic should work.
+- Command surface for shelves and reading progress (books, blogs, and the
+  challenge-metadata surface itself are all done — see their own sections
+  above).
+- How challenge-*goal* book selection logic should work — i.e. actually
+  picking specific books toward a badge, once `challenges` has recorded
+  which blog posts/book-counts a challenge cares about. `challenges`
+  itself only manages that metadata; it doesn't select or recommend any
+  books yet.
 - What settings actually belong in the config file, and whether/how a
   `config` command group should expose them.

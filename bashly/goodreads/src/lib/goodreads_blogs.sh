@@ -4,33 +4,23 @@ readonly GR_NEWS_DISCOVER_MAX_PAGES=50
 # Minimum book count for gr::refresh_blog's challenge_potential check.
 readonly GR_CHALLENGE_LISTING_MIN_BOOKS=40
 
-# Boundary above which challenge_potential alone (no manual override) counts
-# as a challenge listing. Moot today — challenge_potential is only ever 0 or
-# 1 — but named for when it becomes a real fractional score.
+# Moot today (challenge_potential is only ever 0 or 1) but named for when it
+# becomes a real fractional score.
 readonly GR_CHALLENGE_POTENTIAL_THRESHOLD=0.5
 
 # Single source of truth for "is this post effectively a challenge listing"
-# (gr_challenge_status: manual .challenge override if present, else
-# challenge_potential past the threshold) and the display marker
-# (gr_challenge_marker: °/*/?/space). Commands that need either prepend this
-# constant to their own jq program (`"$GR_CHALLENGE_JQ_DEFS"'...'` — two
-# adjacent bash tokens, concatenated into one jq argument) instead of
-# duplicating the logic.
+# and its display marker (°/*/?/space). Prepend to a jq program via
+# `"$GR_CHALLENGE_JQ_DEFS"'...'` instead of duplicating the logic.
 # shellcheck disable=SC2034 # used cross-file by blogs_list_command.sh/blogs_get_command.sh's jq programs
 readonly GR_CHALLENGE_JQ_DEFS="def gr_challenge_status: if .challenge != null then .challenge else (.challenge_potential >= ${GR_CHALLENGE_POTENTIAL_THRESHOLD}) end; def gr_challenge_marker: if .challenge == false then \"°\" elif .challenge == true then \"*\" elif gr_challenge_status then \"?\" else \" \" end;"
 
-# xidel >=0.9.9 disabled the JSONiq bare-object-literal syntax ({"a": 1}) by
-# default under --extract-kind=xquery3, requiring an explicit
-# --json-mode=jsoniq to allow it — confirmed directly: gr::refresh_blog's
-# book_sections XQuery below (which relies on that syntax) silently got back
-# an "_error" JSON blob instead of real data on 0.9.9 without the flag, which
-# then broke jq --argjson downstream. xidel 0.9.8 has no --json-mode option
-# at all (errors "Unknown option" — but exits 0 and prints its usage text to
-# stdout, so this would silently reappear as the same downstream jq failure,
-# just for a different root cause) and doesn't need one — the same bare-object
-# syntax already works there with no flag. Detected once here via `xidel
-# --help` rather than a hardcoded version check, so this keeps working across
-# whichever xidel version is actually installed.
+# xidel >=0.9.9 disabled JSONiq bare-object literals ({"a": 1}) under
+# --extract-kind=xquery3 by default, needing --json-mode=jsoniq to allow them
+# (confirmed: without it, gr::refresh_blog's book_sections query below
+# silently returns an "_error" blob, breaking jq --argjson downstream). 0.9.8
+# has no --json-mode flag (errors "Unknown option" but exits 0, same
+# downstream failure for a different reason) and doesn't need one. Detected
+# via `xidel --help` rather than a hardcoded version check.
 if xidel --help 2>/dev/null | grep -q -- '--json-mode'; then
   readonly GR_XIDEL_JSONIQ_FLAG="--json-mode=jsoniq"
 else
@@ -60,10 +50,9 @@ gr::news_url() {
   fi
 }
 
-# The id of the newest post seen on page 1 as of gr::discover_blog_ids's last
-# successful run — its short-circuit criterion for later scans. Small
-# plain-text state file in the data dir root, same convention as
-# gr::throttle's .last_request_at. Only gr::discover_blog_ids ever writes it.
+# Newest post id seen on page 1 as of gr::discover_blog_ids's last successful
+# run (its short-circuit criterion for later scans). Plain-text state file,
+# same convention as gr::throttle's .last_request_at.
 gr::blogs_discovery_marker_file() {
   echo "$(gr::data_dir)/.blogs_discovery_marker"
 }
@@ -81,23 +70,19 @@ gr::blogs_discovery_marker_set() {
 }
 
 # Blog post ids currently on the /news listing. $1 is "" (short-circuited
-# scan) or "--full" (genuine complete walk, what --all needs).
-# content_type=articles excludes /interviews/show/ pages (a separate,
-# unscraped content type).
+# scan) or "--full" (complete walk, what --all needs).
+# content_type=articles excludes /interviews/show/ (a separate content type).
 #
-# Terminates when either: (1) the discovery marker turns up on a page — only
-# ids before it in document order are new (--full skips this check
-# entirely), or (2) a page contributes no new ids at all (the fallback for
-# --full, a marker-less first run, or a since-deleted marker post).
-# GR_NEWS_DISCOVER_MAX_PAGES is a safety net above the real page count
-# (~17-18).
+# Terminates when either the discovery marker turns up on a page (only ids
+# before it in document order are new; --full skips this) or a page
+# contributes no new ids at all (the fallback for --full, a marker-less first
+# run, or a since-deleted marker post). GR_NEWS_DISCOVER_MAX_PAGES is a
+# safety net above the real page count (~17-18).
 #
-# A short-circuited result is NOT guaranteed complete, and does NOT filter
-# out already-cached ids (a marker-less run returns the whole listing) —
-# diffing against the real cache is the caller's job (see
-# blogs_update_command.sh). The marker itself is only updated once this
-# function is about to return successfully, so a failed run leaves it
-# untouched.
+# A short-circuited result isn't guaranteed complete and doesn't filter out
+# already-cached ids — diffing against the cache is the caller's job (see
+# blogs_update_command.sh). The marker is only updated on success, so a
+# failed run leaves it untouched.
 gr::discover_blog_ids() {
   local full="${1:-}"
   local marker=""
@@ -122,9 +107,8 @@ gr::discover_blog_ids() {
     fi
 
     # Scoped to editorialCard__image--fullHeight (the real listing card's
-    # own cover image) rather than any /blog/show/ link on the page — a
-    # page-wide match also picks up an unrelated promo banner link that
-    # sits before the real listing, which broke newest-id detection.
+    # cover image), not any /blog/show/ link — a page-wide match also picks
+    # up an unrelated promo banner link, breaking newest-id detection.
     local raw_ids ordered_ids
     raw_ids="$(grep -E '/blog/show/[0-9]+.*editorialCard__image--fullHeight' "$html" | grep -oE '/blog/show/[0-9]+' | grep -oE '[0-9]+')"
     rm -f "$html"
@@ -198,19 +182,18 @@ gr::mark_blog_removed() {
   mv "$tmp_blog" "$blog_file"
 }
 
-# Fetches and caches one blog post. Two successful outcomes: the post still
-# exists (fields extracted, cache written), or it's permanently gone (a real
-# 404 — recorded via gr::mark_blog_removed, distinct from a transient
-# failure via gr::http_status). TTL/force-refresh is gr::blog_json's concern,
-# not this function's — it always fetches unconditionally.
+# Fetches and caches one blog post. Two successful outcomes: still exists
+# (fields extracted, cache written) or permanently gone (real 404, recorded
+# via gr::mark_blog_removed). TTL/force-refresh is gr::blog_json's concern —
+# this always fetches unconditionally.
 gr::refresh_blog() {
   local id="$1"
   mkdir -p "$(gr::blog_dir)"
 
   # .challenge is a manual override (see `blogs challenge`) that this
-  # function never sets, only preserves — read before the cache file gets
-  # rebuilt from scratch below. "null" (not unset) when there's nothing to
-  # preserve; with_entries(select(.value != null)) drops it at the end.
+  # function only preserves, never sets — read before the cache gets
+  # rebuilt below. "null" when there's nothing to preserve;
+  # with_entries(select(.value != null)) drops it at the end.
   local existing_challenge="null"
   local existing_blog_file
   existing_blog_file="$(gr::blog_file "$id")"
@@ -232,6 +215,7 @@ gr::refresh_blog() {
       gr::mark_blog_removed "$id"
       return 0
     fi
+    gr::term_clear_line
     echo "error: could not fetch blog post $id from goodreads.com (status ${status:-unknown})" >&2
     return 1
   fi
@@ -239,6 +223,7 @@ gr::refresh_blog() {
   local canonical_url
   canonical_url="$(xidel -s "$html" -e '(//link[@rel="canonical"])[1]/@href' 2>/dev/null)" || true
   if [[ -z "$canonical_url" ]]; then
+    gr::term_clear_line
     echo "error: no canonical link found for blog post $id — page may not be a valid blog post page" >&2
     return 1
   fi
@@ -247,6 +232,7 @@ gr::refresh_blog() {
   local canonical_id
   canonical_id="$(sed -E 's#.*/blog/show/([0-9]+).*#\1#' <<< "$canonical_url")"
   if [[ "$canonical_id" != "$id" ]]; then
+    gr::term_clear_line
     echo "error: fetched page's canonical link is for blog post '$canonical_id', not the requested $id — refusing to cache under the wrong id" >&2
     return 1
   fi
@@ -255,13 +241,13 @@ gr::refresh_blog() {
   title="$(xidel -s "$html" -e '(//h1[@class="gr-h1 gr-h1--serif"])[1]' 2>/dev/null)"
   author_and_date="$(xidel -s "$html" -e '(//span[contains(@class,"secondaryTextBottomPadding")])[1]' 2>/dev/null)"
   like_text="$(xidel -s "$html" -e '(//a[contains(@href,"/rating/voters/")])[1]' 2>/dev/null)"
-  # Body HTML: internal-only, never persisted — used only for the validity
-  # check below and the challenge_potential grid-widget grep (needs real
-  # HTML, not text extraction). Written to a file, not a variable — can run
-  # well past 500KB.
+  # Internal only, never persisted — used for the validity check below and
+  # the challenge_potential grid-widget grep (needs real HTML, not text).
+  # Written to a file, not a variable — can run well past 500KB.
   xidel -s "$html" -e '(//div[@class="newsShowColumn"])[1]' --output-format=html 2>/dev/null > "$body_html_file"
 
   if [[ -z "$title" || ! -s "$body_html_file" ]]; then
+    gr::term_clear_line
     echo "error: could not find blog post content for $id — page structure may have changed" >&2
     return 1
   fi
@@ -278,17 +264,14 @@ gr::refresh_blog() {
   local like_count
   like_count="$(grep -oE '^[0-9]+' <<< "$like_text")" || true
 
-  # Every book in the post, grouped into its own <h1 style="text-align:
-  # center"> sections when it has any (most posts get one null-section
-  # group). Title comes from the cover-grid <img alt> specifically
-  # (contains(@class,"AcrossImage")) — not just the first <img>, since a
-  # book's cover is preceded by an often-empty amazonBadge sibling that can
-  # itself contain an <img> (caused real "Kindle Unlimited"-titled books
-  # once that badge was present). A book mentioned only inline (no cover,
-  # no title) is dropped entirely — only cover-having books are wanted.
-  # xquery3 is needed for `let` and for `preceding::` (document-order
-  # nearest heading, since section headings and books aren't in an
-  # ancestor/descendant relationship).
+  # Every book, grouped into its <h1 style="text-align:center"> section (one
+  # null-section group when there isn't any). Title comes from the
+  # cover-grid <img alt> (contains(@class,"AcrossImage")), not just the
+  # first <img> — a book's cover is preceded by an often-empty amazonBadge
+  # sibling that can itself contain an <img>, once causing bogus "Kindle
+  # Unlimited"-titled books. Inline-only mentions (no cover) are dropped.
+  # xquery3 needed for `let` and `preceding::` (nearest heading in document
+  # order — headings and books aren't in an ancestor/descendant relation).
   local book_sections
   # shellcheck disable=SC2016 # $a/$section below are xidel's own XQuery variables, not bash expansions — single quotes are deliberate
   # shellcheck disable=SC2086 # GR_XIDEL_JSONIQ_FLAG is a single flag or empty — word-splitting is exactly what's wanted so an empty value contributes no argument
@@ -330,14 +313,12 @@ gr::refresh_blog() {
   local total_books
   total_books="$(jq '[.[].books | length] | add // 0' <<< "$book_sections")"
 
-  # challenge_potential: 1 if the post uses Goodreads' cover-grid embed
-  # (fourAcrossImage/threeAcrossImage, at least one *exact*-class cover —
-  # excludes all-audiobook posts, which use the --audiobook modifier) and
-  # has at least GR_CHALLENGE_LISTING_MIN_BOOKS books total; else 0. Not
-  # proof of any real challenge tie-in — just a "book-listing-shaped
-  # candidate" flag for human review (see CLAUDE.md for how these two
-  # conditions were arrived at). Plain 0/1 for now, per explicit direction;
-  # room for a real fractional score later.
+  # 1 if the post uses Goodreads' cover-grid embed (fourAcrossImage/
+  # threeAcrossImage exact class — excludes all-audiobook posts, which use
+  # the --audiobook modifier) and has >= GR_CHALLENGE_LISTING_MIN_BOOKS
+  # books; else 0. Not proof of a real challenge tie-in, just a
+  # "book-listing-shaped candidate" flag for human review (see CLAUDE.md).
+  # Plain 0/1 for now; room for a real fractional score later.
   local challenge_potential
   if [[ "$total_books" -ge "$GR_CHALLENGE_LISTING_MIN_BOOKS" ]] \
     && grep -qE 'class="fourAcrossImage"|class="threeAcrossImage"' "$body_html_file"; then
@@ -369,12 +350,24 @@ gr::refresh_blog() {
     } | with_entries(select(.value != null))' > "$tmp_blog"
 
   if [[ ! -s "$tmp_blog" ]]; then
+    gr::term_clear_line
     echo "error: could not build JSON for blog post $id" >&2
     return 1
   fi
 
   mv "$tmp_blog" "$(gr::blog_file "$id")"
   gr::blog_file "$id"
+}
+
+# True (0) if blog post $1 is cached at all -- there's no actual TTL to
+# check (see below), so "cached" and "fresh" are simply the same
+# question here. Exists purely for symmetry with gr::book_fresh, so
+# blogs_fetch_command.sh's "ttl" force policy can ask the same shape of
+# question `books fetch --all` does, per explicit direction to keep the
+# two commands consistent even though the answer here is always
+# trivially "yes, if cached at all".
+gr::blog_fresh() {
+  [[ -f "$(gr::blog_file "$1")" ]]
 }
 
 # Cached blog post JSON, backed by blogs/<id>.json. No TTL — blog content

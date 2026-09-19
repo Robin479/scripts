@@ -2,9 +2,12 @@
 # shellcheck disable=SC2154 # args is bashly's global associative array
 id="${args[book_id]}"
 json="${args[--json]:-}"
+update_flag="${args[--update]:-}"
 
-if ! gr::book_json "$id" > /dev/null; then
-  exit 1
+if [[ -n "$update_flag" ]]; then
+  gr::book_json "$id" --force > /dev/null || exit 1
+else
+  gr::book_json "$id" > /dev/null || exit 1
 fi
 
 file="$(gr::book_file "$id")"

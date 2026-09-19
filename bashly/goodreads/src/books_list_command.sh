@@ -15,7 +15,7 @@ fi
 book_dir="$(gr::book_dir)"
 
 if [[ ! -d "$book_dir" ]] || [[ -z "$(ls -A "$book_dir" 2>/dev/null)" ]]; then
-  echo "No cached books yet. Run 'goodreads books update <book_id>' to fetch one."
+  echo "No cached books yet. Run 'goodreads books fetch <book_id>' to fetch one."
   exit 0
 fi
 
@@ -47,16 +47,10 @@ result="$(cat "${files[@]}" | jq -s --argjson limit "${limit:-0}" '
   # once the untruncated value would exceed it.
   def trunc(n): if (length > n) then (.[0:(n - 1)] + "…") else . end;
 
-  # Many long titles are actually "Title: tag-line" — not reliably
-  # distinguishable from a title that legitimately contains a colon, so
-  # this is a heuristic, not a real parse: only when the whole title
-  # exceeds 30 characters (short titles are never a tag-line pair) AND
-  # the part before the first colon is shorter than the part after it
-  # (a real subtitle/tag-line is normally the longer half) does the colon
-  # onward get dropped. Only the *first* colon is considered — deliberate,
-  # since a tag-line normally comes right after the title itself, not
-  # after some later, incidental colon. Full title (untruncated) always
-  # still available via `books get`.
+  # Heuristic, not a real parse: "Title: tag-line" gets the tag-line
+  # dropped only when the whole title exceeds 30 chars AND the part before
+  # the (first) colon is shorter than the part after (a real tag-line is
+  # normally the longer half). Full title always available via `books get`.
   def strip_tagline:
     . as $title
     | ($title | index(":")) as $i
@@ -67,16 +61,9 @@ result="$(cat "${files[@]}" | jq -s --argjson limit "${limit:-0}" '
         | if ($before | length) < ($after | length) then $before else $title end
       end;
 
-  # Truncates a list of author names, joined by ", ", to at most n
-  # characters — but cuts at a name boundary (right after the preceding
-  # comma) rather than mid-name whenever possible, per explicit direction.
-  # Only falls back to a mid-name cut (plain trunc(n) on the joined
-  # string) when even the very first name alone already exceeds n, since
-  # there is then no comma boundary within the limit to cut at at all.
-  # Otherwise, finds the longest prefix of names whose own joined length
-  # (before the trailing ", …" is appended) still fits within n — that
-  # prefix is guaranteed non-empty since the first-name-alone case was
-  # already ruled out above.
+  # Truncates joined author names to at most n characters, cutting at a
+  # name boundary rather than mid-name whenever possible. Falls back to a
+  # mid-name cut only when the first name alone already exceeds n.
   def trunc_authors(n):
     . as $names
     | (join(", ")) as $full

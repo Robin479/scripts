@@ -31,6 +31,8 @@ goodreads_usage() {
   printf "  %s   Manage goodreads.com login sessions\n" "auth       "
   printf "  %s   Manage the local cache of scraped goodreads.com blog posts\n" "blogs      "
   printf "  %s   Manage the local cache of scraped goodreads.com book metadata\n" "books      "
+  printf "  %s   Manually manage reading challenges (title, time window, badge-linked blog posts, book-count badges)\n" "challenges "
+  printf "  %s   View or change goodreads' own config.ini settings (curl_bin, throttling, cache TTLs, ...)\n" "config     "
   echo
 
   # :command.long_usage
@@ -97,14 +99,14 @@ goodreads_auth_usage() {
   printf "goodreads auth - Manage goodreads.com login sessions\n\n"
 
   printf "%s\n" "Usage:"
-  printf "  goodreads auth COMMAND\n"
+  printf "  goodreads auth [COMMAND]\n"
   printf "  goodreads auth [COMMAND] --help | -h\n"
   echo
   # :command.usage_commands
   printf "%s\n" "Commands:"
   printf "  %s   Start a session by importing cookies exported from a browser login\n" "import"
   printf "  %s   Show an account's session state (defaults to the current account)\n" "status"
-  printf "  %s   List all known accounts\n" "list  "
+  printf "  %s   List all known accounts (default)\n" "list  "
   printf "  %s   Make a different known account the current one\n" "switch"
   printf "  %s   Invalidate a session's cookies (defaults to the current account)\n" "logout"
   echo
@@ -189,7 +191,7 @@ goodreads_auth_list_usage() {
   echo
 
   printf "%s\n" "Usage:"
-  printf "  goodreads auth list\n"
+  printf "  goodreads auth [list]\n"
   printf "  goodreads auth list --help | -h\n"
   echo
 
@@ -271,16 +273,16 @@ goodreads_blogs_usage() {
   printf "goodreads blogs - Manage the local cache of scraped goodreads.com blog posts\n\n"
 
   printf "%s\n" "Usage:"
-  printf "  goodreads blogs COMMAND\n"
+  printf "  goodreads blogs [COMMAND]\n"
   printf "  goodreads blogs [COMMAND] --help | -h\n"
   echo
   # :command.usage_commands
   printf "%s\n" "Commands:"
-  printf "  %s   Fetch blog posts, discovering new ones, unless specific IDs are give.\n" "update   "
-  printf "  %s   List cached blog posts, most recent first (last 15 by default)\n" "list     "
+  printf "  %s   Fetch blog posts, discovering new ones, unless specific IDs are given.\n" "fetch    "
+  printf "  %s   List cached blog posts, most recent first (last 15 by default) (default)\n" "list     "
   printf "  %s   Print one blog post's books, prettily (fetches it first if not cached yet)\n" "get      "
   printf "  %s   Manually flag (or unflag) blog posts as challenge listings\n" "challenge"
-  printf "  %s   Remove one or more blog posts from the local cache\n" "delete   "
+  printf "  %s   Remove one or more blog posts from the local cache\n" "remove   "
   echo
 
   # :command.long_usage
@@ -297,12 +299,12 @@ goodreads_blogs_usage() {
 }
 
 # :command.usage
-goodreads_blogs_update_usage() {
-  printf "goodreads blogs update - Fetch blog posts, discovering new ones, unless specific IDs are give.\n\n"
+goodreads_blogs_fetch_usage() {
+  printf "goodreads blogs fetch - Fetch blog posts, discovering new ones, unless specific IDs are given.\n\n"
 
   printf "%s\n" "Usage:"
-  printf "  goodreads blogs update [BLOG_ID...] [OPTIONS]\n"
-  printf "  goodreads blogs update --help | -h\n"
+  printf "  goodreads blogs fetch [BLOG_ID...] [OPTIONS]\n"
+  printf "  goodreads blogs fetch --help | -h\n"
   echo
 
   # :command.long_usage
@@ -312,8 +314,18 @@ goodreads_blogs_update_usage() {
 
     # :command.usage_flags
     # :flag.usage
-    printf "  %s\n" "--all, -a"
-    printf "    Discover new blog posts and refresh all existing ones.\n"
+    printf "  %s\n" "--all, -A"
+    printf "    Discover new blog posts, and check every already-cached one too (its\n    infinite cache TTL means this only ever reports it as fresh, unless --update\n    is also given)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--update, -U"
+    printf "    Force-refresh explicitly given ids that are already cached, or, combined\n    with --all, every already-cached post -- the only way to detect one's since\n    been removed remotely\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--batch, -B"
+    printf "    Suppress the self-updating status line (plain output, suitable for\n    logs/pipes)\n"
     echo
 
     # :command.usage_fixed_flags
@@ -326,7 +338,7 @@ goodreads_blogs_update_usage() {
 
     # :argument.usage
     printf "  %s\n" "BLOG_ID..."
-    printf "    Fetch the specified blog posts.\n"
+    printf "    Fetch these specific blog posts (already-cached ones are skipped unless\n    --update is given)\n"
     echo
 
   fi
@@ -339,7 +351,7 @@ goodreads_blogs_list_usage() {
   echo
 
   printf "%s\n" "Usage:"
-  printf "  goodreads blogs list [BLOG_ID...] [OPTIONS]\n"
+  printf "  goodreads blogs [list] [BLOG_ID...] [OPTIONS]\n"
   printf "  goodreads blogs list --help | -h\n"
   echo
 
@@ -410,6 +422,11 @@ goodreads_blogs_get_usage() {
     printf "    Print the raw cached JSON instead of a pretty book listing\n"
     echo
 
+    # :flag.usage
+    printf "  %s\n" "--update, -U"
+    printf "    Force updating this post even if already cached\n"
+    echo
+
     # :command.usage_fixed_flags
     printf "  %s\n" "--help, -h"
     printf "    Show this help\n"
@@ -473,14 +490,14 @@ goodreads_blogs_challenge_usage() {
 }
 
 # :command.usage
-goodreads_blogs_delete_usage() {
-  printf "goodreads blogs delete - Remove one or more blog posts from the local cache\n\n"
+goodreads_blogs_remove_usage() {
+  printf "goodreads blogs remove - Remove one or more blog posts from the local cache\n\n"
   printf "Alias: rm\n"
   echo
 
   printf "%s\n" "Usage:"
-  printf "  goodreads blogs delete [BLOG_ID...] [OPTIONS]\n"
-  printf "  goodreads blogs delete --help | -h\n"
+  printf "  goodreads blogs remove [BLOG_ID...] [OPTIONS]\n"
+  printf "  goodreads blogs remove --help | -h\n"
   echo
 
   # :command.long_usage
@@ -515,15 +532,15 @@ goodreads_books_usage() {
   printf "goodreads books - Manage the local cache of scraped goodreads.com book metadata\n\n"
 
   printf "%s\n" "Usage:"
-  printf "  goodreads books COMMAND\n"
+  printf "  goodreads books [COMMAND]\n"
   printf "  goodreads books [COMMAND] --help | -h\n"
   echo
   # :command.usage_commands
   printf "%s\n" "Commands:"
-  printf "  %s   Fetch new books by id, or force-refresh already-cached ones\n" "update"
-  printf "  %s   List cached books, sorted by title\n" "list  "
+  printf "  %s   Fetch new books by id, or update already-cached ones\n" "fetch "
+  printf "  %s   List cached books, sorted by title (default)\n" "list  "
   printf "  %s   Print one book's details (fetches or refreshes it first if needed)\n" "get   "
-  printf "  %s   Remove one or more books from the local cache\n" "delete"
+  printf "  %s   Remove one or more books from the local cache\n" "remove"
   echo
 
   # :command.long_usage
@@ -540,12 +557,12 @@ goodreads_books_usage() {
 }
 
 # :command.usage
-goodreads_books_update_usage() {
-  printf "goodreads books update - Fetch new books by id, or force-refresh already-cached ones\n\n"
+goodreads_books_fetch_usage() {
+  printf "goodreads books fetch - Fetch new books by id, or update already-cached ones\n\n"
 
   printf "%s\n" "Usage:"
-  printf "  goodreads books update [BOOK_ID...] [OPTIONS]\n"
-  printf "  goodreads books update --help | -h\n"
+  printf "  goodreads books fetch [BOOK_ID...] [OPTIONS]\n"
+  printf "  goodreads books fetch --help | -h\n"
   echo
 
   # :command.long_usage
@@ -555,13 +572,28 @@ goodreads_books_update_usage() {
 
     # :command.usage_flags
     # :flag.usage
-    printf "  %s\n" "--all, -a"
-    printf "    Force-refresh every already-cached book\n"
+    printf "  %s\n" "--all, -A"
+    printf "    Check every already-cached book, refreshing only stale ones (per their cache\n    TTL) unless --update is given\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--update, -U"
+    printf "    Force-refresh every explicitly given id (directly, via --blog, or via\n    --challenge), or, combined with --all, every already-cached book --\n    bypassing the cache TTL entirely\n"
     echo
 
     # :flag.usage
     printf "  %s\n" "--blog, -b BLOG_ID (repeatable)"
     printf "    Fetch every book referenced by this blog post (see 'goodreads blogs list');\n    repeatable\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--challenge CHALLENGE_ID"
+    printf "    Fetch every book referenced by any blog post linked to this challenge (see\n    'goodreads challenges get'); a book in multiple linked posts is only fetched\n    once\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--batch, -B"
+    printf "    Suppress the self-updating status line (plain output, suitable for\n    logs/pipes)\n"
     echo
 
     # :command.usage_fixed_flags
@@ -574,7 +606,7 @@ goodreads_books_update_usage() {
 
     # :argument.usage
     printf "  %s\n" "BOOK_ID..."
-    printf "    Fetch or force-refresh these specific book ids\n"
+    printf "    Fetch these specific book ids (already-cached ones are skipped unless\n    --update is given)\n"
     echo
 
   fi
@@ -587,7 +619,7 @@ goodreads_books_list_usage() {
   echo
 
   printf "%s\n" "Usage:"
-  printf "  goodreads books list [BOOK_ID...] [OPTIONS]\n"
+  printf "  goodreads books [list] [BOOK_ID...] [OPTIONS]\n"
   printf "  goodreads books list --help | -h\n"
   echo
 
@@ -638,6 +670,11 @@ goodreads_books_get_usage() {
     printf "    Print the raw cached JSON instead of a pretty summary\n"
     echo
 
+    # :flag.usage
+    printf "  %s\n" "--update, -U"
+    printf "    Force updating this book even if already cached and still within its cache\n    TTL\n"
+    echo
+
     # :command.usage_fixed_flags
     printf "  %s\n" "--help, -h"
     printf "    Show this help\n"
@@ -655,14 +692,14 @@ goodreads_books_get_usage() {
 }
 
 # :command.usage
-goodreads_books_delete_usage() {
-  printf "goodreads books delete - Remove one or more books from the local cache\n\n"
+goodreads_books_remove_usage() {
+  printf "goodreads books remove - Remove one or more books from the local cache\n\n"
   printf "Alias: rm\n"
   echo
 
   printf "%s\n" "Usage:"
-  printf "  goodreads books delete [BOOK_ID...] [OPTIONS]\n"
-  printf "  goodreads books delete --help | -h\n"
+  printf "  goodreads books remove [BOOK_ID...] [OPTIONS]\n"
+  printf "  goodreads books remove --help | -h\n"
   echo
 
   # :command.long_usage
@@ -687,6 +724,434 @@ goodreads_books_delete_usage() {
     # :argument.usage
     printf "  %s\n" "BOOK_ID..."
     printf "    Book id(s) to remove\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_challenges_usage() {
+  printf "goodreads challenges - Manually manage reading challenges (title, time window, badge-linked blog posts, book-count badges)\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads challenges [COMMAND]\n"
+  printf "  goodreads challenges [COMMAND] --help | -h\n"
+  echo
+  # :command.usage_commands
+  printf "%s\n" "Commands:"
+  printf "  %s   Create a new challenge\n" "create"
+  printf "  %s   List all challenges, sorted by start date (default)\n" "list  "
+  printf "  %s   Show one challenge's details\n" "get   "
+  printf "  %s   Change a challenge's title, time window, badge-linked blog posts, and/or book-count badges\n" "edit  "
+  printf "  %s   Remove one or more challenges\n" "remove"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_challenges_create_usage() {
+  printf "goodreads challenges create - Create a new challenge\n\n"
+  printf "Alias: new\n"
+  echo
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads challenges create [OPTIONS]\n"
+  printf "  goodreads challenges create --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--id ID"
+    printf "    Manually specify the challenge id instead of auto-generating one (fails if\n    already taken)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--title TITLE"
+    printf "    Challenge title (default: auto-named from the season, if the window\n    qualifies -- else \"Unnamed Challenge\")\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--start DATE"
+    printf "    Start date, any format 'date -d' understands (default: right after the\n    latest challenge if that's still recent, else the start of the current\n    quarter)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--end DATE"
+    printf "    End date, any format 'date -d' understands (default: the next quarter-end at\n    least 6 weeks after --start)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--badges COUNTS"
+    printf "    Comma-separated book-count badges to add, each '<count>' or\n    '<count>:<title>' (default: 2:Page-Turner,3:Speed Reader,5:Book Boss; pass\n    an empty string for none, or see --no-badges)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--badge COUNT:TITLE (repeatable)"
+    printf "    Add one book-count badge, as '<count>' or '<count>:<title>'; repeatable,\n    alternative to --badges\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--no-badges"
+    printf "    Add no book-count badges at all (overrides the default; superfluous, with a\n    warning, alongside --badges/--badge)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--blogs BLOG_IDS"
+    printf "    Comma-separated blog posts to link, each '<id>' or '<id>:<title>' (default\n    title: the post's own; default list: cached posts published from 1 week\n    before --start to 2 weeks before --end with a challenge likeliness >= 0.7;\n    pass an empty string for none). Every given post is fetched (cached or\n    remotely) to confirm it exists\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--blog ID:TITLE (repeatable)"
+    printf "    Add one blog post, as '<id>' or '<id>:<title>'; repeatable, alternative to\n    --blogs\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--no-blogs"
+    printf "    Link no blog posts at all (overrides the default; superfluous, with a\n    warning, alongside --blogs/--blog)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--no-goals"
+    printf "    Shorthand for --no-badges --no-blogs together\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_challenges_list_usage() {
+  printf "goodreads challenges list - List all challenges, sorted by start date\n\n"
+  printf "Alias: ls\n"
+  echo
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads challenges [list]\n"
+  printf "  goodreads challenges list --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_challenges_get_usage() {
+  printf "goodreads challenges get - Show one challenge's details\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads challenges get [CHALLENGE_ID] [OPTIONS]\n"
+  printf "  goodreads challenges get --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--json, -J"
+    printf "    Print the raw JSON instead of a pretty summary\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "CHALLENGE_ID"
+    printf "    Challenge id (default: the next one to end, ongoing or planned; else the\n    most recently ended one; error if there are no challenges at all)\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_challenges_edit_usage() {
+  printf "goodreads challenges edit - Change a challenge's title, time window, badge-linked blog posts, and/or book-count badges\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads challenges edit CHALLENGE_ID [OPTIONS]\n"
+  printf "  goodreads challenges edit --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--title TITLE"
+    printf "    New title\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--start DATE"
+    printf "    New start date\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--end DATE"
+    printf "    New end date\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--add-blog BLOG_ID:NAME (repeatable)"
+    printf "    Add (or rename) a badge-linked blog post, as '<blog_id>' or\n    '<blog_id>:<name>'; repeatable\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--remove-blog BLOG_ID (repeatable)"
+    printf "    Remove a badge-linked blog post; repeatable\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--add-badge COUNT:NAME (repeatable)"
+    printf "    Add (or rename) a book-count badge, as '<count>' or '<count>:<name>';\n    repeatable\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--remove-badge COUNT (repeatable)"
+    printf "    Remove a book-count badge; repeatable\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "CHALLENGE_ID"
+    printf "    Challenge id\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_challenges_remove_usage() {
+  printf "goodreads challenges remove - Remove one or more challenges\n\n"
+  printf "Alias: rm\n"
+  echo
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads challenges remove [CHALLENGE_ID...] [OPTIONS]\n"
+  printf "  goodreads challenges remove --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--all, -a"
+    printf "    Remove every challenge\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "CHALLENGE_ID..."
+    printf "    Challenge id(s) to remove\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_config_usage() {
+  printf "goodreads config - View or change goodreads' own config.ini settings (curl_bin, throttling, cache TTLs, ...)\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads config [COMMAND]\n"
+  printf "  goodreads config [COMMAND] --help | -h\n"
+  echo
+  # :command.usage_commands
+  printf "%s\n" "Commands:"
+  printf "  %s   List every setting goodreads understands, with its current value (or default) (default)\n" "list "
+  printf "  %s   Print one setting's effective value (falls back to its default silently if unset)\n" "get  "
+  printf "  %s   Set a setting's value\n" "set  "
+  printf "  %s   Unset one or more settings, reverting them to their default\n" "unset"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_config_list_usage() {
+  printf "goodreads config list - List every setting goodreads understands, with its current value (or default)\n\n"
+  printf "Alias: ls\n"
+  echo
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads config [list]\n"
+  printf "  goodreads config list --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_config_get_usage() {
+  printf "goodreads config get - Print one setting's effective value (falls back to its default silently if unset)\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads config get KEY\n"
+  printf "  goodreads config get --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "KEY"
+    printf "    Setting name (see 'goodreads config list')\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_config_set_usage() {
+  printf "goodreads config set - Set a setting's value\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads config set KEY VALUE\n"
+  printf "  goodreads config set --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "KEY"
+    printf "    Setting name (see 'goodreads config list')\n"
+    echo
+
+    # :argument.usage
+    printf "  %s\n" "VALUE"
+    printf "    New value\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_config_unset_usage() {
+  printf "goodreads config unset - Unset one or more settings, reverting them to their default\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads config unset [KEY...] [OPTIONS]\n"
+  printf "  goodreads config unset --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--all, -a"
+    printf "    Unset every currently-set setting\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "KEY..."
+    printf "    Setting name(s) to unset\n"
     echo
 
   fi
@@ -832,12 +1297,9 @@ gr::config_file() {
   echo "$(gr::data_dir)/config.ini"
 }
 
-# Thin wrappers around bashly's own config_get/config_set (from `bashly add
-# config`, src/lib/config.sh + src/lib/ini.sh) that point CONFIG_FILE at our
-# resolved data directory first. This has to happen per-call, not once via a
-# hook: bashly's initialize() hook runs before argument parsing, so
-# --data-path isn't available yet at that point — gr::data_dir only works
-# once a command function is actually running.
+# Wrap bashly's own config_get/config_set/etc. (from `bashly add config`)
+# to point CONFIG_FILE at our resolved data dir first. Per-call, not via a
+# hook: initialize() runs before --data-path is parsed.
 gr::config_get() {
   # shellcheck disable=SC2034 # CONFIG_FILE is config.sh's global, used there
   CONFIG_FILE="$(gr::config_file)"
@@ -848,6 +1310,124 @@ gr::config_set() {
   # shellcheck disable=SC2034 # CONFIG_FILE is config.sh's global, used there
   CONFIG_FILE="$(gr::config_file)"
   config_set "$@"
+}
+
+gr::config_del() {
+  # shellcheck disable=SC2034 # CONFIG_FILE is config.sh's global, used there
+  CONFIG_FILE="$(gr::config_file)"
+  config_del "$@"
+}
+
+gr::config_keys() {
+  # shellcheck disable=SC2034 # CONFIG_FILE is config.sh's global, used there
+  CONFIG_FILE="$(gr::config_file)"
+  config_keys "$@"
+}
+
+# Whether a `fetch` command's live status line should be suppressed: an
+# explicit --batch, or stdout not being a terminal (a \r-based live line
+# would corrupt a redirected/piped log).
+#
+# Communicates via exit status, not stdout -- **must** be called as a
+# plain statement (`if gr::fetch_quiet "$x"; then quiet=1; fi`), never
+# `x="$(gr::fetch_quiet ...)"`. A command substitution's subshell has its
+# own stdout redirected to the capture pipe, so `[[ -t 1 ]]` inside would
+# check *that pipe*, never the real terminal -- confirmed directly (real
+# pty) this used to force quiet mode on unconditionally for everyone,
+# undetected because every manual test called this function directly
+# rather than through that exact wrapping.
+gr::fetch_quiet() {
+  local batch_flag="$1"
+  [[ -n "$batch_flag" ]] && return 0
+  [[ -t 1 ]] && return 1
+  return 0
+}
+
+# Prints $1 as a self-updating status line -- \r plus clear-to-end-of-line
+# so a shorter message never leaves a stray tail of the previous, longer
+# one -- never a real newline, so the caller must print one of its own
+# (see gr::run_fetch) once done overwriting it. Does nothing at all if $2
+# (see gr::fetch_quiet) is non-empty.
+gr::status_line() {
+  local message="$1" quiet="$2"
+  [[ -n "$quiet" ]] && return
+  printf '\r\033[K%s' "$message"
+}
+
+# Clears whatever's currently on the status line, without printing a
+# replacement -- used right before a genuine failure message that must
+# survive as a normal, persisted line rather than get silently overwritten
+# by (or garble together with) the next status update. No-op if $1 is
+# non-empty, same as gr::status_line.
+gr::status_line_clear() {
+  local quiet="$1"
+  [[ -n "$quiet" ]] || printf '\r\033[K'
+}
+
+# Like gr::status_line_clear, but for stderr and independent of any
+# command's own --batch/quiet state (checks `[[ -t 2 ]]` itself) -- for
+# generic code (gr::http_get, gr::refresh_book/gr::refresh_blog) with no
+# way to reach a particular `fetch` command's $quiet, whose own
+# conclusive failure messages are worth showing even under --batch.
+gr::term_clear_line() {
+  [[ -t 2 ]] && printf '\r\033[K' >&2
+}
+
+# Like gr::status_line but for stderr, independent of --batch/quiet (same
+# reasoning as gr::term_clear_line) -- for gr::http_get's own retry
+# warning. Falls back to an ordinary persisted line when stderr isn't a
+# terminal (no "in place" to overwrite in a log, and a log benefits from
+# seeing every retry). Exists because that warning used to always persist,
+# which under a sustained bot-challenge block (retrying per attempt *and*
+# per affected item) piled up a wall of near-identical lines overwhelming
+# the status line it was meant to explain -- this keeps only the latest
+# notice visible, in place.
+gr::term_status() {
+  if [[ -t 2 ]]; then
+    printf '\r\033[K%s' "$1" >&2
+  else
+    printf '%s\n' "$1" >&2
+  fi
+}
+
+# Runs $2 (a function name) over each remaining positional id, showing
+# progress via a self-updating status line -- shared by `books
+# fetch`/`blogs fetch`. Calls `fetch_fn <id> <force> <quiet>`, which must:
+# on success (0) or skip (2, already cached), print outcome text to
+# stdout; on failure, print nothing to stdout, having already printed the
+# failure to stderr itself (via gr::status_line_clear first) -- see
+# fetch_one in books_fetch_command.sh/blogs_fetch_command.sh. Leaves
+# totals in $GR_FETCH_OK/$GR_FETCH_SKIPPED/$GR_FETCH_FAIL for the
+# caller's own summary line. **Clears the status line before returning**
+# rather than ending it with a newline, so the summary that every call
+# site prints right after *replaces* the last status update instead of
+# leaving it behind as a stray line.
+gr::run_fetch() {
+  local quiet="$1" fetch_fn="$2" force="$3"
+  shift 3
+  GR_FETCH_OK=0
+  GR_FETCH_SKIPPED=0
+  GR_FETCH_FAIL=0
+
+  local total="$#" processed=0 id status outcome
+  for id in "$@"; do
+    processed=$((processed + 1))
+    gr::status_line "[$processed/$total] $id..." "$quiet"
+    # set -e would abort the whole script on $fetch_fn's first non-zero
+    # return (2/"skipped" is routine, not a failure) if called bare.
+    if outcome="$("$fetch_fn" "$id" "$force" "$quiet")"; then
+      status=0
+    else
+      status=$?
+    fi
+    [[ -n "$outcome" ]] && gr::status_line "[$processed/$total] $outcome" "$quiet"
+    case "$status" in
+      0) GR_FETCH_OK=$((GR_FETCH_OK + 1)) ;;
+      2) GR_FETCH_SKIPPED=$((GR_FETCH_SKIPPED + 1)) ;;
+      *) GR_FETCH_FAIL=$((GR_FETCH_FAIL + 1)) ;;
+    esac
+  done
+  gr::status_line_clear "$quiet"
 }
 
 # src/lib/goodreads_auth.sh
@@ -958,33 +1538,23 @@ readonly GR_NEWS_DISCOVER_MAX_PAGES=50
 # Minimum book count for gr::refresh_blog's challenge_potential check.
 readonly GR_CHALLENGE_LISTING_MIN_BOOKS=40
 
-# Boundary above which challenge_potential alone (no manual override) counts
-# as a challenge listing. Moot today — challenge_potential is only ever 0 or
-# 1 — but named for when it becomes a real fractional score.
+# Moot today (challenge_potential is only ever 0 or 1) but named for when it
+# becomes a real fractional score.
 readonly GR_CHALLENGE_POTENTIAL_THRESHOLD=0.5
 
 # Single source of truth for "is this post effectively a challenge listing"
-# (gr_challenge_status: manual .challenge override if present, else
-# challenge_potential past the threshold) and the display marker
-# (gr_challenge_marker: °/*/?/space). Commands that need either prepend this
-# constant to their own jq program (`"$GR_CHALLENGE_JQ_DEFS"'...'` — two
-# adjacent bash tokens, concatenated into one jq argument) instead of
-# duplicating the logic.
+# and its display marker (°/*/?/space). Prepend to a jq program via
+# `"$GR_CHALLENGE_JQ_DEFS"'...'` instead of duplicating the logic.
 # shellcheck disable=SC2034 # used cross-file by blogs_list_command.sh/blogs_get_command.sh's jq programs
 readonly GR_CHALLENGE_JQ_DEFS="def gr_challenge_status: if .challenge != null then .challenge else (.challenge_potential >= ${GR_CHALLENGE_POTENTIAL_THRESHOLD}) end; def gr_challenge_marker: if .challenge == false then \"°\" elif .challenge == true then \"*\" elif gr_challenge_status then \"?\" else \" \" end;"
 
-# xidel >=0.9.9 disabled the JSONiq bare-object-literal syntax ({"a": 1}) by
-# default under --extract-kind=xquery3, requiring an explicit
-# --json-mode=jsoniq to allow it — confirmed directly: gr::refresh_blog's
-# book_sections XQuery below (which relies on that syntax) silently got back
-# an "_error" JSON blob instead of real data on 0.9.9 without the flag, which
-# then broke jq --argjson downstream. xidel 0.9.8 has no --json-mode option
-# at all (errors "Unknown option" — but exits 0 and prints its usage text to
-# stdout, so this would silently reappear as the same downstream jq failure,
-# just for a different root cause) and doesn't need one — the same bare-object
-# syntax already works there with no flag. Detected once here via `xidel
-# --help` rather than a hardcoded version check, so this keeps working across
-# whichever xidel version is actually installed.
+# xidel >=0.9.9 disabled JSONiq bare-object literals ({"a": 1}) under
+# --extract-kind=xquery3 by default, needing --json-mode=jsoniq to allow them
+# (confirmed: without it, gr::refresh_blog's book_sections query below
+# silently returns an "_error" blob, breaking jq --argjson downstream). 0.9.8
+# has no --json-mode flag (errors "Unknown option" but exits 0, same
+# downstream failure for a different reason) and doesn't need one. Detected
+# via `xidel --help` rather than a hardcoded version check.
 if xidel --help 2>/dev/null | grep -q -- '--json-mode'; then
   readonly GR_XIDEL_JSONIQ_FLAG="--json-mode=jsoniq"
 else
@@ -1014,10 +1584,9 @@ gr::news_url() {
   fi
 }
 
-# The id of the newest post seen on page 1 as of gr::discover_blog_ids's last
-# successful run — its short-circuit criterion for later scans. Small
-# plain-text state file in the data dir root, same convention as
-# gr::throttle's .last_request_at. Only gr::discover_blog_ids ever writes it.
+# Newest post id seen on page 1 as of gr::discover_blog_ids's last successful
+# run (its short-circuit criterion for later scans). Plain-text state file,
+# same convention as gr::throttle's .last_request_at.
 gr::blogs_discovery_marker_file() {
   echo "$(gr::data_dir)/.blogs_discovery_marker"
 }
@@ -1035,23 +1604,19 @@ gr::blogs_discovery_marker_set() {
 }
 
 # Blog post ids currently on the /news listing. $1 is "" (short-circuited
-# scan) or "--full" (genuine complete walk, what --all needs).
-# content_type=articles excludes /interviews/show/ pages (a separate,
-# unscraped content type).
+# scan) or "--full" (complete walk, what --all needs).
+# content_type=articles excludes /interviews/show/ (a separate content type).
 #
-# Terminates when either: (1) the discovery marker turns up on a page — only
-# ids before it in document order are new (--full skips this check
-# entirely), or (2) a page contributes no new ids at all (the fallback for
-# --full, a marker-less first run, or a since-deleted marker post).
-# GR_NEWS_DISCOVER_MAX_PAGES is a safety net above the real page count
-# (~17-18).
+# Terminates when either the discovery marker turns up on a page (only ids
+# before it in document order are new; --full skips this) or a page
+# contributes no new ids at all (the fallback for --full, a marker-less first
+# run, or a since-deleted marker post). GR_NEWS_DISCOVER_MAX_PAGES is a
+# safety net above the real page count (~17-18).
 #
-# A short-circuited result is NOT guaranteed complete, and does NOT filter
-# out already-cached ids (a marker-less run returns the whole listing) —
-# diffing against the real cache is the caller's job (see
-# blogs_update_command.sh). The marker itself is only updated once this
-# function is about to return successfully, so a failed run leaves it
-# untouched.
+# A short-circuited result isn't guaranteed complete and doesn't filter out
+# already-cached ids — diffing against the cache is the caller's job (see
+# blogs_update_command.sh). The marker is only updated on success, so a
+# failed run leaves it untouched.
 gr::discover_blog_ids() {
   local full="${1:-}"
   local marker=""
@@ -1076,9 +1641,8 @@ gr::discover_blog_ids() {
     fi
 
     # Scoped to editorialCard__image--fullHeight (the real listing card's
-    # own cover image) rather than any /blog/show/ link on the page — a
-    # page-wide match also picks up an unrelated promo banner link that
-    # sits before the real listing, which broke newest-id detection.
+    # cover image), not any /blog/show/ link — a page-wide match also picks
+    # up an unrelated promo banner link, breaking newest-id detection.
     local raw_ids ordered_ids
     raw_ids="$(grep -E '/blog/show/[0-9]+.*editorialCard__image--fullHeight' "$html" | grep -oE '/blog/show/[0-9]+' | grep -oE '[0-9]+')"
     rm -f "$html"
@@ -1152,19 +1716,18 @@ gr::mark_blog_removed() {
   mv "$tmp_blog" "$blog_file"
 }
 
-# Fetches and caches one blog post. Two successful outcomes: the post still
-# exists (fields extracted, cache written), or it's permanently gone (a real
-# 404 — recorded via gr::mark_blog_removed, distinct from a transient
-# failure via gr::http_status). TTL/force-refresh is gr::blog_json's concern,
-# not this function's — it always fetches unconditionally.
+# Fetches and caches one blog post. Two successful outcomes: still exists
+# (fields extracted, cache written) or permanently gone (real 404, recorded
+# via gr::mark_blog_removed). TTL/force-refresh is gr::blog_json's concern —
+# this always fetches unconditionally.
 gr::refresh_blog() {
   local id="$1"
   mkdir -p "$(gr::blog_dir)"
 
   # .challenge is a manual override (see `blogs challenge`) that this
-  # function never sets, only preserves — read before the cache file gets
-  # rebuilt from scratch below. "null" (not unset) when there's nothing to
-  # preserve; with_entries(select(.value != null)) drops it at the end.
+  # function only preserves, never sets — read before the cache gets
+  # rebuilt below. "null" when there's nothing to preserve;
+  # with_entries(select(.value != null)) drops it at the end.
   local existing_challenge="null"
   local existing_blog_file
   existing_blog_file="$(gr::blog_file "$id")"
@@ -1186,6 +1749,7 @@ gr::refresh_blog() {
       gr::mark_blog_removed "$id"
       return 0
     fi
+    gr::term_clear_line
     echo "error: could not fetch blog post $id from goodreads.com (status ${status:-unknown})" >&2
     return 1
   fi
@@ -1193,6 +1757,7 @@ gr::refresh_blog() {
   local canonical_url
   canonical_url="$(xidel -s "$html" -e '(//link[@rel="canonical"])[1]/@href' 2>/dev/null)" || true
   if [[ -z "$canonical_url" ]]; then
+    gr::term_clear_line
     echo "error: no canonical link found for blog post $id — page may not be a valid blog post page" >&2
     return 1
   fi
@@ -1201,6 +1766,7 @@ gr::refresh_blog() {
   local canonical_id
   canonical_id="$(sed -E 's#.*/blog/show/([0-9]+).*#\1#' <<< "$canonical_url")"
   if [[ "$canonical_id" != "$id" ]]; then
+    gr::term_clear_line
     echo "error: fetched page's canonical link is for blog post '$canonical_id', not the requested $id — refusing to cache under the wrong id" >&2
     return 1
   fi
@@ -1209,13 +1775,13 @@ gr::refresh_blog() {
   title="$(xidel -s "$html" -e '(//h1[@class="gr-h1 gr-h1--serif"])[1]' 2>/dev/null)"
   author_and_date="$(xidel -s "$html" -e '(//span[contains(@class,"secondaryTextBottomPadding")])[1]' 2>/dev/null)"
   like_text="$(xidel -s "$html" -e '(//a[contains(@href,"/rating/voters/")])[1]' 2>/dev/null)"
-  # Body HTML: internal-only, never persisted — used only for the validity
-  # check below and the challenge_potential grid-widget grep (needs real
-  # HTML, not text extraction). Written to a file, not a variable — can run
-  # well past 500KB.
+  # Internal only, never persisted — used for the validity check below and
+  # the challenge_potential grid-widget grep (needs real HTML, not text).
+  # Written to a file, not a variable — can run well past 500KB.
   xidel -s "$html" -e '(//div[@class="newsShowColumn"])[1]' --output-format=html 2>/dev/null > "$body_html_file"
 
   if [[ -z "$title" || ! -s "$body_html_file" ]]; then
+    gr::term_clear_line
     echo "error: could not find blog post content for $id — page structure may have changed" >&2
     return 1
   fi
@@ -1232,17 +1798,14 @@ gr::refresh_blog() {
   local like_count
   like_count="$(grep -oE '^[0-9]+' <<< "$like_text")" || true
 
-  # Every book in the post, grouped into its own <h1 style="text-align:
-  # center"> sections when it has any (most posts get one null-section
-  # group). Title comes from the cover-grid <img alt> specifically
-  # (contains(@class,"AcrossImage")) — not just the first <img>, since a
-  # book's cover is preceded by an often-empty amazonBadge sibling that can
-  # itself contain an <img> (caused real "Kindle Unlimited"-titled books
-  # once that badge was present). A book mentioned only inline (no cover,
-  # no title) is dropped entirely — only cover-having books are wanted.
-  # xquery3 is needed for `let` and for `preceding::` (document-order
-  # nearest heading, since section headings and books aren't in an
-  # ancestor/descendant relationship).
+  # Every book, grouped into its <h1 style="text-align:center"> section (one
+  # null-section group when there isn't any). Title comes from the
+  # cover-grid <img alt> (contains(@class,"AcrossImage")), not just the
+  # first <img> — a book's cover is preceded by an often-empty amazonBadge
+  # sibling that can itself contain an <img>, once causing bogus "Kindle
+  # Unlimited"-titled books. Inline-only mentions (no cover) are dropped.
+  # xquery3 needed for `let` and `preceding::` (nearest heading in document
+  # order — headings and books aren't in an ancestor/descendant relation).
   local book_sections
   # shellcheck disable=SC2016 # $a/$section below are xidel's own XQuery variables, not bash expansions — single quotes are deliberate
   # shellcheck disable=SC2086 # GR_XIDEL_JSONIQ_FLAG is a single flag or empty — word-splitting is exactly what's wanted so an empty value contributes no argument
@@ -1284,14 +1847,12 @@ gr::refresh_blog() {
   local total_books
   total_books="$(jq '[.[].books | length] | add // 0' <<< "$book_sections")"
 
-  # challenge_potential: 1 if the post uses Goodreads' cover-grid embed
-  # (fourAcrossImage/threeAcrossImage, at least one *exact*-class cover —
-  # excludes all-audiobook posts, which use the --audiobook modifier) and
-  # has at least GR_CHALLENGE_LISTING_MIN_BOOKS books total; else 0. Not
-  # proof of any real challenge tie-in — just a "book-listing-shaped
-  # candidate" flag for human review (see CLAUDE.md for how these two
-  # conditions were arrived at). Plain 0/1 for now, per explicit direction;
-  # room for a real fractional score later.
+  # 1 if the post uses Goodreads' cover-grid embed (fourAcrossImage/
+  # threeAcrossImage exact class — excludes all-audiobook posts, which use
+  # the --audiobook modifier) and has >= GR_CHALLENGE_LISTING_MIN_BOOKS
+  # books; else 0. Not proof of a real challenge tie-in, just a
+  # "book-listing-shaped candidate" flag for human review (see CLAUDE.md).
+  # Plain 0/1 for now; room for a real fractional score later.
   local challenge_potential
   if [[ "$total_books" -ge "$GR_CHALLENGE_LISTING_MIN_BOOKS" ]] \
     && grep -qE 'class="fourAcrossImage"|class="threeAcrossImage"' "$body_html_file"; then
@@ -1323,12 +1884,24 @@ gr::refresh_blog() {
     } | with_entries(select(.value != null))' > "$tmp_blog"
 
   if [[ ! -s "$tmp_blog" ]]; then
+    gr::term_clear_line
     echo "error: could not build JSON for blog post $id" >&2
     return 1
   fi
 
   mv "$tmp_blog" "$(gr::blog_file "$id")"
   gr::blog_file "$id"
+}
+
+# True (0) if blog post $1 is cached at all -- there's no actual TTL to
+# check (see below), so "cached" and "fresh" are simply the same
+# question here. Exists purely for symmetry with gr::book_fresh, so
+# blogs_fetch_command.sh's "ttl" force policy can ask the same shape of
+# question `books fetch --all` does, per explicit direction to keep the
+# two commands consistent even though the answer here is always
+# trivially "yes, if cached at all".
+gr::blog_fresh() {
+  [[ -f "$(gr::blog_file "$1")" ]]
 }
 
 # Cached blog post JSON, backed by blogs/<id>.json. No TTL — blog content
@@ -1366,31 +1939,19 @@ gr::book_file() {
   echo "$(gr::book_dir)/$1.json"
 }
 
-# Goodreads book URLs resolve by id alone — the trailing title-slug part is
-# decorative. Confirmed directly: fetched /book/show/199698485-the-god-of-the-woods
-# and /book/show/199698485 and compared them — both HTTP 200, identical
-# <title> and identical <link rel="canonical"> (which itself always carries
-# the full slug, regardless of which form was requested). So always
-# construct book URLs from the id alone here — gr::refresh_book appends its
-# own decorative random slug (gr::random_book_slug) right before fetching;
-# see there for why that's not done in this function instead.
+# Book URLs resolve by id alone — the trailing title-slug is decorative
+# (confirmed: id-only and id+slug URLs both 200, identical canonical link).
+# Always build URLs from the id alone here; gr::refresh_book appends its own
+# fake slug (gr::random_book_slug) right before fetching — see there for why.
 gr::book_url() {
   echo "https://www.goodreads.com/book/show/$1"
 }
 
-# A random three-word "title" — grammatically plausible but meaningless —
-# for gr::refresh_book to append to gr::book_url's id-only URL right before
-# fetching, purely so the request looks like normal browser traffic
-# (".../show/<id>-a-blue-box") rather than a bare numeric id — never meant
-# to be accurate, and kept out of gr::book_url itself since not every
-# caller of that necessarily wants a fake slug attached. First word is
-# either an article ("a"/"an", chosen for whichever of the two fits the
-# adjective that follows; or "the") or a spelled-out number
-# ("two".."twelve"); second word is a generic adjective (color or similar
-# generic, applicable to any object); third word is a noun naming a
-# generic object, in the singular or plural form the first word
-# grammatically requires (singular after "a"/"an"/"one", plural after any
-# other number, either after "the").
+# A grammatically-plausible but meaningless three-word "title"
+# (".../show/<id>-a-blue-box") for gr::refresh_book to append right before
+# fetching, so the request looks like normal browser traffic rather than a
+# bare id. Kept out of gr::book_url itself since not every caller wants a
+# fake slug. Article/number + adjective + noun, agreeing in number/article.
 gr::random_book_slug() {
   local -a number_words=(one two three four five six seven eight nine ten eleven twelve)
   local -a adjectives=(
@@ -1421,60 +1982,39 @@ gr::random_book_slug() {
   echo "$first-$adjective-$noun"
 }
 
-# Book pages don't need a login, so this fetches account-less: COOKIE_JAR
-# already points at the shared gr::generic_cookie_jar by the time this runs
-# (src/before.sh's before_hook calls gr::init_cookie_jar once per invocation,
-# right after argument parsing — see there for why that's the correct spot
-# rather than calling it here or in bashly's initialize() hook), unless a
-# caller already set it to something else. gr::http_get itself refuses to
-# run at all when --offline was given, so there's no separate offline check
-# needed here.
+# Book pages need no login, so this fetches account-less (COOKIE_JAR already
+# points at gr::generic_cookie_jar by the time this runs — see
+# src/before.sh). gr::http_get itself refuses to run under --offline, so no
+# separate check is needed here.
 #
-# The book JSON is our own scraped fields (book_id, legacyId, url,
-# canonical_url) flat-merged with the page's own schema.org/Book JSON-LD
-# (<script type="application/ld+json">) — chosen deliberately over nesting
-# the JSON-LD under its own key, and @context/@type are kept (not stripped)
-# so the result stays real, valid JSON-LD, just extended with our own
-# fields. Before merging, every string value in the JSON-LD is squeezed
-# (collapse whitespace runs to one space) and HTML-entity-decoded —
-# Goodreads' own template leaves both kinds of junk in there (e.g. author
-# name "Liz    Moore", awards text containing literal "&amp;" instead of
-# "&" even though this is already inside a <script> block, where entities
-# shouldn't need decoding at all).
+# Output is our own scraped fields (book_id, legacyId, url, canonical_url)
+# flat-merged with the page's schema.org/Book JSON-LD — @context/@type kept
+# so the result stays valid JSON-LD. JSON-LD strings are whitespace-squeezed
+# and HTML-entity-decoded first (Goodreads' template leaves junk like "Liz
+# Moore" double-spaced, or literal "&amp;" inside the <script> block).
 #
-# canonical_url (<link rel="canonical">) is the *work's* preferred edition
-# — it can point at a *different* book id than the one requested (confirmed:
-# fetching id 25098993 got a canonical_url embedding id 1744452 instead).
-# url is different: it's this *specific* edition's own self URL
-# ("webUrl", from Goodreads' embedded Next.js page data — see below), always
-# matching the requested id. Don't conflate the two.
+# canonical_url is the *work's* preferred edition and can point at a
+# *different* book id than requested (confirmed: id 25098993's canonical_url
+# embeds id 1744452). `url` is this specific edition's own self URL
+# (webUrl, from the embedded Next.js data below) — always matching the
+# requested id. Don't conflate the two.
 #
-# Goodreads' frontend is Next.js: every page embeds <script
-# id="__NEXT_DATA__" type="application/json">, whose `.query.book_id` is
-# the literal route parameter used to serve the page — an independent,
-# reliable way to confirm the fetched page is actually for the requested id
-# (not a misdirect/mismatch) before ever caching anything under it. That
-# same blob's `.props.pageProps.apolloState` holds a GraphQL-normalized
-# cache with one or more "Book:<opaque-ref>" entries (one per book
-# referenced anywhere on the page, e.g. "other editions" widgets) — find
-# the one whose own `.legacyId` matches the requested id, and pull its
-# `.legacyId` (stored as-is, in case it ever diverges from book_id — no
-# known case yet, but cheap insurance) and `.webUrl` (stored as `url`) from
-# there.
+# Goodreads is Next.js: every page embeds <script id="__NEXT_DATA__">, whose
+# `.query.book_id` is the literal route parameter — used to confirm the
+# fetched page really is for the requested id before caching anything.
+# `.props.pageProps.apolloState` holds a GraphQL-normalized cache with one
+# "Book:<ref>" entry per book referenced on the page (e.g. "other editions"
+# widgets); the one whose `.legacyId` matches is where `.webUrl` (-> `url`)
+# comes from.
 #
-# All temp files are pre-created and covered by one trap (not one trap per
-# mktemp — traps replace each other, they don't stack) so every stage's
-# leftovers get cleaned up regardless of which one fails. Every stage that
-# can legitimately fail is checked explicitly and returns 1 before the final
-# `mv`, never left to `set -e`: a caller invoking gr::book_json as a
-# non-final part of an && / || / if-condition list — entirely plausible —
-# suppresses errexit for this whole call, and jq treats an empty file as
-# valid empty output (exit 0!), so an implicit-only check would let a failed
-# refresh silently blank a previously-good cache in that situation. Never
-# holds the fetched JSON in a shell variable — only ever in temp files. On
-# success, prints the resulting books/<id>.json path to stdout (not its
-# contents) — gr::book_json redirects this away since it doesn't need it,
-# but it makes gr::refresh_book self-describing for direct/manual use too.
+# All temp files share one trap (traps replace, not stack) so every stage's
+# leftovers get cleaned up regardless of which fails. Every failable stage
+# is checked explicitly and returns 1 before the final `mv`, never left to
+# `set -e` — a caller using this in an && / || / if-condition list disables
+# errexit, and jq treats an empty file as valid empty output (exit 0), so an
+# implicit-only check could silently blank a good cache. Prints the
+# resulting books/<id>.json path on success (gr::book_json discards it, but
+# it makes this self-describing for manual use).
 gr::refresh_book() {
   local id="$1"
   mkdir -p "$(gr::book_dir)"
@@ -1487,12 +2027,11 @@ gr::refresh_book() {
   tmp_book="$(mktemp)"
   trap 'rm -f "$html" "$ld_json" "$next_data" "$apollo_json" "$tmp_book"' EXIT
 
-  # A fake-but-grammatical slug is appended to the id here (not in
-  # gr::book_url itself — see there) purely so the request looks like
-  # normal browser traffic; goodreads.com ignores it either way (see
-  # gr::book_url). This does mean the fetched page's own `.query.book_id`
-  # (below) reflects the full "<id>-<slug>" segment, not just $id.
+  # Fake slug appended here, not in gr::book_url (see there) — goodreads.com
+  # ignores it either way. Means `.query.book_id` below is "<id>-<slug>",
+  # not just $id.
   if ! gr::http_get "$(gr::book_url "$id")-$(gr::random_book_slug)" > "$html"; then
+    gr::term_clear_line
     echo "error: could not fetch book $id from goodreads.com" >&2
     return 1
   fi
@@ -1500,38 +2039,34 @@ gr::refresh_book() {
   local canonical_url
   canonical_url="$(xidel -s "$html" -e '(//link[@rel="canonical"])[1]/@href' 2>/dev/null)" || true
   if [[ -z "$canonical_url" ]]; then
+    gr::term_clear_line
     echo "error: no canonical link found for book $id — page may not be a valid book page" >&2
     return 1
   fi
 
   xidel -s "$html" -e '(//script[@id="__NEXT_DATA__"])[1]' > "$next_data" 2>/dev/null
   if [[ ! -s "$next_data" ]]; then
+    gr::term_clear_line
     echo "error: no __NEXT_DATA__ found for book $id — page structure may have changed" >&2
     return 1
   fi
 
-  # .query.book_id is the *entire* route segment we requested, slug and
-  # all (gr::book_url always appends one now, see there) — so only its
-  # numeric prefix (up to the first "-") is meaningful here, not an exact
-  # match against $id.
+  # .query.book_id is the whole "<id>-<slug>" route segment, so only its
+  # numeric prefix is meaningful here, not an exact match against $id.
   local requested_book_id
   requested_book_id="$(jq -r '.query.book_id // empty' "$next_data")"
   if [[ "${requested_book_id%%-*}" != "$id" ]]; then
+    gr::term_clear_line
     echo "error: fetched page is for book '${requested_book_id:-<none>}', not the requested $id — refusing to cache under the wrong id" >&2
     return 1
   fi
 
-  # clean_or_null is applied to every apolloState-sourced string that ends
-  # up in the final output (book/work title, description, contributor and
-  # series names) — apolloState's own strings can carry the same
-  # whitespace-run junk as the JSON-LD's (e.g. author name "Liz    Moore"),
-  # but since the final merge is `$ld[0] * $apollo[0]` (apollo wins on any
-  # shared key), cleaning only the JSON-LD side — as the original version
-  # of this pipeline did — never actually reached the output for these
-  # fields. Also treats "" the same as absent (Goodreads' own
-  # work.details.originalTitle is "" rather than missing when there's no
-  # distinct original title — confirmed directly against a real fetch) so
-  # drop_nulls actually drops it instead of leaving a stray `"title": ""`.
+  # clean_or_null runs on every apolloState string in the output (titles,
+  # description, contributor/series names) — apolloState has the same
+  # whitespace junk as the JSON-LD, but since apollo wins the final merge
+  # (`$ld[0] * $apollo[0]`), cleaning only the JSON-LD side wouldn't reach
+  # these fields. Also maps "" to null (Goodreads' originalTitle is "" not
+  # missing when there's none — confirmed) so drop_nulls actually drops it.
   jq -c --arg id "$id" '
     def epoch_to_date: if . then (./1000 | gmtime | strftime("%Y-%m-%d")) else null end;
     def epoch_to_year: if . then (./1000 | gmtime | strftime("%Y")) else null end;
@@ -1544,17 +2079,12 @@ gr::refresh_book() {
     .props.pageProps.apolloState as $state
     | ($state | to_entries[] | select(.key | startswith("Book:")) | .value | select((.legacyId | tostring) == $id)) as $book
     | ($state[$book.work.__ref // ""]) as $work
-    # $isbn is every distinct, cleaned, non-empty value from
-    # details.isbn/details.isbn13 combined — deliberately built from both
-    # fields together and deduped, not "details.isbn if it looks like an
-    # ISBN-10" alone: Goodreads sometimes puts the same 13-digit value in
-    # both fields (self-published/POD editions with no true ISBN-10 —
-    # confirmed directly on id 229004405), and `unique` collapses that
-    # automatically instead of needing an explicit isbn-vs-isbn13 equality
-    # check. isbn10/isbn13 are then just "the one 10-char / 13-char entry
-    # in $isbn, if any" — an ISBN-10 is always exactly 10 characters and an
-    # ISBN-13 always exactly 13, so a value can satisfy at most one of the
-    # two regardless of which raw field it came from.
+    # $isbn: every distinct, cleaned, non-empty value from details.isbn and
+    # details.isbn13 combined and deduped — not "isbn if it looks ISBN-10"
+    # alone, since Goodreads sometimes puts the same 13-digit value in both
+    # fields (POD editions with no true ISBN-10; confirmed on id
+    # 229004405), and `unique` collapses that. isbn10/isbn13 are then just
+    # the 10-char / 13-char entry in $isbn, if any.
     | ([$book.details.isbn, $book.details.isbn13] | map(clean_or_null) | map(select(. != null)) | unique | sort_by([-length, .])) as $isbn
     | ($isbn | map(select(length == 10)) | first // null) as $isbn10
     | ($isbn | map(select(length == 13)) | first // null) as $isbn13
@@ -1588,6 +2118,7 @@ gr::refresh_book() {
   ' "$next_data" | head -n1 > "$apollo_json"
 
   if [[ ! -s "$apollo_json" ]]; then
+    gr::term_clear_line
     echo "error: could not find book data for book $id in __NEXT_DATA__ — page structure may have changed" >&2
     return 1
   fi
@@ -1606,6 +2137,7 @@ gr::refresh_book() {
     )' > "$ld_json"
 
   if [[ ! -s "$ld_json" ]]; then
+    gr::term_clear_line
     echo "error: no book JSON-LD found for book $id — page may not be a valid book page" >&2
     return 1
   fi
@@ -1617,6 +2149,7 @@ gr::refresh_book() {
       --slurpfile ld "$ld_json" \
       '{book_id: $id, canonical_url: $canonical_url} * $ld[0] * $apollo[0]' \
       > "$tmp_book" || [[ ! -s "$tmp_book" ]]; then
+    gr::term_clear_line
     echo "error: could not build JSON for book $id" >&2
     return 1
   fi
@@ -1625,21 +2158,32 @@ gr::refresh_book() {
   gr::book_file "$id"
 }
 
-# Emits one-line JSON for the given book id, backed by an on-disk cache at
-# books/<id>.json, fresh for `book_cache_ttl` config seconds (see
-# GR_BOOK_CACHE_TTL_DEFAULT for the fallback when unset). `find -newermt` on
-# the exact expected path handles "missing" and "stale" as a single check: it
-# prints the path only if the file exists AND is newer than the threshold,
-# so empty output means "needs a refresh" either way — no separate
-# existence/age checks needed. A second "--force" argument bypasses the TTL
-# check and always refreshes — same force-parameter shape as gr::blog_json,
-# used by the `books update` command. Refresh always runs via
-# gr::refresh_book when needed — --offline is gr::http_get's problem (see
-# there), not this function's; a refresh that fails for any reason, offline
-# included, fails gr::book_json outright rather than silently falling back
-# to stale/missing data. Never holds the JSON in a shell variable — the file
-# is the single source of truth, and jq is what reads and re-emits it (which
-# doubles as a "is this valid JSON" check).
+# True (0, prints nothing) if book $1's cache file exists and is still
+# within its `book_cache_ttl` config seconds (GR_BOOK_CACHE_TTL_DEFAULT if
+# unset) -- false (1) if missing or stale. `find -newermt` handles
+# "missing" and "stale" as one check: it prints the path only if the file
+# exists AND is newer, so empty output means "needs a refresh" either
+# way. Factored out of gr::book_json so `books fetch --all` (below) can
+# ask the same question itself, without forcing a call into
+# gr::book_json, to tell "still fresh, left alone" apart from "was stale,
+# refreshed" for its own reporting.
+gr::book_fresh() {
+  local id="$1" book_file ttl threshold fresh
+  book_file="$(gr::book_file "$id")"
+  [[ -f "$book_file" ]] || return 1
+
+  ttl="$(gr::config_get book_cache_ttl "$GR_BOOK_CACHE_TTL_DEFAULT")"
+  threshold="$(date -d "-${ttl} seconds" +'%Y-%m-%d %H:%M:%S')"
+  fresh="$(find "$book_file" -newermt "$threshold" 2>/dev/null)" || true
+  [[ -n "$fresh" ]]
+}
+
+# One-line JSON for the given book id, cached at books/<id>.json, fresh
+# per gr::book_fresh. "--force" bypasses the TTL (same shape as
+# gr::blog_json, used by `books fetch`). A failed refresh fails this
+# outright rather than falling back to stale/missing data. Never holds the
+# JSON in a variable — the file is read back via jq, doubling as a validity
+# check.
 gr::book_json() {
   local id="$1"
   local force="${2:-}"
@@ -1647,16 +2191,7 @@ gr::book_json() {
   book_file="$(gr::book_file "$id")"
   mkdir -p "$(gr::book_dir)"
 
-  local ttl
-  ttl="$(gr::config_get book_cache_ttl "$GR_BOOK_CACHE_TTL_DEFAULT")"
-
-  local threshold
-  threshold="$(date -d "-${ttl} seconds" +'%Y-%m-%d %H:%M:%S')"
-
-  local fresh
-  fresh="$(find "$book_file" -newermt "$threshold" 2>/dev/null)" || true
-
-  if [[ -z "$fresh" || "$force" == "--force" ]]; then
+  if ! gr::book_fresh "$id" || [[ "$force" == "--force" ]]; then
     gr::refresh_book "$id" > /dev/null || return 1
   fi
 
@@ -1668,8 +2203,579 @@ gr::book_json() {
   jq -c . "$book_file"
 }
 
+# src/lib/goodreads_challenges.sh
+# Reading challenges are manually curated, not scraped -- no goodreads.com
+# listing to discover them from (challenge detail is behind a step-up-auth
+# wall, see CLAUDE.md). challenge_id is a purely local string derived from
+# the challenge's own start/end (see gr::generate_challenge_id, below),
+# unlike book_id/blog_id, which are goodreads.com's own ids.
+
+gr::challenge_dir() {
+  echo "$(gr::data_dir)/challenges"
+}
+
+gr::challenge_file() {
+  echo "$(gr::challenge_dir)/$1.json"
+}
+
+# Errors (return 1) if the challenge doesn't exist; else prints its file
+# path -- same shape gr::refresh_book uses.
+gr::require_challenge_file() {
+  local id="$1"
+  local file
+  file="$(gr::challenge_file "$id")"
+  if [[ ! -f "$file" ]]; then
+    echo "error: no challenge $id" >&2
+    return 1
+  fi
+  echo "$file"
+}
+
+# Creates a challenge with empty blogs/count_badges (see
+# gr::add_challenge_blog/count_badge to populate them). Prints the new id.
+# $4, if given, is used as-is instead of calling gr::generate_challenge_id
+# (see challenges_create_command.sh's own --id, which already checked it
+# isn't taken before ever calling this).
+gr::create_challenge() {
+  local title="$1" start="$2" end="$3" id_override="${4:-}"
+  mkdir -p "$(gr::challenge_dir)"
+
+  local id="$id_override"
+  [[ -z "$id" ]] && id="$(gr::generate_challenge_id "$start" "$end")"
+
+  # jq's grammar reserves "end" for if/end and can't parse $end as a
+  # variable -- confirmed directly. Bind it as end_date instead; the
+  # bash-side name stays plain "end" throughout.
+  jq -n -S \
+    --arg id "$id" \
+    --arg title "$title" \
+    --arg start "$start" \
+    --arg end_date "$end" \
+    '{challenge_id: $id, title: $title, start: $start, end: $end_date, blogs: [], count_badges: []}' \
+    > "$(gr::challenge_file "$id")"
+
+  echo "$id"
+}
+
+# Merges whichever of title/start/end are non-empty onto the existing file;
+# blogs/count_badges are always left untouched.
+gr::update_challenge() {
+  local id="$1" title="$2" start="$3" end="$4"
+  local file
+  file="$(gr::require_challenge_file "$id")" || return 1
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  # end_date, not end -- see gr::create_challenge.
+  jq -S \
+    --arg title "$title" \
+    --arg start "$start" \
+    --arg end_date "$end" \
+    '
+      (if $title != "" then .title = $title else . end)
+      | (if $start != "" then .start = $start else . end)
+      | (if $end_date != "" then .end = $end_date else . end)
+    ' "$file" > "$tmp_file" || return 1
+
+  mv "$tmp_file" "$file"
+}
+
+# Upserts by blog_id: an existing entry only has its name replaced (order
+# preserved), a new one is appended. Empty name stores as null, never "".
+gr::add_challenge_blog() {
+  local id="$1" blog_id="$2" name="${3:-}"
+  local file
+  file="$(gr::require_challenge_file "$id")" || return 1
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  jq -S \
+    --arg blog_id "$blog_id" \
+    --arg name "$name" \
+    '
+      ($name | if . == "" then null else . end) as $name
+      | if any(.blogs[]?; .blog_id == $blog_id) then
+          .blogs |= map(if .blog_id == $blog_id then .name = $name else . end)
+        else
+          .blogs += [{blog_id: $blog_id, name: $name}]
+        end
+    ' "$file" > "$tmp_file" || return 1
+
+  mv "$tmp_file" "$file"
+}
+
+# Returns 1 (nothing written) if blog_id isn't on the challenge.
+gr::remove_challenge_blog() {
+  local id="$1" blog_id="$2"
+  local file
+  file="$(gr::require_challenge_file "$id")" || return 1
+
+  if ! jq -e --arg blog_id "$blog_id" 'any(.blogs[]?; .blog_id == $blog_id)' "$file" > /dev/null; then
+    return 1
+  fi
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  jq -S --arg blog_id "$blog_id" '.blogs |= map(select(.blog_id != $blog_id))' "$file" > "$tmp_file" || return 1
+  mv "$tmp_file" "$file"
+}
+
+# Same upsert shape as gr::add_challenge_blog, keyed by count; kept sorted
+# by count afterward so display order is always ascending.
+gr::add_challenge_count_badge() {
+  local id="$1" count="$2" name="${3:-}"
+  local file
+  file="$(gr::require_challenge_file "$id")" || return 1
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  jq -S \
+    --argjson count "$count" \
+    --arg name "$name" \
+    '
+      ($name | if . == "" then null else . end) as $name
+      | if any(.count_badges[]?; .count == $count) then
+          .count_badges |= map(if .count == $count then .name = $name else . end)
+        else
+          .count_badges += [{count: $count, name: $name}]
+        end
+      | .count_badges |= sort_by(.count)
+    ' "$file" > "$tmp_file" || return 1
+
+  mv "$tmp_file" "$file"
+}
+
+gr::remove_challenge_count_badge() {
+  local id="$1" count="$2"
+  local file
+  file="$(gr::require_challenge_file "$id")" || return 1
+
+  if ! jq -e --argjson count "$count" 'any(.count_badges[]?; .count == $count)' "$file" > /dev/null; then
+    return 1
+  fi
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  jq -S --argjson count "$count" '.count_badges |= map(select(.count != $count))' "$file" > "$tmp_file" || return 1
+  mv "$tmp_file" "$file"
+}
+
+# Challenge status (planned/ongoing/finished) from start/end vs $today,
+# computed once per invocation. Shared by list/get. Unrelated to
+# GR_CHALLENGE_JQ_DEFS (goodreads_blogs.sh) despite the name -- that one's
+# about a blog post's own candidate flag, this is a challenge's lifecycle.
+# shellcheck disable=SC2034 # used cross-file by challenges_list_command.sh/challenges_get_command.sh's jq programs
+# shellcheck disable=SC2016 # single-quoted deliberately — this is jq syntax, not bash, and must not expand here
+readonly GR_CHALLENGE_STATUS_JQ_DEF='
+def challenge_status($today):
+  if $today < .start then "planned"
+  elif $today > .end then "finished"
+  else "ongoing" end;
+'
+
+# --- Defaults for `challenges create`. Seasons: Winter/Spring/Summer/Fall
+# = Jan-Mar/Apr-Jun/Jul-Sep/Oct-Dec (explicit direction, not the
+# Northern-Hemisphere calendar seasons). The two arrays are parallel,
+# indexed 0-3.
+readonly GR_QUARTER_END_MONTHDAY=(03-31 06-30 09-30 12-31)
+readonly GR_QUARTER_SEASON=(Winter Spring Summer Fall)
+readonly GR_CHALLENGE_MIN_DAYS=42 # 6 weeks
+
+# --blogs default window: starts this many days before the challenge's
+# start, ends this many days before its end (or today if earlier) --
+# deliberately asymmetric per explicit direction.
+readonly GR_CHALLENGE_BLOG_WINDOW_BEFORE_START_DAYS=7
+readonly GR_CHALLENGE_BLOG_WINDOW_BEFORE_END_DAYS=14
+
+# --blogs default likeliness threshold -- higher than goodreads_blogs.sh's
+# own GR_CHALLENGE_POTENTIAL_THRESHOLD (0.5), which answers a different
+# question (is this a listing at all vs. auto-link it to a new challenge).
+readonly GR_CHALLENGE_BLOG_DEFAULT_MIN_POTENTIAL=0.7
+
+# Index (0-3) of the quarter $1 (YYYY-MM-DD) falls in.
+gr::quarter_index() {
+  local month
+  month="$(date -d "$1" +%-m)"
+  echo $(( (month - 1) / 3 ))
+}
+
+# The quarter-end date (one of the 4 fixed boundaries) that is >= $1.
+gr::quarter_end_on_or_after() {
+  local year idx
+  year="$(date -d "$1" +%Y)"
+  idx="$(gr::quarter_index "$1")"
+  echo "${year}-${GR_QUARTER_END_MONTHDAY[idx]}"
+}
+
+# The next quarter-end strictly after $1 (itself one of the 4 boundaries).
+gr::next_quarter_end() {
+  local year idx next_idx next_year
+  year="$(date -d "$1" +%Y)"
+  idx="$(gr::quarter_index "$1")"
+  next_idx=$(( (idx + 1) % 4 ))
+  next_year="$year"
+  [[ "$next_idx" -eq 0 ]] && next_year=$((year + 1))
+  echo "${next_year}-${GR_QUARTER_END_MONTHDAY[next_idx]}"
+}
+
+# The start of the calendar quarter $1 (YYYY-MM-DD) falls in.
+gr::quarter_start_of() {
+  local year idx month
+  year="$(date -d "$1" +%Y)"
+  idx="$(gr::quarter_index "$1")"
+  month=$(( idx * 3 + 1 ))
+  printf '%04d-%02d-01\n' "$year" "$month"
+}
+
+# Days between two dates ($2 - $1), pinned to UTC -- a local-time
+# epoch/86400 diff is off by a day across a DST transition (confirmed
+# directly: 2024-03-25 to 2024-04-01 in Europe/Berlin gives 6, not 7).
+gr::days_between() {
+  local start_epoch end_epoch
+  start_epoch="$(date -u -d "$1" +%s)"
+  end_epoch="$(date -u -d "$2" +%s)"
+  echo $(( (end_epoch - start_epoch) / 86400 ))
+}
+
+# The last day of the month right before $1's own month, e.g.
+# 2024-03-31 -> 2024-02-29. $1 need not itself be a month-end.
+gr::last_day_of_prev_month() {
+  date -d "$(date -d "$1" +%Y-%m-01) -1 day" +%Y-%m-%d
+}
+
+# The last day of the month right after $1's own month, e.g.
+# 2024-03-31 -> 2024-04-30. Three materialized date -d calls, not one
+# chained relative string -- confirmed directly GNU date doesn't apply
+# chained terms left-to-right ("$1 +1 day +1 month -1 day" gives
+# 2024-05-01 for 2024-03-31, not 2024-04-30).
+gr::last_day_of_next_month() {
+  local next_day plus_month
+  next_day="$(date -d "$1 +1 day" +%Y-%m-%d)"
+  plus_month="$(date -d "$next_day +1 month" +%Y-%m-%d)"
+  date -d "$plus_month -1 day" +%Y-%m-%d
+}
+
+# Default --end for a challenge starting on $1: the next quarter-end at or
+# after $1, unless under GR_CHALLENGE_MIN_DAYS away, in which case the one
+# after that -- e.g. start=2024-09-15 selects 2024-12-31, not 2024-09-30.
+gr::default_challenge_end() {
+  local start="$1" candidate
+  candidate="$(gr::quarter_end_on_or_after "$start")"
+  if [[ "$(gr::days_between "$start" "$candidate")" -lt "$GR_CHALLENGE_MIN_DAYS" ]]; then
+    candidate="$(gr::next_quarter_end "$candidate")"
+  fi
+  echo "$candidate"
+}
+
+# Every existing challenge's file path, one per line, or nothing -- shared
+# by gr::latest_challenge and gr::challenges_overlapping below.
+gr::all_challenge_files() {
+  local dir file
+  dir="$(gr::challenge_dir)"
+  [[ -d "$dir" ]] || return 0
+  for file in "$dir"/*.json; do
+    [[ -e "$file" ]] && echo "$file"
+  done
+}
+
+# "<id>\t<start>\t<end>" of the existing challenge with the largest .end,
+# or empty if there are none -- "latest" by .end, not necessarily .start.
+gr::latest_challenge() {
+  local files=()
+  mapfile -t files < <(gr::all_challenge_files)
+  [[ "${#files[@]}" -eq 0 ]] && return 0
+  cat "${files[@]}" | jq -s -r 'max_by(.end) | [.challenge_id, .start, .end] | @tsv'
+}
+
+# "<id>\t<start>\t<end>" of the existing challenge with the smallest .end
+# that's still today or later -- the next one to actually finish, whether
+# it's currently ongoing or still merely planned -- or empty if every
+# existing challenge has already ended (or there are none at all). Used
+# by `challenges get` to pick a sensible default when no id is given; see
+# gr::latest_challenge, above, for the "everything's already over"
+# fallback that pairs with this.
+gr::next_ending_challenge() {
+  local today="$1" files=()
+  mapfile -t files < <(gr::all_challenge_files)
+  [[ "${#files[@]}" -eq 0 ]] && return 0
+  cat "${files[@]}" | jq -s -r --arg today "$today" '
+    map(select(.end >= $today))
+    | if length == 0 then empty else min_by(.end) end
+    | [.challenge_id, .start, .end] | @tsv
+  '
+}
+
+# "<id>\t<start>\t<end>" for every existing challenge overlapping [$1, $2],
+# one per line. Used to refuse an *auto-selected* --start that would
+# silently collide -- see challenges_create_command.sh.
+gr::challenges_overlapping() {
+  local start="$1" end="$2" files=()
+  mapfile -t files < <(gr::all_challenge_files)
+  [[ "${#files[@]}" -eq 0 ]] && return 0
+  # end_date, not end -- see gr::create_challenge.
+  cat "${files[@]}" | jq -s -r --arg start "$start" --arg end_date "$end" '
+    .[] | select(.start <= $end_date and .end >= $start)
+    | [.challenge_id, .start, .end] | @tsv
+  '
+}
+
+# Default --start: the day after the latest challenge's own end, if a
+# hypothetical same-rules successor starting there would still be ongoing
+# right now (one test covering both "still ongoing" and "recently ended").
+# Otherwise the start of the current quarter -- no prior challenge, or the
+# trail went cold long enough ago that continuing from it doesn't make
+# sense.
+#
+# Fails outright instead of either, if the latest challenge hasn't started
+# yet ("planned"): chaining off it doesn't make sense, and falling back to
+# the quarter start could land back on an *earlier* challenge instead
+# (confirmed directly: three successive no-arg `create` calls -- #3's
+# latest, #2, is still merely planned, and falling back would silently
+# collide with #1). Naming the actual planned challenge here beats letting
+# that surface later as a generic overlap error.
+gr::default_challenge_start() {
+  local today="$1" latest latest_id latest_start latest_end
+  local candidate_start candidate_end
+  latest="$(gr::latest_challenge)"
+
+  if [[ -n "$latest" ]]; then
+    IFS=$'\t' read -r latest_id latest_start latest_end <<<"$latest"
+
+    if [[ "$today" < "$latest_start" ]]; then
+      echo "error: the latest challenge (challenge $latest_id, $latest_start to $latest_end) hasn't started yet -- can't auto-select --start from it. Pass --start explicitly." >&2
+      return 1
+    fi
+
+    candidate_start="$(date -d "$latest_end +1 day" +%Y-%m-%d)"
+    candidate_end="$(gr::default_challenge_end "$candidate_start")"
+    if [[ ! "$candidate_end" < "$today" ]]; then
+      echo "$candidate_start"
+      return
+    fi
+  fi
+
+  gr::quarter_start_of "$today"
+}
+
+# "<year>\t<idx>" (idx 0-3, matching GR_QUARTER_SEASON/
+# GR_QUARTER_END_MONTHDAY) for the quarter-end within one calendar month
+# of $1, else nothing. <year> is the matched quarter-end's own year, not
+# necessarily $1's -- 2025-01-15 matches 2024-12-31 (Fall), so this
+# reports 2024. Shared by gr::season_title_near and gr::challenge_season,
+# so "is this near a quarter-end, and which one" is answered in exactly
+# one place.
+gr::quarter_near() {
+  local d="$1" base_year check_year idx q_end window_start window_end
+  base_year="$(date -d "$d" +%Y)"
+  for check_year in $((base_year - 1)) "$base_year" $((base_year + 1)); do
+    for idx in 0 1 2 3; do
+      q_end="${check_year}-${GR_QUARTER_END_MONTHDAY[idx]}"
+      window_start="$(gr::last_day_of_prev_month "$q_end")"
+      window_end="$(gr::last_day_of_next_month "$q_end")"
+      if [[ ! "$d" < "$window_start" ]] && [[ ! "$d" > "$window_end" ]]; then
+        printf '%s\t%s\n' "$check_year" "$idx"
+        return
+      fi
+    done
+  done
+}
+
+# "<Season> Challenge <year>" if $1 (an end date) falls within one
+# calendar month of a quarter-end, else empty.
+gr::season_title_near() {
+  local match year idx
+  match="$(gr::quarter_near "$1")"
+  [[ -z "$match" ]] && return
+  IFS=$'\t' read -r year idx <<<"$match"
+  echo "${GR_QUARTER_SEASON[idx]} Challenge ${year}"
+}
+
+# "<year>\t<quarter>" (quarter 1-4, i.e. idx+1) if the challenge $1 to $2
+# is "seasonal" -- the same rule gr::default_challenge_title uses to pick
+# a season name for it (at least GR_CHALLENGE_MIN_DAYS long, end within a
+# month of a quarter-end) -- else nothing. Shared by
+# gr::default_challenge_title and gr::generate_challenge_id, so
+# "seasonal or not" can never quietly disagree between a challenge's title
+# and its id.
+gr::challenge_season() {
+  local start="$1" end="$2" match year idx
+  [[ "$(gr::days_between "$start" "$end")" -ge "$GR_CHALLENGE_MIN_DAYS" ]] || return
+  match="$(gr::quarter_near "$end")"
+  [[ -z "$match" ]] && return
+  IFS=$'\t' read -r year idx <<<"$match"
+  printf '%s\t%s\n' "$year" "$((idx + 1))"
+}
+
+# Default --title: "<Season> Challenge <year>" for a seasonal challenge
+# (gr::challenge_season); else "Unnamed Challenge".
+gr::default_challenge_title() {
+  local start="$1" end="$2" season year quarter
+  season="$(gr::challenge_season "$start" "$end")"
+  if [[ -n "$season" ]]; then
+    IFS=$'\t' read -r year quarter <<<"$season"
+    echo "${GR_QUARTER_SEASON[$((quarter - 1))]} Challenge ${year}"
+    return
+  fi
+  echo "Unnamed Challenge"
+}
+
+# Chooses a new challenge id, without creating anything (see
+# gr::create_challenge) -- "<year>Q<quarter>" for a seasonal challenge
+# (gr::challenge_season; e.g. "2026Q3"), falling back to
+# "<base>-<counter>" (counter starting at 2) if that id is already taken;
+# "<year>-<counter>" (counter starting at 1, straight away -- no bare
+# "<year>" attempt first) for a non-seasonal one, keyed off $1's own year
+# since there's no quarter-end to anchor to. Existence is checked directly
+# against the real challenge files on disk, not any separate counter
+# state -- unlike the purely-sequential-integer scheme this replaced, an
+# id CAN be reused once its challenge is deleted (see CLAUDE.md).
+gr::generate_challenge_id() {
+  local start="$1" end="$2" season year quarter base counter
+
+  season="$(gr::challenge_season "$start" "$end")"
+  if [[ -n "$season" ]]; then
+    IFS=$'\t' read -r year quarter <<<"$season"
+    base="${year}Q${quarter}"
+    if [[ ! -f "$(gr::challenge_file "$base")" ]]; then
+      echo "$base"
+      return
+    fi
+    counter=2
+    while [[ -f "$(gr::challenge_file "${base}-${counter}")" ]]; do
+      counter=$((counter + 1))
+    done
+    echo "${base}-${counter}"
+    return
+  fi
+
+  year="$(date -d "$start" +%Y)"
+  counter=1
+  while [[ -f "$(gr::challenge_file "${year}-${counter}")" ]]; do
+    counter=$((counter + 1))
+  done
+  echo "${year}-${counter}"
+}
+
+# Default --blogs for a challenge running $1 to $2, as of today ($3):
+# every *cached* post (can't discover ones never fetched) published in
+# [$1 - GR_CHALLENGE_BLOG_WINDOW_BEFORE_START_DAYS days, min($2 -
+# GR_CHALLENGE_BLOG_WINDOW_BEFORE_END_DAYS days, $3)] with
+# challenge_potential >= GR_CHALLENGE_BLOG_DEFAULT_MIN_POTENTIAL -- the
+# raw likelihood, not gr_challenge_status's derived/overridable boolean.
+# One blog_id per line, sorted by .published; nothing if none match.
+#
+# Capped at today (never past it) because real challenges reveal their
+# badges/posts gradually over their own run, not all at once at creation
+# -- a post for a badge revealed later genuinely can't exist yet.
+gr::default_challenge_blogs() {
+  local start="$1" end="$2" today="$3" window_start window_end
+  window_start="$(date -d "$start -${GR_CHALLENGE_BLOG_WINDOW_BEFORE_START_DAYS} days" +%Y-%m-%d)"
+  window_end="$(date -d "$end -${GR_CHALLENGE_BLOG_WINDOW_BEFORE_END_DAYS} days" +%Y-%m-%d)"
+  [[ "$today" < "$window_end" ]] && window_end="$today"
+
+  local dir file files=()
+  dir="$(gr::blog_dir)"
+  [[ -d "$dir" ]] || return 0
+  for file in "$dir"/*.json; do
+    [[ -e "$file" ]] && files+=("$file")
+  done
+  [[ "${#files[@]}" -eq 0 ]] && return 0
+
+  cat "${files[@]}" | jq -s -r \
+    --arg since "$window_start" \
+    --arg until "$window_end" \
+    --argjson min_potential "$GR_CHALLENGE_BLOG_DEFAULT_MIN_POTENTIAL" '
+      map(select(
+        (.published != null) and (.published >= $since) and (.published <= $until)
+        and ((.challenge_potential // 0) >= $min_potential)
+      ))
+      | sort_by(.published)
+      | .[].blog_id
+    '
+}
+
+# src/lib/goodreads_config.sh
+# Every config.ini key goodreads itself reads -- the registry `config
+# list`/`get`/`set` key off. Just the user-facing catalog; the real
+# default for each one is still asserted at its own gr::config_get call
+# site (http.sh, goodreads_books.sh, ...) -- keep in sync with those.
+readonly GR_CONFIG_KEYS=(
+  curl_bin
+  http_request_delay_min
+  http_request_delay_max
+  http_retry_delays
+  book_cache_ttl
+)
+
+gr::config_is_known_key() {
+  local key="$1" k
+  for k in "${GR_CONFIG_KEYS[@]}"; do
+    [[ "$k" == "$key" ]] && return 0
+  done
+  return 1
+}
+
+# One-line description for `config list` -- a case statement, not a
+# second array parallel to GR_CONFIG_KEYS, so a key missing from one
+# fails loudly (empty default) instead of silently misaligning indices.
+gr::config_describe() {
+  case "$1" in
+    curl_bin) echo "curl command to run for HTTP requests (see CLAUDE.md's auto-detection cascade for what's used when unset)" ;;
+    http_request_delay_min) echo "minimum delay, in seconds, enforced between requests" ;;
+    http_request_delay_max) echo "maximum delay, in seconds, enforced between requests" ;;
+    http_retry_delays) echo "comma-separated retry backoff delays, in seconds, for empty-body WAF-challenge responses" ;;
+    book_cache_ttl) echo "how long, in seconds, a cached book is considered fresh before 'fetch --all' refetches it" ;;
+    *) echo "" ;;
+  esac
+}
+
+# What each key falls back to when unset -- shown by `config list`/`get`.
+# curl_bin has no single default value (its fallback is the whole
+# priority cascade), so it gets a description instead.
+gr::config_default_display() {
+  case "$1" in
+    curl_bin) echo "auto-detected -- see CLAUDE.md" ;;
+    http_request_delay_min) echo "$GR_HTTP_REQUEST_DELAY_MIN_DEFAULT" ;;
+    http_request_delay_max) echo "$GR_HTTP_REQUEST_DELAY_MAX_DEFAULT" ;;
+    http_retry_delays) echo "$GR_HTTP_RETRY_DELAYS_DEFAULT" ;;
+    book_cache_ttl) echo "$GR_BOOK_CACHE_TTL_DEFAULT" ;;
+    *) echo "" ;;
+  esac
+}
+
 # src/lib/http.sh
 readonly GR_USER_AGENT='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+
+# Fallback curl binary when nothing else is configured/found -- see
+# gr::init_curl_cmd.
+readonly GR_CURL_BIN_DEFAULT="curl"
+
+# curl-impersonate's wrapper script names (see CLAUDE.md), checked in
+# this order against $PATH: Chrome/Edge (BoringSSL) before Firefox (NSS)
+# before Safari (not a real port, just Chrome + Safari-shaped flags).
+readonly GR_CURL_IMPERSONATE_CANDIDATES=(
+  curl_chrome116 curl_chrome110 curl_chrome107 curl_chrome104
+  curl_chrome101 curl_chrome100 curl_chrome99 curl_chrome99_android
+  curl_edge101 curl_edge99
+  curl_ff117 curl_ff109 curl_ff102 curl_ff100 curl_ff98 curl_ff95 curl_ff91esr
+  curl_safari15_5 curl_safari15_3
+)
+
+# The image+wrapper gr::init_curl_cmd's Docker fallback crafts a `docker
+# run` around. `:latest` on this image is *Firefox*, not Chrome (confirmed
+# directly, see CLAUDE.md) -- hence the explicit version+flavor tag.
+readonly GR_CURL_IMPERSONATE_DOCKER_IMAGE="lwthiker/curl-impersonate:0.6.1-chrome"
+readonly GR_CURL_IMPERSONATE_DOCKER_WRAPPER="curl_chrome116"
 
 # Default for the http_retry_delays config key (comma-separated seconds) —
 # see gr::http_get.
@@ -1680,20 +2786,16 @@ readonly GR_HTTP_RETRY_DELAYS_DEFAULT="20,100,480"
 readonly GR_HTTP_REQUEST_DELAY_MIN_DEFAULT=3
 readonly GR_HTTP_REQUEST_DELAY_MAX_DEFAULT=10
 
-# The one place that establishes COOKIE_JAR's default for account-less
-# scraping — sets the real (non-local) global variable to
-# gr::generic_cookie_jar unless a caller already set it to something else.
-# Called once, globally, from before_hook() (src/before.sh) — see
-# gr::http_get below for why the default lives here rather than in it.
+# Sets the global COOKIE_JAR to gr::generic_cookie_jar unless already set.
+# Called once from before_hook() (src/before.sh) — see gr::http_get for
+# why the default lives here rather than in it.
 gr::init_cookie_jar() {
   : "${COOKIE_JAR:=$(gr::generic_cookie_jar)}"
 }
 
-# The cookie jar for account-less requests (public pages — book/shelf/etc.
-# scraping that doesn't need a login). Lives at the root of the data
-# directory, alongside (not inside) accounts/<id>/. Auto-initialized empty
-# on first use, same idea as bashly's own config_load touching CONFIG_FILE
-# into existence.
+# Cookie jar for account-less (login-not-needed) requests — root of the
+# data dir, alongside (not inside) accounts/<id>/. Auto-created empty on
+# first use, same idea as bashly's own config_load/CONFIG_FILE.
 gr::generic_cookie_jar() {
   local jar
   jar="$(gr::data_dir)/cookies.txt"
@@ -1701,21 +2803,17 @@ gr::generic_cookie_jar() {
   echo "$jar"
 }
 
-# Enforces a minimum spacing between requests: sleeps (if needed) so that
-# returning from this call never happens sooner than a random point between
-# http_request_delay_min and http_request_delay_max seconds (config keys,
-# seconds — see GR_HTTP_REQUEST_DELAY_MIN_DEFAULT/GR_HTTP_REQUEST_DELAY_MAX_DEFAULT
-# for the fallbacks) after this same function's own *previous* return. $1 is the
-# request URL that's about to be made — kept only for the log message for
-# now, a hook for possible future per-host pacing rather than something
-# used for that yet.
+# Sleeps if needed so this call returns no sooner than a random point
+# between http_request_delay_min/max seconds after its own previous
+# return. $1 (URL) unused for now — a hook for possible per-host pacing.
 #
-# State (the timestamp of that previous return) lives on disk, not in a
-# shell variable: each `goodreads` invocation is its own process, and this
-# needs to pace requests across separate invocations, not just within one.
-# No locking — this is a single-user CLI tool, concurrent invocations
-# racing each other isn't a scenario worth guarding against here. First
-# call ever (no state file yet) never waits.
+# Deliberately silent: unlike gr::http_get's rare WAF-retry warning, this
+# fires on nearly every request, and used to print one — during a
+# `fetch` command's status line that became a wall of text, one line per
+# item, drowning out the display it was meant to replace.
+#
+# State lives on disk (each invocation is its own process, spans must
+# survive across them), no locking (single-user CLI).
 gr::throttle() {
   local url="$1"
   local state_file; state_file="$(gr::data_dir)/.last_request_at"
@@ -1728,48 +2826,91 @@ gr::throttle() {
     local last; last="$(<"$state_file")"
     local delay=$(( min_delay + RANDOM % (max_delay - min_delay + 1) ))
     local wait=$(( last + delay - $(date +%s) ))
-    if (( wait > 0 )); then
-      echo "throttling request to $url — waiting ${wait}s before continuing" >&2
-      sleep "$wait"
-    fi
+    (( wait > 0 )) && sleep "$wait"
   fi
 
   date +%s > "$state_file"
 }
 
+# Resolves which curl command to run into $GR_CURL_CMD (array) and
+# $GR_CURL_UA_OPTS -- shared by gr::http_get/gr::http_status. Memoized via
+# $GR_CURL_CMD_RESOLVED for the process lifetime: resolved lazily (many
+# commands never touch the network) then reused for every later call, so
+# a batch fetch doesn't re-probe $PATH/Docker per request.
+#
+# Priority order, per explicit direction:
+#   1. The `curl_bin` config key, if set -- explicit always wins.
+#   2. First of GR_CURL_IMPERSONATE_CANDIDATES found on $PATH.
+#   3. A `docker run` command built around GR_CURL_IMPERSONATE_DOCKER_IMAGE/
+#      _WRAPPER, if `docker info` actually answers (not just the binary
+#      existing). Built fresh every process (not a static config string) so
+#      its `-u <uid>:<gid>` / `-v <data_dir>:<data_dir>` bind mount are
+#      always correct for this run's user/data dir -- getting either wrong
+#      silently breaks cookie persistence or leaves root-owned files behind
+#      (see CLAUDE.md).
+#   4. Plain "curl" (GR_CURL_BIN_DEFAULT), if on $PATH.
+#   5. A hard error.
+#
+# $GR_CURL_UA_OPTS is `-A "$GR_USER_AGENT"` only for the plain-curl case —
+# an impersonate target already bakes in its own matching UA/headers, and
+# layering a different one on top would create the exact UA/TLS mismatch
+# bot detection looks for.
+gr::init_curl_cmd() {
+  if [[ -n "${GR_CURL_CMD_RESOLVED:-}" ]]; then
+    return 0
+  fi
+
+  local curl_bin
+  curl_bin="$(gr::config_get curl_bin "")"
+
+  if [[ -z "$curl_bin" ]]; then
+    local candidate
+    for candidate in "${GR_CURL_IMPERSONATE_CANDIDATES[@]}"; do
+      if command -v "$candidate" > /dev/null 2>&1; then
+        curl_bin="$candidate"
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "$curl_bin" ]] && command -v docker > /dev/null 2>&1 && docker info > /dev/null 2>&1; then
+    local data_dir
+    data_dir="$(gr::data_dir)"
+    curl_bin="docker run --rm -u $(id -u):$(id -g) -v ${data_dir}:${data_dir} $GR_CURL_IMPERSONATE_DOCKER_IMAGE $GR_CURL_IMPERSONATE_DOCKER_WRAPPER"
+  fi
+
+  if [[ -z "$curl_bin" ]] && command -v "$GR_CURL_BIN_DEFAULT" > /dev/null 2>&1; then
+    curl_bin="$GR_CURL_BIN_DEFAULT"
+  fi
+
+  if [[ -z "$curl_bin" ]]; then
+    echo "error: no usable curl found -- install curl, curl-impersonate, or Docker" >&2
+    return 1
+  fi
+
+  read -r -a GR_CURL_CMD <<< "$curl_bin"
+  GR_CURL_UA_OPTS=()
+  [[ "$curl_bin" == "$GR_CURL_BIN_DEFAULT" ]] && GR_CURL_UA_OPTS=(-A "$GR_USER_AGENT")
+  GR_CURL_CMD_RESOLVED=1
+}
+
 # shellcheck disable=SC2154 # COOKIE_JAR is meant to be set by the caller, e.g. `COOKIE_JAR=... gr::http_get "$url"`
-# curl wrapper for a single GET: prints the response body to stdout and
-# nothing else — it's entirely up to the caller how to handle that (redirect
-# to a file, capture into a variable, pipe straight into the next command).
-# Fails like curl's own --fail: non-2xx responses and transport errors both
-# return non-zero with no body on stdout, rather than "successfully"
-# printing an error page. Also fails immediately, before touching the
-# network at all, if --offline was given — this is the one place that
-# enforces it, so every caller gets offline-safety for free rather than
-# needing to check gr::offline itself.
+# curl wrapper for a single GET: prints the response body to stdout,
+# nothing else. Fails like curl's own --fail. Fails immediately under
+# --offline — enforced here so every caller gets it for free.
 #
-# Cookie jar is read from the COOKIE_JAR environment variable, not a
-# parameter — set it as a one-off prefix on the call, e.g.
-# `COOKIE_JAR=path/to/account/cookies.txt gr::http_get "$url"`. This
-# function does *not* pick a default when COOKIE_JAR is empty — it just
-# makes a cookie-less request in that case. Callers that want the shared
-# account-less jar must arrange for COOKIE_JAR to already be set to it
-# (gr::init_cookie_jar) before calling in.
+# Cookie jar comes from the COOKIE_JAR env var, not a parameter (prefix
+# form, e.g. `COOKIE_JAR=path gr::http_get "$url"`); empty means no jar.
+# Callers wanting the shared account-less jar set it via gr::init_cookie_jar.
 #
-# A response curl itself considers successful (2xx, so --fail doesn't
-# trigger) but with a completely empty body is treated as a *retryable*
-# failure, not success — this is AWS WAF's bot-challenge signature on
-# goodreads.com (HTTP 202 + empty body + an x-amzn-waf-action: challenge
-# header curl's own --fail can't see, since 202 is "success"). Confirmed
-# directly, three times: real bulk-fetch batches got exactly this after the
-# first 2, then 3, then 3 requests again — a burst allowance then a hard
-# block lasting well beyond any reasonable built-in retry window, not a
-# fixed request count. Retried here with a backoff read fresh from the
-# `http_retry_delays` config key each call (comma-separated seconds, e.g.
-# `10,30,90` — see GR_HTTP_RETRY_DELAYS_DEFAULT for the fallback when
-# unset) via gr::config_get; still empty after exhausting it means fail
-# loudly rather than silently "succeed" with nothing, so callers don't
-# cache a challenge page as if it were real content.
+# A 2xx response with a completely empty body is treated as *retryable*
+# failure, not success — AWS WAF's bot-challenge signature on
+# goodreads.com (HTTP 202 + empty body, invisible to --fail; confirmed
+# directly: bulk fetches hit it after 2-3 requests, a burst allowance
+# then a block outlasting any reasonable retry window). Retried with
+# backoff from `http_retry_delays` (config key, comma-separated seconds);
+# still empty after exhausting it fails loudly rather than caching a
+# challenge page as real content.
 gr::http_get() {
   local url="$1"
 
@@ -1777,6 +2918,8 @@ gr::http_get() {
     echo "error: cannot fetch $url — --offline was given" >&2
     return 1
   fi
+
+  gr::init_curl_cmd || return 1
 
   local cookie_opts=()
   [[ -n "${COOKIE_JAR:-}" ]] && cookie_opts=(-c "$COOKIE_JAR" -b "$COOKIE_JAR")
@@ -1791,7 +2934,7 @@ gr::http_get() {
     body="$(mktemp)"
 
     gr::throttle "$url"
-    if ! curl -sLf -A "$GR_USER_AGENT" "${cookie_opts[@]}" "$url" > "$body"; then
+    if ! "${GR_CURL_CMD[@]}" -sLf "${GR_CURL_UA_OPTS[@]}" "${cookie_opts[@]}" "$url" > "$body"; then
       rm -f "$body"
       return 1
     fi
@@ -1805,11 +2948,12 @@ gr::http_get() {
     rm -f "$body"
     if (( attempt < max_attempts )); then
       local delay="${delays[$((attempt - 1))]}"
-      echo "warning: empty response for $url (looks like a bot challenge) — retrying in ${delay}s" >&2
+      gr::term_status "warning: empty response for $url (looks like a bot challenge) — retrying in ${delay}s"
       sleep "$delay"
     fi
   done
 
+  gr::term_clear_line
   echo "error: $url kept returning an empty response after retries — likely rate-limited/challenged by the site" >&2
   return 1
 }
@@ -1825,11 +2969,13 @@ gr::http_status() {
     return 1
   fi
 
+  gr::init_curl_cmd || return 1
+
   local cookie_opts=()
   [[ -n "${COOKIE_JAR:-}" ]] && cookie_opts=(-c "$COOKIE_JAR" -b "$COOKIE_JAR")
 
   gr::throttle "$url"
-  curl -sL -o /dev/null -w '%{http_code}' -A "$GR_USER_AGENT" "${cookie_opts[@]}" "$url"
+  "${GR_CURL_CMD[@]}" -sL -o /dev/null -w '%{http_code}' "${GR_CURL_UA_OPTS[@]}" "${cookie_opts[@]}" "$url"
 }
 
 # src/lib/ini.sh
@@ -1945,12 +3091,19 @@ send_completions() {
   echo $'    7:--offline) return 0 ;;'
   echo $'    7:--help|7:-h) return 0 ;;'
   echo $'    8:--data-path) return 2 ;;'
+  echo $'    8:--since|8:-s) return 2 ;;'
+  echo $'    8:--until|8:-u) return 2 ;;'
+  echo $'    8:--limit|8:-l) return 2 ;;'
   echo $'    8:--offline) return 0 ;;'
   echo $'    8:--help|8:-h) return 0 ;;'
+  echo $'    8:--all|8:-a) return 0 ;;'
+  echo $'    8:--reverse|8:-r) return 0 ;;'
   echo $'    9:--data-path) return 2 ;;'
   echo $'    9:--offline) return 0 ;;'
   echo $'    9:--help|9:-h) return 0 ;;'
-  echo $'    9:--all|9:-a) return 0 ;;'
+  echo $'    9:--all|9:-A) return 0 ;;'
+  echo $'    9:--update|9:-U) return 0 ;;'
+  echo $'    9:--batch|9:-B) return 0 ;;'
   echo $'    10:--data-path) return 2 ;;'
   echo $'    10:--since|10:-s) return 2 ;;'
   echo $'    10:--until|10:-u) return 2 ;;'
@@ -1963,6 +3116,7 @@ send_completions() {
   echo $'    11:--offline) return 0 ;;'
   echo $'    11:--help|11:-h) return 0 ;;'
   echo $'    11:--json|11:-J) return 0 ;;'
+  echo $'    11:--update|11:-U) return 0 ;;'
   echo $'    12:--data-path) return 2 ;;'
   echo $'    12:--offline) return 0 ;;'
   echo $'    12:--help|12:-h) return 0 ;;'
@@ -1974,13 +3128,17 @@ send_completions() {
   echo $'    13:--help|13:-h) return 0 ;;'
   echo $'    13:--all|13:-a) return 0 ;;'
   echo $'    14:--data-path) return 2 ;;'
+  echo $'    14:--limit|14:-l) return 2 ;;'
   echo $'    14:--offline) return 0 ;;'
   echo $'    14:--help|14:-h) return 0 ;;'
   echo $'    15:--data-path) return 2 ;;'
   echo $'    15:--blog|15:-b) return 2 ;;'
+  echo $'    15:--challenge) return 2 ;;'
   echo $'    15:--offline) return 0 ;;'
   echo $'    15:--help|15:-h) return 0 ;;'
-  echo $'    15:--all|15:-a) return 0 ;;'
+  echo $'    15:--all|15:-A) return 0 ;;'
+  echo $'    15:--update|15:-U) return 0 ;;'
+  echo $'    15:--batch|15:-B) return 0 ;;'
   echo $'    16:--data-path) return 2 ;;'
   echo $'    16:--limit|16:-l) return 2 ;;'
   echo $'    16:--offline) return 0 ;;'
@@ -1989,10 +3147,65 @@ send_completions() {
   echo $'    17:--offline) return 0 ;;'
   echo $'    17:--help|17:-h) return 0 ;;'
   echo $'    17:--json|17:-J) return 0 ;;'
+  echo $'    17:--update|17:-U) return 0 ;;'
   echo $'    18:--data-path) return 2 ;;'
   echo $'    18:--offline) return 0 ;;'
   echo $'    18:--help|18:-h) return 0 ;;'
   echo $'    18:--all|18:-a) return 0 ;;'
+  echo $'    19:--data-path) return 2 ;;'
+  echo $'    19:--offline) return 0 ;;'
+  echo $'    19:--help|19:-h) return 0 ;;'
+  echo $'    20:--data-path) return 2 ;;'
+  echo $'    20:--id) return 2 ;;'
+  echo $'    20:--title) return 2 ;;'
+  echo $'    20:--start) return 2 ;;'
+  echo $'    20:--end) return 2 ;;'
+  echo $'    20:--badges) return 2 ;;'
+  echo $'    20:--badge) return 2 ;;'
+  echo $'    20:--blogs) return 2 ;;'
+  echo $'    20:--blog) return 2 ;;'
+  echo $'    20:--offline) return 0 ;;'
+  echo $'    20:--help|20:-h) return 0 ;;'
+  echo $'    20:--no-badges) return 0 ;;'
+  echo $'    20:--no-blogs) return 0 ;;'
+  echo $'    20:--no-goals) return 0 ;;'
+  echo $'    21:--data-path) return 2 ;;'
+  echo $'    21:--offline) return 0 ;;'
+  echo $'    21:--help|21:-h) return 0 ;;'
+  echo $'    22:--data-path) return 2 ;;'
+  echo $'    22:--offline) return 0 ;;'
+  echo $'    22:--help|22:-h) return 0 ;;'
+  echo $'    22:--json|22:-J) return 0 ;;'
+  echo $'    23:--data-path) return 2 ;;'
+  echo $'    23:--title) return 2 ;;'
+  echo $'    23:--start) return 2 ;;'
+  echo $'    23:--end) return 2 ;;'
+  echo $'    23:--add-blog) return 2 ;;'
+  echo $'    23:--remove-blog) return 2 ;;'
+  echo $'    23:--add-badge) return 2 ;;'
+  echo $'    23:--remove-badge) return 2 ;;'
+  echo $'    23:--offline) return 0 ;;'
+  echo $'    23:--help|23:-h) return 0 ;;'
+  echo $'    24:--data-path) return 2 ;;'
+  echo $'    24:--offline) return 0 ;;'
+  echo $'    24:--help|24:-h) return 0 ;;'
+  echo $'    24:--all|24:-a) return 0 ;;'
+  echo $'    25:--data-path) return 2 ;;'
+  echo $'    25:--offline) return 0 ;;'
+  echo $'    25:--help|25:-h) return 0 ;;'
+  echo $'    26:--data-path) return 2 ;;'
+  echo $'    26:--offline) return 0 ;;'
+  echo $'    26:--help|26:-h) return 0 ;;'
+  echo $'    27:--data-path) return 2 ;;'
+  echo $'    27:--offline) return 0 ;;'
+  echo $'    27:--help|27:-h) return 0 ;;'
+  echo $'    28:--data-path) return 2 ;;'
+  echo $'    28:--offline) return 0 ;;'
+  echo $'    28:--help|28:-h) return 0 ;;'
+  echo $'    29:--data-path) return 2 ;;'
+  echo $'    29:--offline) return 0 ;;'
+  echo $'    29:--help|29:-h) return 0 ;;'
+  echo $'    29:--all|29:-a) return 0 ;;'
   echo $'  esac'
   echo $''
   echo $'  return 1'
@@ -2033,6 +3246,14 @@ send_completions() {
   echo $'        node_id=14'
   echo $'        node_word_count=1'
   echo $'        ;;'
+  echo $'      0:challenges)'
+  echo $'        node_id=19'
+  echo $'        node_word_count=1'
+  echo $'        ;;'
+  echo $'      0:config)'
+  echo $'        node_id=25'
+  echo $'        node_word_count=1'
+  echo $'        ;;'
   echo $'      2:import)'
   echo $'        node_id=3'
   echo $'        node_word_count=2'
@@ -2057,7 +3278,7 @@ send_completions() {
   echo $'        node_id=7'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      8:update)'
+  echo $'      8:fetch)'
   echo $'        node_id=9'
   echo $'        node_word_count=2'
   echo $'        ;;'
@@ -2077,7 +3298,7 @@ send_completions() {
   echo $'        node_id=12'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      8:delete)'
+  echo $'      8:remove)'
   echo $'        node_id=13'
   echo $'        node_word_count=2'
   echo $'        ;;'
@@ -2085,7 +3306,7 @@ send_completions() {
   echo $'        node_id=13'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      14:update)'
+  echo $'      14:fetch)'
   echo $'        node_id=15'
   echo $'        node_word_count=2'
   echo $'        ;;'
@@ -2101,12 +3322,64 @@ send_completions() {
   echo $'        node_id=17'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      14:delete)'
+  echo $'      14:remove)'
   echo $'        node_id=18'
   echo $'        node_word_count=2'
   echo $'        ;;'
   echo $'      14:rm)'
   echo $'        node_id=18'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      19:create)'
+  echo $'        node_id=20'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      19:new)'
+  echo $'        node_id=20'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      19:list)'
+  echo $'        node_id=21'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      19:ls)'
+  echo $'        node_id=21'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      19:get)'
+  echo $'        node_id=22'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      19:edit)'
+  echo $'        node_id=23'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      19:remove)'
+  echo $'        node_id=24'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      19:rm)'
+  echo $'        node_id=24'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      25:list)'
+  echo $'        node_id=26'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      25:ls)'
+  echo $'        node_id=26'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      25:get)'
+  echo $'        node_id=27'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      25:set)'
+  echo $'        node_id=28'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      25:unset)'
+  echo $'        node_id=29'
   echo $'        node_word_count=2'
   echo $'        ;;'
   echo $'      *)'
@@ -2196,6 +3469,15 @@ send_completions() {
   echo $'    8:--data-path)'
   echo $'      return'
   echo $'      ;;'
+  echo $'    8:--since|8:-s)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    8:--until|8:-u)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    8:--limit|8:-l)'
+  echo $'      return'
+  echo $'      ;;'
   echo $'    9:--data-path)'
   echo $'      return'
   echo $'      ;;'
@@ -2223,11 +3505,18 @@ send_completions() {
   echo $'    14:--data-path)'
   echo $'      return'
   echo $'      ;;'
+  echo $'    14:--limit|14:-l)'
+  echo $'      return'
+  echo $'      ;;'
   echo $'    15:--data-path)'
   echo $'      return'
   echo $'      ;;'
   echo $'    15:--blog|15:-b)'
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/blogs\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    15:--challenge)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/challenges\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
   echo $'      return'
   echo $'      ;;'
   echo $'    16:--data-path)'
@@ -2242,12 +3531,91 @@ send_completions() {
   echo $'    18:--data-path)'
   echo $'      return'
   echo $'      ;;'
+  echo $'    19:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    20:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    20:--id)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    20:--title)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    20:--start)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    20:--end)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    20:--badges)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    20:--badge)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    20:--blogs)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    20:--blog)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    21:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    22:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    23:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    23:--title)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    23:--start)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    23:--end)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    23:--add-blog)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/blogs\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    23:--remove-blog)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    23:--add-badge)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    23:--remove-badge)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    24:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    26:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    27:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    28:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    29:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
   echo $'  esac'
   echo $''
   echo $'  if [[ "${cur:0:1}" != "-" ]] && (( positional_index == 0 )); then'
   echo $'    case "$node_id" in'
   echo $'      0)'
-  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "completions auth blogs books" -- "$cur")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "completions auth blogs books challenges config" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
   echo $'      2)'
@@ -2255,11 +3623,19 @@ send_completions() {
   echo $'        return'
   echo $'        ;;'
   echo $'      8)'
-  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "update list ls get challenge delete rm" -- "$cur")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "fetch list ls get challenge remove rm $(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/blogs\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
   echo $'      14)'
-  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "update list ls get delete rm" -- "$cur")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "fetch list ls get remove rm $(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/books\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      19)'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "create new list ls get edit remove rm" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      25)'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "list ls get set unset" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
   echo $'    esac'
@@ -2337,6 +3713,11 @@ send_completions() {
   echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
   echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--all" "-a" || words+=("--all" "-a")'
+  echo $'        _goodreads_completions_option_seen "--since" "-s" || words+=("--since" "-s")'
+  echo $'        _goodreads_completions_option_seen "--until" "-u" || words+=("--until" "-u")'
+  echo $'        _goodreads_completions_option_seen "--reverse" "-r" || words+=("--reverse" "-r")'
+  echo $'        _goodreads_completions_option_seen "--limit" "-l" || words+=("--limit" "-l")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -2345,7 +3726,9 @@ send_completions() {
   echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
   echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
-  echo $'        _goodreads_completions_option_seen "--all" "-a" || words+=("--all" "-a")'
+  echo $'        _goodreads_completions_option_seen "--all" "-A" || words+=("--all" "-A")'
+  echo $'        _goodreads_completions_option_seen "--update" "-U" || words+=("--update" "-U")'
+  echo $'        _goodreads_completions_option_seen "--batch" "-B" || words+=("--batch" "-B")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -2368,6 +3751,7 @@ send_completions() {
   echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
   echo $'        _goodreads_completions_option_seen "--json" "-J" || words+=("--json" "-J")'
+  echo $'        _goodreads_completions_option_seen "--update" "-U" || words+=("--update" "-U")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -2396,6 +3780,7 @@ send_completions() {
   echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
   echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--limit" "-l" || words+=("--limit" "-l")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -2404,8 +3789,11 @@ send_completions() {
   echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
   echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
-  echo $'        _goodreads_completions_option_seen "--all" "-a" || words+=("--all" "-a")'
+  echo $'        _goodreads_completions_option_seen "--all" "-A" || words+=("--all" "-A")'
+  echo $'        _goodreads_completions_option_seen "--update" "-U" || words+=("--update" "-U")'
   echo $'        words+=("--blog" "-b")'
+  echo $'        _goodreads_completions_option_seen "--challenge" || words+=("--challenge")'
+  echo $'        _goodreads_completions_option_seen "--batch" "-B" || words+=("--batch" "-B")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -2424,6 +3812,7 @@ send_completions() {
   echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
   echo $'        _goodreads_completions_option_seen "--json" "-J" || words+=("--json" "-J")'
+  echo $'        _goodreads_completions_option_seen "--update" "-U" || words+=("--update" "-U")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -2436,7 +3825,121 @@ send_completions() {
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
+  echo $'      19)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      20)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--id" || words+=("--id")'
+  echo $'        _goodreads_completions_option_seen "--title" || words+=("--title")'
+  echo $'        _goodreads_completions_option_seen "--start" || words+=("--start")'
+  echo $'        _goodreads_completions_option_seen "--end" || words+=("--end")'
+  echo $'        _goodreads_completions_option_seen "--badges" || words+=("--badges")'
+  echo $'        words+=("--badge")'
+  echo $'        _goodreads_completions_option_seen "--no-badges" || words+=("--no-badges")'
+  echo $'        _goodreads_completions_option_seen "--blogs" || words+=("--blogs")'
+  echo $'        words+=("--blog")'
+  echo $'        _goodreads_completions_option_seen "--no-blogs" || words+=("--no-blogs")'
+  echo $'        _goodreads_completions_option_seen "--no-goals" || words+=("--no-goals")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      21)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      22)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--json" "-J" || words+=("--json" "-J")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      23)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--title" || words+=("--title")'
+  echo $'        _goodreads_completions_option_seen "--start" || words+=("--start")'
+  echo $'        _goodreads_completions_option_seen "--end" || words+=("--end")'
+  echo $'        words+=("--add-blog")'
+  echo $'        words+=("--remove-blog")'
+  echo $'        words+=("--add-badge")'
+  echo $'        words+=("--remove-badge")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      24)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--all" "-a" || words+=("--all" "-a")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      25)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      26)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      27)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      28)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      29)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--all" "-a" || words+=("--all" "-a")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
   echo $'    esac'
+  echo $'  fi'
+  echo $''
+  echo $'  if [[ "$node_id" == "8" ]] && (( positional_index >= 0 )); then'
+  echo $'    while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "fetch list ls get challenge remove rm $(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/blogs\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'    return'
   echo $'  fi'
   echo $''
   echo $'  if [[ "$node_id" == "9" ]] && (( positional_index >= 0 )); then'
@@ -2456,6 +3959,11 @@ send_completions() {
   echo $'    return'
   echo $'  fi'
   echo $''
+  echo $'  if [[ "$node_id" == "14" ]] && (( positional_index >= 0 )); then'
+  echo $'    while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "fetch list ls get remove rm $(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/books\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'    return'
+  echo $'  fi'
+  echo $''
   echo $'  if [[ "$node_id" == "15" ]] && (( positional_index >= 0 )); then'
   echo $'    return'
   echo $'  fi'
@@ -2466,6 +3974,15 @@ send_completions() {
   echo $'  fi'
   echo $''
   echo $'  if [[ "$node_id" == "18" ]] && (( positional_index >= 0 )); then'
+  echo $'    return'
+  echo $'  fi'
+  echo $''
+  echo $'  if [[ "$node_id" == "24" ]] && (( positional_index >= 0 )); then'
+  echo $'    return'
+  echo $'  fi'
+  echo $''
+  echo $'  if [[ "$node_id" == "29" ]] && (( positional_index >= 0 )); then'
+  echo $'    while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_delay_min http_request_delay_max http_retry_delays book_cache_ttl" -- "$cur")'
   echo $'    return'
   echo $'  fi'
   echo $''
@@ -2487,9 +4004,29 @@ send_completions() {
   echo $'      return'
   echo $'      ;;'
   echo $'    11:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/blogs\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
   echo $'      return'
   echo $'      ;;'
   echo $'    17:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/books\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    22:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/challenges\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    23:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/challenges\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    27:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_delay_min http_request_delay_max http_retry_delays book_cache_ttl" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    28:0)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    28:1)'
   echo $'      return'
   echo $'      ;;'
   echo $'  esac'
@@ -2505,6 +4042,41 @@ goodreads_completions_command() {
 
   # src/completions_command.sh
   send_completions
+
+  # send_completions (lib/send_completions.sh) is bashly-generated/vendored,
+  # never hand-edited -- this file isn't, so it's the place for a small
+  # override: bashly's own candidate lists include both a command's long
+  # form and its short alias (e.g. "list"/"ls") as equal words, so a bare
+  # TAB lists both -- per explicit direction, only the long form should
+  # show there; the short form should only appear once it's actually needed
+  # to disambiguate. Re-registers completion with a wrapper that runs the
+  # real `_goodreads_completions` first, then drops a short form from
+  # COMPREPLY whenever its long form also made that same result.
+  cat <<'EOF'
+
+_goodreads_alias_pairs=("list:ls" "create:new" "remove:rm")
+
+_goodreads_completions_filtered() {
+  _goodreads_completions
+  local pair long short w keep filtered
+  for pair in "${_goodreads_alias_pairs[@]}"; do
+    long="${pair%%:*}"
+    short="${pair#*:}"
+    keep=1
+    for w in "${COMPREPLY[@]}"; do
+      [[ "$w" == "$long" ]] && { keep=0; break; }
+    done
+    if [[ "$keep" -eq 0 ]]; then
+      filtered=()
+      for w in "${COMPREPLY[@]}"; do
+        [[ "$w" == "$short" ]] || filtered+=("$w")
+      done
+      COMPREPLY=("${filtered[@]}")
+    fi
+  done
+}
+complete -F _goodreads_completions_filtered goodreads
+EOF
 
 }
 
@@ -2669,13 +4241,26 @@ goodreads_auth_logout_command() {
 }
 
 # :command.function
-goodreads_blogs_update_command() {
+goodreads_blogs_fetch_command() {
 
-  # src/blogs_update_command.sh
+  # src/blogs_fetch_command.sh
   : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
   # shellcheck disable=SC2154 # args is bashly's global associative array
   all="${args[--all]:-}"
+  update_flag="${args[--update]:-}"
   blog_ids="${args[blog_id]:-}"
+  # Must be a plain if (see gr::fetch_quiet's doc comment, lib/goodreads.sh)
+  # -- a command substitution silently breaks its terminal check, and a
+  # bare `&&` would trip set -e whenever it's *not* quiet.
+  quiet=""
+  if gr::fetch_quiet "${args[--batch]:-}"; then
+    quiet=1
+  fi
+
+  # Pre-resolve the curl command here, before gr::run_fetch spawns a
+  # subshell per item -- see books_fetch_command.sh's own copy of this
+  # comment for why. Skipped under --offline, since nothing here calls curl.
+  gr::offline || gr::init_curl_cmd || exit 1
 
   if [[ -n "$all" && -n "$blog_ids" ]]; then
     echo "error: --all and specific blog ids are mutually exclusive" >&2
@@ -2684,53 +4269,104 @@ goodreads_blogs_update_command() {
 
   # gr::blog_json succeeds both when it fetches real content and when it
   # just confirms/marks a post permanently removed — distinguish for the
-  # outcome message.
-  report_outcome() {
-    local post_id="$1"
+  # outcome message. $2 is the wording for a genuine success ("fetched" for
+  # a post that wasn't cached at all, "refreshed" for one that was).
+  outcome_text() {
+    local post_id="$1" verb="$2"
     if [[ "$(jq -r '.removed_remotely // false' "$(gr::blog_file "$post_id")" 2>/dev/null)" == "true" ]]; then
       echo "$post_id -> confirmed removed remotely"
     else
-      echo "$post_id -> refreshed"
+      echo "$post_id -> $verb"
     fi
   }
 
-  # Shared by --all and an explicit id list.
-  force_refresh_many() {
-    if [[ "$#" -eq 0 ]]; then
-      echo "No cached blog posts yet."
-      return 0
+  # Fetches or updates one post -- see gr::run_fetch (lib/goodreads.sh) for
+  # the calling convention this follows: outcome text on stdout for
+  # success/skip, nothing on failure (a failure is printed straight to
+  # stderr instead, right here, after clearing the status line so it can't
+  # garble together with it). $2 (force) is one of three policies -- the
+  # same shape books_fetch_command.sh uses for a real TTL, kept consistent
+  # here even though the blog cache's own TTL is infinite (see "Blog post
+  # cache" in CLAUDE.md), per explicit direction:
+  #   ""      -- skipped (return 2) if already cached, unconditionally.
+  #   "ttl"   -- --all's own default: gr::blog_fresh is just "is this
+  #              cached at all" (nothing ever goes stale here), so every
+  #              already-cached post is reported as a skip ("already cached
+  #              (fresh)") without ever touching the network -- this mode
+  #              can never actually re-verify an existing post is still
+  #              there. Run with --update for that.
+  #   "force" -- always gr::blog_json --force, bypassing gr::blog_fresh
+  #              entirely -- the only mode that can still detect a post has
+  #              since been removed remotely.
+  fetch_one() {
+    local id="$1" force="$2" quiet="$3"
+    local blog_file was_cached=0
+
+    blog_file="$(gr::blog_file "$id")"
+    [[ -f "$blog_file" ]] || was_cached=1
+
+    if [[ "$force" == "" && "$was_cached" -eq 0 ]]; then
+      echo "$id -> already cached"
+      return 2
     fi
 
-    local ok=0 fail=0 id
-    for id in "$@"; do
-      if gr::blog_json "$id" --force > /dev/null; then
-        report_outcome "$id"
-        ok=$((ok + 1))
-      else
-        echo "$id -> failed" >&2
-        fail=$((fail + 1))
+    # gr::blog_json's own stderr (in particular gr::throttle/gr::http_get's
+    # "waiting"/"retrying" warnings, which can genuinely take minutes under
+    # a real AWS WAF challenge, see CLAUDE.md) is deliberately left flowing
+    # straight through here, live, rather than captured and only replayed
+    # on failure -- an earlier version captured it, and a slow-but-eventually
+    # -successful fetch would silently discard the exact warnings that
+    # would have explained the delay, leaving the status line looking
+    # frozen with zero indication anything was happening at all. Those
+    # warnings clear the status line themselves first (gr::term_clear_line),
+    # so they don't garble together with it.
+    if [[ "$force" == "ttl" ]]; then
+      if gr::blog_fresh "$id"; then
+        echo "$id -> already cached (fresh)"
+        return 2
       fi
-    done
-    echo "Refreshed $ok blog post(s), $fail failed."
+      # Unreachable today -- gr::blog_fresh is trivially true for any
+      # cached post -- kept for symmetry/safety should that ever change.
+      if gr::blog_json "$id" > /dev/null; then
+        outcome_text "$id" "refreshed"
+        return 0
+      fi
+    else
+      local force_arg=()
+      [[ "$force" == "force" ]] && force_arg=(--force)
+      if gr::blog_json "$id" "${force_arg[@]}" > /dev/null; then
+        if [[ "$was_cached" -eq 0 ]]; then
+          outcome_text "$id" "refreshed"
+        else
+          outcome_text "$id" "fetched"
+        fi
+        return 0
+      fi
+    fi
+
+    gr::status_line_clear "$quiet"
+    echo "$id -> failed" >&2
+    return 1
   }
 
   if [[ -n "$blog_ids" ]]; then
+    explicit_force=""
+    [[ -n "$update_flag" ]] && explicit_force="force"
     # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is bashly's own space-separated repeatable-arg string
-    force_refresh_many $blog_ids
+    gr::run_fetch "$quiet" fetch_one "$explicit_force" $blog_ids
+    echo "Fetched/refreshed $GR_FETCH_OK blog post(s), $GR_FETCH_SKIPPED already cached, $GR_FETCH_FAIL failed."
     exit 0
   fi
 
-  # No specific ids: plain `update` discovers only; `--all` also
-  # force-refreshes everything already cached.
+  # No specific ids: plain `fetch` discovers only; `--all` also checks
+  # everything already cached (see fetch_one's "ttl"/"force" split above).
   blog_dir="$(gr::blog_dir)"
   mkdir -p "$blog_dir"
 
-  # Real on-disk cached ids — needed to diff discovery's result against, since
-  # gr::discover_blog_ids no longer filters against the cache itself.
-  #
-  # One line per append — a string literal split across two physical source
-  # lines in a *_command.sh file gets corrupted by bashly's command-embedding
-  # step (adds a stray indent into the value itself; see CLAUDE.md).
+  # Real on-disk cached ids, to diff discovery's result against (it no longer
+  # filters against the cache itself). One line per append — a literal split
+  # across two source lines gets corrupted by bashly's embedding step (see
+  # CLAUDE.md).
   cached_ids=""
   for file in "$blog_dir"/*.json; do
     if [[ -e "$file" ]]; then
@@ -2758,26 +4394,23 @@ goodreads_blogs_update_command() {
   if [[ -z "$new_ids" ]]; then
     echo "No new blog posts found — already have everything currently listed."
   else
-    ok=0
-    fail=0
-    while IFS= read -r id; do
-      [[ -z "$id" ]] && continue
-      if gr::blog_json "$id" > /dev/null; then
-        echo "$id -> fetched"
-        ok=$((ok + 1))
-      else
-        echo "$id -> failed" >&2
-        fail=$((fail + 1))
-      fi
-    done <<< "$new_ids"
-    echo "Fetched $ok new blog post(s), $fail failed."
+    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — new_ids is a newline-separated id list; force="" since these are guaranteed not cached yet
+    gr::run_fetch "$quiet" fetch_one "" $new_ids
+    echo "Fetched $GR_FETCH_OK new blog post(s), $GR_FETCH_FAIL failed."
   fi
 
   if [[ -n "$all" ]]; then
     echo
-    echo "Force-refreshing every already-cached post..."
-    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — cached_ids is the newline-separated id list built above
-    force_refresh_many $cached_ids
+    if [[ -z "$cached_ids" ]]; then
+      echo "No cached blog posts yet."
+    else
+      echo "Checking already-cached posts..."
+      refresh_force="ttl"
+      [[ -n "$update_flag" ]] && refresh_force="force"
+      # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — cached_ids is the newline-separated id list built above
+      gr::run_fetch "$quiet" fetch_one "$refresh_force" $cached_ids
+      echo "Fetched/refreshed $GR_FETCH_OK blog post(s), $GR_FETCH_SKIPPED already cached, $GR_FETCH_FAIL failed."
+    fi
   fi
 
   if [[ -n "$missing_ids" ]]; then
@@ -2786,9 +4419,9 @@ goodreads_blogs_update_command() {
     echo "$count cached post(s) no longer appear in the current listing."
     echo "That doesn't necessarily mean they were deleted — the listing is"
     echo "recency-ordered, so a post can simply age off the visible page range"
-    echo "without being gone. Run 'goodreads blogs update <blog_id>' on one to"
-    echo "actually confirm (a real 404 gets recorded as removed_remotely; still"
-    echo "being there just refreshes it normally):"
+    echo "without being gone. Run 'goodreads blogs fetch <blog_id> --update' on"
+    echo "one to actually confirm (a real 404 gets recorded as removed_remotely;"
+    echo "still being there just refreshes it normally):"
     # shellcheck disable=SC2086 # word-splitting is exactly what's wanted, one id per printf call
     printf '  %s\n' $missing_ids
   fi
@@ -2852,7 +4485,7 @@ goodreads_blogs_list_command() {
   blog_dir="$(gr::blog_dir)"
 
   if [[ ! -d "$blog_dir" ]] || [[ -z "$(ls -A "$blog_dir" 2>/dev/null)" ]]; then
-    echo "No cached blog posts yet. Run 'goodreads blogs update <blog_id>' to fetch one."
+    echo "No cached blog posts yet. Run 'goodreads blogs fetch <blog_id>' to fetch one."
     exit 0
   fi
 
@@ -2963,9 +4596,12 @@ goodreads_blogs_get_command() {
   # shellcheck disable=SC2154 # args is bashly's global associative array
   id="${args[blog_id]}"
   json="${args[--json]:-}"
+  update_flag="${args[--update]:-}"
 
-  if ! gr::blog_json "$id" > /dev/null; then
-    exit 1
+  if [[ -n "$update_flag" ]]; then
+    gr::blog_json "$id" --force > /dev/null || exit 1
+  else
+    gr::blog_json "$id" > /dev/null || exit 1
   fi
 
   file="$(gr::blog_file "$id")"
@@ -3119,9 +4755,9 @@ goodreads_blogs_challenge_command() {
 }
 
 # :command.function
-goodreads_blogs_delete_command() {
+goodreads_blogs_remove_command() {
 
-  # src/blogs_delete_command.sh
+  # src/blogs_remove_command.sh
   : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
   # shellcheck disable=SC2154 # args is bashly's global associative array
   all="${args[--all]:-}"
@@ -3137,7 +4773,7 @@ goodreads_blogs_delete_command() {
     exit 1
   fi
 
-  delete_one() {
+  remove_one() {
     local id="$1"
     local file
     file="$(gr::blog_file "$id")"
@@ -3146,7 +4782,7 @@ goodreads_blogs_delete_command() {
       return 1
     fi
     rm -f "$file"
-    echo "$id -> deleted"
+    echo "$id -> removed"
   }
 
   if [[ -n "$all" ]]; then
@@ -3166,7 +4802,7 @@ goodreads_blogs_delete_command() {
   fail=0
   # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
   for id in $blog_ids; do
-    if delete_one "$id"; then
+    if remove_one "$id"; then
       ok=$((ok + 1))
     else
       fail=$((fail + 1))
@@ -3174,35 +4810,64 @@ goodreads_blogs_delete_command() {
   done
 
   if [[ "$fail" -gt 0 ]]; then
-    echo "Deleted $ok blog post(s), $fail not found."
+    echo "Removed $ok blog post(s), $fail not found."
     exit 1
   fi
-  echo "Deleted $ok blog post(s)."
+  echo "Removed $ok blog post(s)."
 
 }
 
 # :command.function
-goodreads_books_update_command() {
+goodreads_books_fetch_command() {
 
-  # src/books_update_command.sh
+  # src/books_fetch_command.sh
   : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
   # shellcheck disable=SC2154 # args is bashly's global associative array
   all="${args[--all]:-}"
+  update_flag="${args[--update]:-}"
   book_ids="${args[book_id]:-}"
   blog_ids="${args[--blog]:-}"
+  challenge_id="${args[--challenge]:-}"
+  # Must be a plain if (see gr::fetch_quiet's doc comment, lib/goodreads.sh)
+  # -- a command substitution silently breaks its terminal check, and a
+  # bare `&&` would trip set -e whenever it's *not* quiet.
+  quiet=""
+  if gr::fetch_quiet "${args[--batch]:-}"; then
+    quiet=1
+  fi
 
-  if [[ -n "$all" && ( -n "$book_ids" || -n "$blog_ids" ) ]]; then
-    echo "error: --all and specific book ids (directly or via --blog) are mutually exclusive" >&2
+  # Pre-resolve the curl command here, before gr::run_fetch spawns a
+  # subshell per item -- gr::init_curl_cmd's memoization flag, set *inside*
+  # one of those subshells, never survives back to this parent process
+  # (confirmed: without this, a 3-book fetch re-probed PATH/Docker three
+  # times over). Skipped under --offline, since nothing here calls curl.
+  gr::offline || gr::init_curl_cmd || exit 1
+
+  if [[ -n "$all" && ( -n "$book_ids" || -n "$blog_ids" || -n "$challenge_id" ) ]]; then
+    echo "error: --all and specific book ids (directly, via --blog, or via --challenge) are mutually exclusive" >&2
     exit 1
   fi
 
-  if [[ -z "$all" && -z "$book_ids" && -z "$blog_ids" ]]; then
-    echo "error: give one or more book ids, --blog <blog_id>, or --all" >&2
+  if [[ -z "$all" && -z "$book_ids" && -z "$blog_ids" && -z "$challenge_id" ]]; then
+    echo "error: give one or more book ids, --blog <blog_id>, --challenge <challenge_id>, or --all" >&2
     exit 1
+  fi
+
+  if [[ -n "$challenge_id" ]]; then
+    challenge_file="$(gr::require_challenge_file "$challenge_id")" || exit 1
+    challenge_blog_ids="$(jq -r '.blogs[]?.blog_id' "$challenge_file")"
+    if [[ -z "$challenge_blog_ids" ]]; then
+      echo "note: challenge $challenge_id has no linked blog posts" >&2
+    fi
+    blog_ids="${blog_ids} ${challenge_blog_ids}"
+    # A blog id could legitimately be given both directly (--blog) and via
+    # --challenge — dedup so gr::blog_json isn't asked for the same post
+    # twice in this run (same reasoning as book_ids' own dedup below).
+    blog_ids="$(tr -s ' ' '\n' <<< "$blog_ids" | grep -v '^$' | sort -n -u | tr '\n' ' ')"
   fi
 
   if [[ -n "$blog_ids" ]]; then
-    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is bashly's own space-separated repeatable-flag string
+    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is bashly's own space-separated repeatable-flag string, or the merged/deduped result of that plus --challenge's own blogs
     for blog_id in $blog_ids; do
       blog_json="$(gr::blog_json "$blog_id")" || {
         echo "error: could not fetch blog post $blog_id" >&2
@@ -3215,9 +4880,10 @@ goodreads_books_update_command() {
       book_ids="${book_ids} ${blog_book_ids}"
     done
 
-    # Books can legitimately repeat across --blog posts, or overlap with an
-    # explicitly given book_id — dedup so the same id isn't force-refreshed
-    # more than once in this run.
+    # Books can legitimately repeat across --blog posts (a --challenge's own
+    # linked posts very much included — the whole reason this note calls it
+    # out explicitly), or overlap with an explicitly given book_id — dedup
+    # so the same id isn't looked at more than once in this run.
     book_ids="$(tr -s ' ' '\n' <<< "$book_ids" | grep -v '^$' | sort -n -u | tr '\n' ' ')"
   fi
 
@@ -3234,20 +4900,91 @@ goodreads_books_update_command() {
     book_ids="${ids[*]}"
   fi
 
-  ok=0
-  fail=0
-  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — book_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
-  for id in $book_ids; do
-    if gr::book_json "$id" --force > /dev/null; then
-      echo "$id -> refreshed"
-      ok=$((ok + 1))
-    else
-      echo "$id -> failed" >&2
-      fail=$((fail + 1))
-    fi
-  done
+  # Force policy for fetch_one, below -- --update always means "force",
+  # regardless of --all; --all *without* --update means "ttl" (still ask
+  # about every cached book, but let its own cache TTL decide whether that
+  # actually turns into a real refetch -- "sync only what's actually gone
+  # stale", not "force-refresh everything unconditionally", which is what
+  # this used to do); neither means "" (skip anything already cached, at
+  # any freshness -- explicit ids' own default).
+  if [[ -n "$update_flag" ]]; then
+    force_policy="force"
+  elif [[ -n "$all" ]]; then
+    force_policy="ttl"
+  else
+    force_policy=""
+  fi
 
-  echo "Refreshed $ok book(s), $fail failed."
+  # Fetches or updates one book -- see gr::run_fetch (lib/goodreads.sh) for
+  # the calling convention this follows: outcome text on stdout for
+  # success/skip, nothing on failure (a failure is printed straight to
+  # stderr instead, right here, after clearing the status line so it can't
+  # garble together with it). $2 (force) is one of the three policies
+  # above:
+  #   ""      -- skipped (return 2) if already cached, at any freshness.
+  #   "ttl"   -- never skipped outright, but gr::book_json is called
+  #              plainly (no --force), so *it* decides based on
+  #              gr::book_fresh whether a real refetch happens; reported as
+  #              a skip ("already cached (fresh)") when it doesn't, "the
+  #              real thing" ("refreshed") when it does.
+  #   "force" -- always gr::book_json --force. "refreshed" if it was
+  #              already cached going in, "fetched" if this is a genuinely
+  #              new id (only reachable here via explicit ids + --update,
+  #              never via --all, which only ever operates on ids that are
+  #              already cached to begin with).
+  fetch_one() {
+    local id="$1" force="$2" quiet="$3"
+    local book_file was_cached=0 was_fresh=1
+
+    book_file="$(gr::book_file "$id")"
+    [[ -f "$book_file" ]] || was_cached=1
+
+    if [[ "$force" == "" && "$was_cached" -eq 0 ]]; then
+      echo "$id -> already cached"
+      return 2
+    fi
+
+    # gr::book_json's own stderr (in particular gr::throttle/gr::http_get's
+    # "waiting"/"retrying" warnings, which can genuinely take minutes under
+    # a real AWS WAF challenge, see CLAUDE.md) is deliberately left flowing
+    # straight through here, live, rather than captured and only replayed
+    # on failure -- an earlier version captured it, and a slow-but-eventually
+    # -successful fetch would silently discard the exact warnings that
+    # would have explained the delay, leaving the status line looking
+    # frozen with zero indication anything was happening at all. Those
+    # warnings clear the status line themselves first (gr::term_clear_line),
+    # so they don't garble together with it.
+    if [[ "$force" == "ttl" ]]; then
+      gr::book_fresh "$id" && was_fresh=0
+      if gr::book_json "$id" > /dev/null; then
+        if [[ "$was_fresh" -eq 0 ]]; then
+          echo "$id -> already cached (fresh)"
+          return 2
+        fi
+        echo "$id -> refreshed"
+        return 0
+      fi
+    else
+      local force_arg=()
+      [[ "$force" == "force" ]] && force_arg=(--force)
+      if gr::book_json "$id" "${force_arg[@]}" > /dev/null; then
+        if [[ "$was_cached" -eq 0 ]]; then
+          echo "$id -> refreshed"
+        else
+          echo "$id -> fetched"
+        fi
+        return 0
+      fi
+    fi
+
+    gr::status_line_clear "$quiet"
+    echo "$id -> failed" >&2
+    return 1
+  }
+
+  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — book_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+  gr::run_fetch "$quiet" fetch_one "$force_policy" $book_ids
+  echo "Fetched/refreshed $GR_FETCH_OK book(s), $GR_FETCH_SKIPPED already cached, $GR_FETCH_FAIL failed."
 
 }
 
@@ -3272,7 +5009,7 @@ goodreads_books_list_command() {
   book_dir="$(gr::book_dir)"
 
   if [[ ! -d "$book_dir" ]] || [[ -z "$(ls -A "$book_dir" 2>/dev/null)" ]]; then
-    echo "No cached books yet. Run 'goodreads books update <book_id>' to fetch one."
+    echo "No cached books yet. Run 'goodreads books fetch <book_id>' to fetch one."
     exit 0
   fi
 
@@ -3304,16 +5041,10 @@ goodreads_books_list_command() {
     # once the untruncated value would exceed it.
     def trunc(n): if (length > n) then (.[0:(n - 1)] + "…") else . end;
 
-    # Many long titles are actually "Title: tag-line" — not reliably
-    # distinguishable from a title that legitimately contains a colon, so
-    # this is a heuristic, not a real parse: only when the whole title
-    # exceeds 30 characters (short titles are never a tag-line pair) AND
-    # the part before the first colon is shorter than the part after it
-    # (a real subtitle/tag-line is normally the longer half) does the colon
-    # onward get dropped. Only the *first* colon is considered — deliberate,
-    # since a tag-line normally comes right after the title itself, not
-    # after some later, incidental colon. Full title (untruncated) always
-    # still available via `books get`.
+    # Heuristic, not a real parse: "Title: tag-line" gets the tag-line
+    # dropped only when the whole title exceeds 30 chars AND the part before
+    # the (first) colon is shorter than the part after (a real tag-line is
+    # normally the longer half). Full title always available via `books get`.
     def strip_tagline:
       . as $title
       | ($title | index(":")) as $i
@@ -3324,16 +5055,9 @@ goodreads_books_list_command() {
           | if ($before | length) < ($after | length) then $before else $title end
         end;
 
-    # Truncates a list of author names, joined by ", ", to at most n
-    # characters — but cuts at a name boundary (right after the preceding
-    # comma) rather than mid-name whenever possible, per explicit direction.
-    # Only falls back to a mid-name cut (plain trunc(n) on the joined
-    # string) when even the very first name alone already exceeds n, since
-    # there is then no comma boundary within the limit to cut at at all.
-    # Otherwise, finds the longest prefix of names whose own joined length
-    # (before the trailing ", …" is appended) still fits within n — that
-    # prefix is guaranteed non-empty since the first-name-alone case was
-    # already ruled out above.
+    # Truncates joined author names to at most n characters, cutting at a
+    # name boundary rather than mid-name whenever possible. Falls back to a
+    # mid-name cut only when the first name alone already exceeds n.
     def trunc_authors(n):
       . as $names
       | (join(", ")) as $full
@@ -3388,9 +5112,12 @@ goodreads_books_get_command() {
   # shellcheck disable=SC2154 # args is bashly's global associative array
   id="${args[book_id]}"
   json="${args[--json]:-}"
+  update_flag="${args[--update]:-}"
 
-  if ! gr::book_json "$id" > /dev/null; then
-    exit 1
+  if [[ -n "$update_flag" ]]; then
+    gr::book_json "$id" --force > /dev/null || exit 1
+  else
+    gr::book_json "$id" > /dev/null || exit 1
   fi
 
   file="$(gr::book_file "$id")"
@@ -3449,9 +5176,9 @@ goodreads_books_get_command() {
 }
 
 # :command.function
-goodreads_books_delete_command() {
+goodreads_books_remove_command() {
 
-  # src/books_delete_command.sh
+  # src/books_remove_command.sh
   : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
   # shellcheck disable=SC2154 # args is bashly's global associative array
   all="${args[--all]:-}"
@@ -3467,7 +5194,7 @@ goodreads_books_delete_command() {
     exit 1
   fi
 
-  delete_one() {
+  remove_one() {
     local id="$1"
     local file
     file="$(gr::book_file "$id")"
@@ -3476,7 +5203,7 @@ goodreads_books_delete_command() {
       return 1
     fi
     rm -f "$file"
-    echo "$id -> deleted"
+    echo "$id -> removed"
   }
 
   if [[ -n "$all" ]]; then
@@ -3496,7 +5223,7 @@ goodreads_books_delete_command() {
   fail=0
   # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — book_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
   for id in $book_ids; do
-    if delete_one "$id"; then
+    if remove_one "$id"; then
       ok=$((ok + 1))
     else
       fail=$((fail + 1))
@@ -3504,10 +5231,697 @@ goodreads_books_delete_command() {
   done
 
   if [[ "$fail" -gt 0 ]]; then
-    echo "Deleted $ok book(s), $fail not found."
+    echo "Removed $ok book(s), $fail not found."
     exit 1
   fi
-  echo "Deleted $ok book(s)."
+  echo "Removed $ok book(s)."
+
+}
+
+# :command.function
+goodreads_challenges_create_command() {
+
+  # src/challenges_create_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  id_raw="${args[--id]:-}"
+  title_raw="${args[--title]:-}"
+  start_raw="${args[--start]:-}"
+  end_raw="${args[--end]:-}"
+
+  today="$(date +%Y-%m-%d)"
+
+  if [[ -n "$id_raw" ]]; then
+    if [[ "$id_raw" == */* ]]; then
+      echo "error: --id must not contain '/': $id_raw" >&2
+      exit 1
+    fi
+    if [[ -f "$(gr::challenge_file "$id_raw")" ]]; then
+      echo "error: challenge $id_raw already exists" >&2
+      exit 1
+    fi
+  fi
+
+  # --no-goals is shorthand for --no-badges --no-blogs together -- folded
+  # into both flags' own state up front so every check/branch below just
+  # looks at $no_badges/$no_blogs, with no separate --no-goals case needed
+  # anywhere else.
+  no_badges="${args[--no-badges]:-}"
+  no_blogs="${args[--no-blogs]:-}"
+  if [[ -n "${args[--no-goals]:-}" ]]; then
+    no_badges=1
+    no_blogs=1
+  fi
+
+  # No `default:` in bashly.yml for --badges/--blogs: bashly applies it
+  # whenever the value is *empty*, not just absent -- would silently defeat
+  # an explicit `--badges ""`/`--blogs ""` opt-out. `[[ -v args[...] ]]`
+  # tells "never passed" apart from "passed empty". Names exactly which
+  # "no" flag(s) ($1/$2) and explicit-value flag ($3/$4) are in conflict,
+  # rather than a generic message -- shared by the --badges/--blogs cases.
+  warn_superfluous_no_flag() {
+    local no_flag="$1" no_goals_flag="$2" given_flag_a="$3" given_flag_b="$4"
+    local ignored=()
+    [[ -v args["$no_flag"] ]] && ignored+=("$no_flag")
+    [[ -v args["$no_goals_flag"] ]] && ignored+=("$no_goals_flag")
+    local given="$given_flag_a"
+    [[ -v args["$given_flag_b"] ]] && given="$given_flag_b"
+    local ignored_joined="${ignored[0]}"
+    [[ "${#ignored[@]}" -eq 2 ]] && ignored_joined="${ignored[0]} and ${ignored[1]}"
+    echo "warning: ignoring $ignored_joined, because $given was given explicitly" >&2
+  }
+
+  if [[ -v args[--badges] && -v args[--badge] ]]; then
+    echo "error: --badges and --badge are mutually exclusive -- use one or the other" >&2
+    exit 1
+  fi
+
+  if [[ -n "$no_badges" ]] && { [[ -v args[--badges] ]] || [[ -v args[--badge] ]]; }; then
+    warn_superfluous_no_flag --no-badges --no-goals --badges --badge
+  fi
+
+  # Real Goodreads-style badge names -- note the space in "Book Boss".
+  default_badges="2:Page-Turner,3:Speed Reader,5:Book Boss"
+
+  # Each spec is '<count>' or '<count>:<title>'. --badge/--badges are
+  # checked before $no_badges -- explicitly given badges just win outright
+  # (with the warning above), rather than --no-badges/--no-goals still
+  # managing to suppress them.
+  badge_specs=()
+  if [[ -v args[--badge] ]]; then
+    # bashly escapes each repeated --badge value with printf %q before
+    # space-joining them into args[--badge] (see the generated script's own
+    # flag-parsing case), specifically so a title containing a space
+    # survives -- eval is what actually un-escapes and re-splits that,
+    # unlike the plain `for x in $y` word-split every other repeatable
+    # flag/arg in this project uses, none of which have ever needed to
+    # carry a literal space before.
+    eval "badge_specs=(${args[--badge]})"
+  elif [[ -v args[--badges] ]]; then
+    badges_raw="${args[--badges]}"
+    [[ -n "$badges_raw" ]] && IFS=',' read -r -a badge_specs <<<"$badges_raw"
+  elif [[ -n "$no_badges" ]]; then
+    : # badge_specs stays empty
+  else
+    IFS=',' read -r -a badge_specs <<<"$default_badges"
+  fi
+
+  # Split each spec into count/title up front, validating the count is a
+  # positive integer -- before creating anything, so a bad value can't
+  # leave a half-set-up challenge.
+  badge_counts=()
+  badge_titles=()
+  for spec in "${badge_specs[@]}"; do
+    count="${spec%%:*}"
+    if [[ "$spec" == *:* ]]; then
+      title="${spec#*:}"
+    else
+      title=""
+    fi
+    if ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+      echo "error: --badges/--badge entries must be '<count>' or '<count>:<title>' with a positive integer count: $spec" >&2
+      exit 1
+    fi
+    badge_counts+=("$count")
+    badge_titles+=("$title")
+  done
+
+  if [[ -v args[--blogs] && -v args[--blog] ]]; then
+    echo "error: --blogs and --blog are mutually exclusive -- use one or the other" >&2
+    exit 1
+  fi
+
+  if [[ -n "$no_blogs" ]] && { [[ -v args[--blogs] ]] || [[ -v args[--blog] ]]; }; then
+    warn_superfluous_no_flag --no-blogs --no-goals --blogs --blog
+  fi
+
+  blogs_given=0
+  [[ -v args[--blogs] ]] && blogs_given=1
+  [[ -v args[--blog] ]] && blogs_given=1
+
+  if [[ -n "$start_raw" ]]; then
+    start="$(date -d "$start_raw" +%Y-%m-%d 2>/dev/null)" || {
+      echo "error: could not parse --start date: $start_raw" >&2
+      exit 1
+    }
+  else
+    start="$(gr::default_challenge_start "$today")" || exit 1
+  fi
+
+  if [[ -n "$end_raw" ]]; then
+    end="$(date -d "$end_raw" +%Y-%m-%d 2>/dev/null)" || {
+      echo "error: could not parse --end date: $end_raw" >&2
+      exit 1
+    }
+  else
+    end="$(gr::default_challenge_end "$start")"
+  fi
+
+  if [[ "$end" < "$start" ]]; then
+    echo "error: --end ($end) is before --start ($start)" >&2
+    exit 1
+  fi
+
+  if [[ -z "$start_raw" ]]; then
+    overlaps="$(gr::challenges_overlapping "$start" "$end")"
+    if [[ -n "$overlaps" ]]; then
+      echo "error: auto-selected window ($start to $end) overlaps existing challenge(s):" >&2
+      while IFS=$'\t' read -r o_id o_start o_end; do
+        echo "  challenge $o_id: $o_start to $o_end" >&2
+      done <<<"$overlaps"
+      echo "Pass --start explicitly to force this window." >&2
+      exit 1
+    fi
+  fi
+
+  if [[ -n "$title_raw" ]]; then
+    title="$title_raw"
+  else
+    title="$(gr::default_challenge_title "$start" "$end")"
+  fi
+
+  # --blogs needs start/end already resolved (its default window is
+  # relative to both), so this can't be decided any earlier than here.
+  # --blogs/--blog are checked before $no_blogs, same "explicit wins
+  # outright, with the warning above" precedence --badges/--badge get.
+  blog_ids=()
+  blog_titles=()
+  if [[ "$blogs_given" -eq 1 ]]; then
+    blog_specs=()
+    if [[ -v args[--blog] ]]; then
+      # Same %q/eval round-trip --badge needs -- a blog title can just as
+      # easily carry a space as a badge title can.
+      eval "blog_specs=(${args[--blog]})"
+    else
+      blogs_raw="${args[--blogs]}"
+      [[ -n "$blogs_raw" ]] && IFS=',' read -r -a blog_specs <<<"$blogs_raw"
+    fi
+
+    # Every explicitly given post is fetched -- from cache if already there
+    # (the blog cache has no TTL, see CLAUDE.md, so this is cheap for
+    # anything not brand new), remotely otherwise -- both to validate it
+    # actually exists and, when no title was given, to default to its own.
+    for spec in "${blog_specs[@]}"; do
+      blog_id="${spec%%:*}"
+      if [[ "$spec" == *:* ]]; then
+        blog_title="${spec#*:}"
+      else
+        blog_title=""
+      fi
+
+      blog_json="$(gr::blog_json "$blog_id")" || {
+        echo "error: could not fetch blog post $blog_id" >&2
+        exit 1
+      }
+      [[ -z "$blog_title" ]] && blog_title="$(jq -r '.title // empty' <<<"$blog_json")"
+
+      blog_ids+=("$blog_id")
+      blog_titles+=("$blog_title")
+    done
+  elif [[ -n "$no_blogs" ]]; then
+    : # blog_ids/blog_titles stay empty
+  else
+    mapfile -t blog_ids < <(gr::default_challenge_blogs "$start" "$end" "$today")
+    for _ in "${blog_ids[@]}"; do blog_titles+=(""); done
+  fi
+
+  id="$(gr::create_challenge "$title" "$start" "$end" "$id_raw")"
+
+  for i in "${!badge_counts[@]}"; do
+    gr::add_challenge_count_badge "$id" "${badge_counts[$i]}" "${badge_titles[$i]}" || exit 1
+  done
+
+  for i in "${!blog_ids[@]}"; do
+    gr::add_challenge_blog "$id" "${blog_ids[$i]}" "${blog_titles[$i]}" || exit 1
+  done
+
+  echo "Created challenge $id: $title ($start to $end)"
+  if [[ "${#badge_counts[@]}" -gt 0 ]]; then
+    printed_badges=()
+    for i in "${!badge_counts[@]}"; do
+      if [[ -n "${badge_titles[$i]}" ]]; then
+        printed_badges+=("${badge_counts[$i]}:${badge_titles[$i]}")
+      else
+        printed_badges+=("${badge_counts[$i]}")
+      fi
+    done
+    printed="$(IFS=', '; echo "${printed_badges[*]}")"
+    echo "Book-count badges: $printed"
+  fi
+  if [[ "${#blog_ids[@]}" -gt 0 ]]; then
+    printed_blogs=()
+    for i in "${!blog_ids[@]}"; do
+      if [[ -n "${blog_titles[$i]}" ]]; then
+        printed_blogs+=("${blog_ids[$i]}:${blog_titles[$i]}")
+      else
+        printed_blogs+=("${blog_ids[$i]}")
+      fi
+    done
+    printed="$(IFS=', '; echo "${printed_blogs[*]}")"
+    echo "Linked blog posts: $printed"
+  fi
+
+}
+
+# :command.function
+goodreads_challenges_list_command() {
+
+  # src/challenges_list_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  challenge_dir="$(gr::challenge_dir)"
+
+  if [[ ! -d "$challenge_dir" ]] || [[ -z "$(ls -A "$challenge_dir" 2>/dev/null)" ]]; then
+    echo "No challenges yet. Run 'goodreads challenges create --title <title> --start <date> --end <date>' to add one."
+    exit 0
+  fi
+
+  files=()
+  for file in "$challenge_dir"/*.json; do
+    [[ -e "$file" ]] && files+=("$file")
+  done
+
+  today="$(date +%Y-%m-%d)"
+
+  # "$GR_CHALLENGE_STATUS_JQ_DEF"'...' concatenates into one jq argument —
+  # see GR_CHALLENGE_STATUS_JQ_DEF in lib/goodreads_challenges.sh.
+  lines="$(cat "${files[@]}" | jq -s -r --arg today "$today" "$GR_CHALLENGE_STATUS_JQ_DEF"'
+    sort_by(.start)
+    | .[] | [
+        .challenge_id,
+        .title,
+        .start,
+        .end,
+        challenge_status($today),
+        ((.blogs // []) | length | tostring),
+        ((.count_badges // []) | length | tostring)
+      ] | @tsv
+  ')"
+
+  {
+    printf 'id\ttitle\tstart\tend\tstatus\tblogs\tbadges\n'
+    echo "$lines"
+  } | column -t -s $'\t' -R 1,6,7
+
+}
+
+# :command.function
+goodreads_challenges_get_command() {
+
+  # src/challenges_get_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  id="${args[challenge_id]:-}"
+  json="${args[--json]:-}"
+
+  # No id given: default to the next challenge to actually finish (ongoing
+  # or still-planned, whichever ends soonest) if one exists; otherwise the
+  # most recently ended one; otherwise there's nothing to show at all.
+  if [[ -z "$id" ]]; then
+    next="$(gr::next_ending_challenge "$(date +%Y-%m-%d)")"
+    if [[ -n "$next" ]]; then
+      IFS=$'\t' read -r id _ _ <<<"$next"
+    else
+      latest="$(gr::latest_challenge)"
+      if [[ -n "$latest" ]]; then
+        IFS=$'\t' read -r id _ _ <<<"$latest"
+      else
+        echo "error: no challenges yet. Run 'goodreads challenges create' to add one." >&2
+        exit 1
+      fi
+    fi
+  fi
+
+  file="$(gr::require_challenge_file "$id")" || exit 1
+
+  if [[ -n "$json" ]]; then
+    cat "$file"
+    exit 0
+  fi
+
+  today="$(date +%Y-%m-%d)"
+
+  # "$GR_CHALLENGE_STATUS_JQ_DEF"'...' concatenates into one jq argument —
+  # see GR_CHALLENGE_STATUS_JQ_DEF in lib/goodreads_challenges.sh.
+  result="$(jq --arg today "$today" "$GR_CHALLENGE_STATUS_JQ_DEF"'
+    {
+      meta: [
+        (.title // "(untitled)"),
+        "\(.start) to \(.end) (\(challenge_status($today)))"
+      ],
+      blogs: [(.blogs // [])[] | [
+        .blog_id,
+        (.name // "(unnamed)"),
+        ("https://www.goodreads.com/blog/show/" + .blog_id)
+      ] | @tsv],
+      badges: [(.count_badges // [])[] | [
+        (.count | tostring),
+        (.name // "(unnamed)")
+      ] | @tsv]
+    }
+  ' "$file")"
+
+  jq -r '.meta[]' <<< "$result"
+
+  blogs_count="$(jq -r '.blogs | length' <<< "$result")"
+  if [[ "$blogs_count" -gt 0 ]]; then
+    echo
+    echo "Blogs ($blogs_count):"
+    jq -r '.blogs[]' <<< "$result" | column -t -s $'\t' -R 1 | sed 's/^/  /'
+  fi
+
+  badges_count="$(jq -r '.badges | length' <<< "$result")"
+  if [[ "$badges_count" -gt 0 ]]; then
+    echo
+    echo "Badges ($badges_count):"
+    jq -r '.badges[]' <<< "$result" | column -t -s $'\t' -R 1 | sed 's/^/  /'
+  fi
+
+}
+
+# :command.function
+goodreads_challenges_edit_command() {
+
+  # src/challenges_edit_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  id="${args[challenge_id]}"
+  title="${args[--title]:-}"
+  start_raw="${args[--start]:-}"
+  end_raw="${args[--end]:-}"
+  add_blog_raw="${args[--add-blog]:-}"
+  remove_blog_ids="${args[--remove-blog]:-}"
+  add_badge_raw="${args[--add-badge]:-}"
+  remove_badge_raw="${args[--remove-badge]:-}"
+
+  if [[ -z "$title" && -z "$start_raw" && -z "$end_raw" \
+        && -z "$add_blog_raw" && -z "$remove_blog_ids" \
+        && -z "$add_badge_raw" && -z "$remove_badge_raw" ]]; then
+    echo "error: give at least one of --title, --start, --end, --add-blog, --remove-blog, --add-badge, --remove-badge" >&2
+    exit 1
+  fi
+
+  start=""
+  if [[ -n "$start_raw" ]]; then
+    start="$(date -d "$start_raw" +%Y-%m-%d 2>/dev/null)" || {
+      echo "error: could not parse --start date: $start_raw" >&2
+      exit 1
+    }
+  fi
+
+  end=""
+  if [[ -n "$end_raw" ]]; then
+    end="$(date -d "$end_raw" +%Y-%m-%d 2>/dev/null)" || {
+      echo "error: could not parse --end date: $end_raw" >&2
+      exit 1
+    }
+  fi
+
+  file="$(gr::require_challenge_file "$id")" || exit 1
+
+  # Validate the resulting window (whichever of the existing/updated
+  # start+end apply) before writing anything.
+  effective_start="${start:-$(jq -r '.start' "$file")}"
+  effective_end="${end:-$(jq -r '.end' "$file")}"
+  if [[ "$effective_end" < "$effective_start" ]]; then
+    echo "error: end ($effective_end) would be before start ($effective_start)" >&2
+    exit 1
+  fi
+
+  # Parse --add-blog specs ('<blog_id>' or '<blog_id>:<name>') up front.
+  add_blog_ids=()
+  add_blog_names=()
+  add_blog_specs=()
+  if [[ -n "$add_blog_raw" ]]; then
+    # Same %q/eval round-trip `challenges create`'s own --blog/--badge need
+    # -- a blog name can just as easily carry a space as a badge title can.
+    eval "add_blog_specs=(${args[--add-blog]})"
+    for spec in "${add_blog_specs[@]}"; do
+      bid="${spec%%:*}"
+      if [[ "$spec" == *:* ]]; then
+        bname="${spec#*:}"
+      else
+        bname=""
+      fi
+      add_blog_ids+=("$bid")
+      add_blog_names+=("$bname")
+    done
+  fi
+
+  # Parse --add-badge specs ('<count>' or '<count>:<name>') up front,
+  # validating the count is a positive integer before writing anything --
+  # same as `challenges create`'s own --badge/--badges validation.
+  add_badge_counts=()
+  add_badge_names=()
+  add_badge_specs=()
+  if [[ -n "$add_badge_raw" ]]; then
+    eval "add_badge_specs=(${args[--add-badge]})"
+    for spec in "${add_badge_specs[@]}"; do
+      bcount="${spec%%:*}"
+      if [[ "$spec" == *:* ]]; then
+        bname="${spec#*:}"
+      else
+        bname=""
+      fi
+      if ! [[ "$bcount" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: --add-badge entries must be '<count>' or '<count>:<name>' with a positive integer count: $spec" >&2
+        exit 1
+      fi
+      add_badge_counts+=("$bcount")
+      add_badge_names+=("$bname")
+    done
+  fi
+
+  # Validate --remove-badge counts up front too -- a typo shouldn't leave
+  # some of this edit's other changes applied and others not.
+  remove_badge_counts=()
+  if [[ -n "$remove_badge_raw" ]]; then
+    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — remove_badge_raw is bashly's own space-separated repeatable-arg string
+    for c in $remove_badge_raw; do
+      if ! [[ "$c" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: --remove-badge must be a positive integer: $c" >&2
+        exit 1
+      fi
+      remove_badge_counts+=("$c")
+    done
+  fi
+
+  if [[ -n "$title" || -n "$start" || -n "$end" ]]; then
+    gr::update_challenge "$id" "$title" "$start" "$end" || exit 1
+    echo "$id -> updated"
+  fi
+
+  for i in "${!add_blog_ids[@]}"; do
+    gr::add_challenge_blog "$id" "${add_blog_ids[$i]}" "${add_blog_names[$i]}" || exit 1
+    if [[ -n "${add_blog_names[$i]}" ]]; then
+      echo "$id -> blog ${add_blog_ids[$i]} added/updated (\"${add_blog_names[$i]}\")"
+    else
+      echo "$id -> blog ${add_blog_ids[$i]} added/updated"
+    fi
+  done
+
+  for i in "${!add_badge_counts[@]}"; do
+    gr::add_challenge_count_badge "$id" "${add_badge_counts[$i]}" "${add_badge_names[$i]}" || exit 1
+    if [[ -n "${add_badge_names[$i]}" ]]; then
+      echo "$id -> ${add_badge_counts[$i]}-book badge added/updated (\"${add_badge_names[$i]}\")"
+    else
+      echo "$id -> ${add_badge_counts[$i]}-book badge added/updated"
+    fi
+  done
+
+  fail=0
+
+  if [[ -n "$remove_blog_ids" ]]; then
+    ok=0
+    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — remove_blog_ids is bashly's own space-separated repeatable-arg string
+    for bid in $remove_blog_ids; do
+      if gr::remove_challenge_blog "$id" "$bid"; then
+        echo "$id -> blog $bid removed"
+        ok=$((ok + 1))
+      else
+        echo "$id -> blog $bid not on this challenge" >&2
+        fail=$((fail + 1))
+      fi
+    done
+    echo "Removed $ok blog(s)."
+  fi
+
+  if [[ "${#remove_badge_counts[@]}" -gt 0 ]]; then
+    ok=0
+    for c in "${remove_badge_counts[@]}"; do
+      if gr::remove_challenge_count_badge "$id" "$c"; then
+        echo "$id -> $c-book badge removed"
+        ok=$((ok + 1))
+      else
+        echo "$id -> no $c-book badge on this challenge" >&2
+        fail=$((fail + 1))
+      fi
+    done
+    echo "Removed $ok badge(s)."
+  fi
+
+  [[ "$fail" -gt 0 ]] && exit 1
+  exit 0
+
+}
+
+# :command.function
+goodreads_challenges_remove_command() {
+
+  # src/challenges_remove_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  all="${args[--all]:-}"
+  challenge_ids="${args[challenge_id]:-}"
+
+  if [[ -n "$all" && -n "$challenge_ids" ]]; then
+    echo "error: --all and specific challenge ids are mutually exclusive" >&2
+    exit 1
+  fi
+
+  if [[ -z "$all" && -z "$challenge_ids" ]]; then
+    echo "error: give one or more challenge ids, or --all" >&2
+    exit 1
+  fi
+
+  remove_one() {
+    local id="$1"
+    local file
+    file="$(gr::challenge_file "$id")"
+    if [[ ! -f "$file" ]]; then
+      echo "$id -> not found" >&2
+      return 1
+    fi
+    rm -f "$file"
+    echo "$id -> removed"
+  }
+
+  if [[ -n "$all" ]]; then
+    challenge_dir="$(gr::challenge_dir)"
+    ids=()
+    for file in "$challenge_dir"/*.json; do
+      [[ -e "$file" ]] && ids+=("$(basename "$file" .json)")
+    done
+    if [[ "${#ids[@]}" -eq 0 ]]; then
+      echo "No challenges to remove."
+      exit 0
+    fi
+    challenge_ids="${ids[*]}"
+  fi
+
+  ok=0
+  fail=0
+  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — challenge_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+  for id in $challenge_ids; do
+    if remove_one "$id"; then
+      ok=$((ok + 1))
+    else
+      fail=$((fail + 1))
+    fi
+  done
+
+  if [[ "$fail" -gt 0 ]]; then
+    echo "Removed $ok challenge(s), $fail not found."
+    exit 1
+  fi
+  echo "Removed $ok challenge(s)."
+
+}
+
+# :command.function
+goodreads_config_list_command() {
+
+  # src/config_list_command.sh
+  {
+    printf 'key\tvalue\tdescription\n'
+    for key in "${GR_CONFIG_KEYS[@]}"; do
+      value="$(gr::config_get "$key" "")"
+      if [[ -z "$value" ]]; then
+        value="(default: $(gr::config_default_display "$key"))"
+      fi
+      printf '%s\t%s\t%s\n' "$key" "$value" "$(gr::config_describe "$key")"
+    done
+  } | column -t -s $'\t'
+
+}
+
+# :command.function
+goodreads_config_get_command() {
+
+  # src/config_get_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  key="${args[key]}"
+
+  value="$(gr::config_get "$key" "")"
+  if [[ -n "$value" ]]; then
+    echo "$value"
+  else
+    default="$(gr::config_default_display "$key")"
+    if [[ -n "$default" ]]; then
+      echo "$default (default)"
+    else
+      echo "(not set, no known default)"
+    fi
+  fi
+
+}
+
+# :command.function
+goodreads_config_set_command() {
+
+  # src/config_set_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  key="${args[key]}"
+  value="${args[value]}"
+
+  if ! gr::config_is_known_key "$key"; then
+    echo "note: '$key' is not a setting goodreads itself reads -- see 'goodreads config list'" >&2
+  fi
+
+  gr::config_set "$key" "$value"
+  echo "$key = $value"
+
+}
+
+# :command.function
+goodreads_config_unset_command() {
+
+  # src/config_unset_command.sh
+  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  all="${args[--all]:-}"
+  keys="${args[key]:-}"
+
+  if [[ -n "$all" && -n "$keys" ]]; then
+    echo "error: --all and specific keys are mutually exclusive" >&2
+    exit 1
+  fi
+
+  if [[ -z "$all" && -z "$keys" ]]; then
+    echo "error: give one or more setting names, or --all" >&2
+    exit 1
+  fi
+
+  if [[ -n "$all" ]]; then
+    # shellcheck disable=SC2207 # gr::config_keys' own output is a plain newline-separated list, one key per line, none of them containing whitespace
+    set_keys=($(gr::config_keys))
+    if [[ "${#set_keys[@]}" -eq 0 ]]; then
+      echo "No settings are currently set."
+      exit 0
+    fi
+    keys="${set_keys[*]}"
+  fi
+
+  ok=0
+  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — keys is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+  for key in $keys; do
+    gr::config_del "$key"
+    echo "$key -> unset (reverts to its default, if any)"
+    ok=$((ok + 1))
+  done
+
+  echo "Unset $ok setting(s)."
 
 }
 
@@ -3590,6 +6004,20 @@ parse_requirements() {
       action="books"
       shift
       goodreads_books_parse_requirements "$@"
+      shift $#
+      ;;
+
+    challenges)
+      action="challenges"
+      shift
+      goodreads_challenges_parse_requirements "$@"
+      shift $#
+      ;;
+
+    config)
+      action="config"
+      shift
+      goodreads_config_parse_requirements "$@"
       shift $#
       ;;
 
@@ -3716,7 +6144,6 @@ goodreads_auth_parse_requirements() {
   action=${1:-}
 
   case $action in
-    -*) ;;
 
     import)
       action="import"
@@ -3754,14 +6181,10 @@ goodreads_auth_parse_requirements() {
       ;;
 
     # :command.command_fallback
-    "")
-      goodreads_auth_usage >&2
-      exit 1
-      ;;
-
     *)
-      printf "invalid command: %s\n" "$action" >&2
-      exit 1
+      action="list"
+      goodreads_auth_list_parse_requirements "$@"
+      shift $#
       ;;
 
   esac
@@ -4087,12 +6510,11 @@ goodreads_blogs_parse_requirements() {
   action=${1:-}
 
   case $action in
-    -*) ;;
 
-    update)
-      action="update"
+    fetch)
+      action="fetch"
       shift
-      goodreads_blogs_update_parse_requirements "$@"
+      goodreads_blogs_fetch_parse_requirements "$@"
       shift $#
       ;;
 
@@ -4117,22 +6539,18 @@ goodreads_blogs_parse_requirements() {
       shift $#
       ;;
 
-    delete | rm)
-      action="delete"
+    remove | rm)
+      action="remove"
       shift
-      goodreads_blogs_delete_parse_requirements "$@"
+      goodreads_blogs_remove_parse_requirements "$@"
       shift $#
       ;;
 
     # :command.command_fallback
-    "")
-      goodreads_blogs_usage >&2
-      exit 1
-      ;;
-
     *)
-      printf "invalid command: %s\n" "$action" >&2
-      exit 1
+      action="list"
+      goodreads_blogs_list_parse_requirements "$@"
+      shift $#
       ;;
 
   esac
@@ -4161,7 +6579,7 @@ goodreads_blogs_parse_requirements() {
 }
 
 # :command.parse_requirements
-goodreads_blogs_update_parse_requirements() {
+goodreads_blogs_fetch_parse_requirements() {
   local key
 
   # :command.fixed_flags_filter
@@ -4170,7 +6588,7 @@ goodreads_blogs_update_parse_requirements() {
     case "$key" in
       --help | -h)
         long_usage=yes
-        goodreads_blogs_update_usage
+        goodreads_blogs_fetch_usage
         exit
         ;;
 
@@ -4182,17 +6600,33 @@ goodreads_blogs_update_parse_requirements() {
   done
 
   # :command.command_filter
-  action="blogs update"
+  action="blogs fetch"
 
   # :command.parse_requirements_while
   while [[ $# -gt 0 ]]; do
     key="$1"
     case "$key" in
       # :flag.case
-      --all | -a)
+      --all | -A)
 
         # :flag.case_no_arg
         args['--all']=1
+        shift
+        ;;
+
+      # :flag.case
+      --update | -U)
+
+        # :flag.case_no_arg
+        args['--update']=1
+        shift
+        ;;
+
+      # :flag.case
+      --batch | -B)
+
+        # :flag.case_no_arg
+        args['--batch']=1
         shift
         ;;
 
@@ -4368,6 +6802,14 @@ goodreads_blogs_get_parse_requirements() {
         shift
         ;;
 
+      # :flag.case
+      --update | -U)
+
+        # :flag.case_no_arg
+        args['--update']=1
+        shift
+        ;;
+
       -?*)
         printf "invalid option: %s\n" "$key" >&2
         exit 1
@@ -4477,7 +6919,7 @@ goodreads_blogs_challenge_parse_requirements() {
 }
 
 # :command.parse_requirements
-goodreads_blogs_delete_parse_requirements() {
+goodreads_blogs_remove_parse_requirements() {
   local key
 
   # :command.fixed_flags_filter
@@ -4486,7 +6928,7 @@ goodreads_blogs_delete_parse_requirements() {
     case "$key" in
       --help | -h)
         long_usage=yes
-        goodreads_blogs_delete_usage
+        goodreads_blogs_remove_usage
         exit
         ;;
 
@@ -4498,7 +6940,7 @@ goodreads_blogs_delete_parse_requirements() {
   done
 
   # :command.command_filter
-  action="blogs delete"
+  action="blogs remove"
 
   # :command.parse_requirements_while
   while [[ $# -gt 0 ]]; do
@@ -4562,12 +7004,11 @@ goodreads_books_parse_requirements() {
   action=${1:-}
 
   case $action in
-    -*) ;;
 
-    update)
-      action="update"
+    fetch)
+      action="fetch"
       shift
-      goodreads_books_update_parse_requirements "$@"
+      goodreads_books_fetch_parse_requirements "$@"
       shift $#
       ;;
 
@@ -4585,22 +7026,18 @@ goodreads_books_parse_requirements() {
       shift $#
       ;;
 
-    delete | rm)
-      action="delete"
+    remove | rm)
+      action="remove"
       shift
-      goodreads_books_delete_parse_requirements "$@"
+      goodreads_books_remove_parse_requirements "$@"
       shift $#
       ;;
 
     # :command.command_fallback
-    "")
-      goodreads_books_usage >&2
-      exit 1
-      ;;
-
     *)
-      printf "invalid command: %s\n" "$action" >&2
-      exit 1
+      action="list"
+      goodreads_books_list_parse_requirements "$@"
+      shift $#
       ;;
 
   esac
@@ -4629,7 +7066,7 @@ goodreads_books_parse_requirements() {
 }
 
 # :command.parse_requirements
-goodreads_books_update_parse_requirements() {
+goodreads_books_fetch_parse_requirements() {
   local key
 
   # :command.fixed_flags_filter
@@ -4638,7 +7075,7 @@ goodreads_books_update_parse_requirements() {
     case "$key" in
       --help | -h)
         long_usage=yes
-        goodreads_books_update_usage
+        goodreads_books_fetch_usage
         exit
         ;;
 
@@ -4650,17 +7087,25 @@ goodreads_books_update_parse_requirements() {
   done
 
   # :command.command_filter
-  action="books update"
+  action="books fetch"
 
   # :command.parse_requirements_while
   while [[ $# -gt 0 ]]; do
     key="$1"
     case "$key" in
       # :flag.case
-      --all | -a)
+      --all | -A)
 
         # :flag.case_no_arg
         args['--all']=1
+        shift
+        ;;
+
+      # :flag.case
+      --update | -U)
+
+        # :flag.case_no_arg
+        args['--update']=1
         shift
         ;;
 
@@ -4681,6 +7126,28 @@ goodreads_books_update_parse_requirements() {
           printf "%s\n" "--blog requires an argument: --blog, -b BLOG_ID" >&2
           exit 1
         fi
+        ;;
+
+      # :flag.case
+      --challenge)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--challenge']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--challenge requires an argument: --challenge CHALLENGE_ID" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --batch | -B)
+
+        # :flag.case_no_arg
+        args['--batch']=1
+        shift
         ;;
 
       -?*)
@@ -4811,6 +7278,14 @@ goodreads_books_get_parse_requirements() {
         shift
         ;;
 
+      # :flag.case
+      --update | -U)
+
+        # :flag.case_no_arg
+        args['--update']=1
+        shift
+        ;;
+
       -?*)
         printf "invalid option: %s\n" "$key" >&2
         exit 1
@@ -4843,7 +7318,7 @@ goodreads_books_get_parse_requirements() {
 }
 
 # :command.parse_requirements
-goodreads_books_delete_parse_requirements() {
+goodreads_books_remove_parse_requirements() {
   local key
 
   # :command.fixed_flags_filter
@@ -4852,7 +7327,7 @@ goodreads_books_delete_parse_requirements() {
     case "$key" in
       --help | -h)
         long_usage=yes
-        goodreads_books_delete_usage
+        goodreads_books_remove_usage
         exit
         ;;
 
@@ -4864,7 +7339,7 @@ goodreads_books_delete_parse_requirements() {
   done
 
   # :command.command_filter
-  action="books delete"
+  action="books remove"
 
   # :command.parse_requirements_while
   while [[ $# -gt 0 ]]; do
@@ -4892,6 +7367,960 @@ goodreads_books_delete_parse_requirements() {
           args['book_id']="$escaped"
         else
           args['book_id']="${args['book_id']} $escaped"
+
+        fi
+        shift
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_challenges_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_challenges_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action=${1:-}
+
+  case $action in
+
+    create | new)
+      action="create"
+      shift
+      goodreads_challenges_create_parse_requirements "$@"
+      shift $#
+      ;;
+
+    list | ls)
+      action="list"
+      shift
+      goodreads_challenges_list_parse_requirements "$@"
+      shift $#
+      ;;
+
+    get)
+      action="get"
+      shift
+      goodreads_challenges_get_parse_requirements "$@"
+      shift $#
+      ;;
+
+    edit)
+      action="edit"
+      shift
+      goodreads_challenges_edit_parse_requirements "$@"
+      shift $#
+      ;;
+
+    remove | rm)
+      action="remove"
+      shift
+      goodreads_challenges_remove_parse_requirements "$@"
+      shift $#
+      ;;
+
+    # :command.command_fallback
+    *)
+      action="list"
+      goodreads_challenges_list_parse_requirements "$@"
+      shift $#
+      ;;
+
+  esac
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        printf "invalid argument: %s\n" "$key" >&2
+        exit 1
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_challenges_create_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_challenges_create_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="challenges create"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --id)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--id']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--id requires an argument: --id ID" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --title)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--title']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--title requires an argument: --title TITLE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --start)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--start']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--start requires an argument: --start DATE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --end)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--end']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--end requires an argument: --end DATE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --badges)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--badges']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--badges requires an argument: --badges COUNTS" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --badge)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--badge']+x} ]]; then
+            args['--badge']="$escaped"
+          else
+            args['--badge']="${args['--badge']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--badge requires an argument: --badge COUNT:TITLE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --no-badges)
+
+        # :flag.case_no_arg
+        args['--no-badges']=1
+        shift
+        ;;
+
+      # :flag.case
+      --blogs)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--blogs']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--blogs requires an argument: --blogs BLOG_IDS" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --blog)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--blog']+x} ]]; then
+            args['--blog']="$escaped"
+          else
+            args['--blog']="${args['--blog']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--blog requires an argument: --blog ID:TITLE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --no-blogs)
+
+        # :flag.case_no_arg
+        args['--no-blogs']=1
+        shift
+        ;;
+
+      # :flag.case
+      --no-goals)
+
+        # :flag.case_no_arg
+        args['--no-goals']=1
+        shift
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        printf "invalid argument: %s\n" "$key" >&2
+        exit 1
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_challenges_list_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_challenges_list_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="challenges list"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        printf "invalid argument: %s\n" "$key" >&2
+        exit 1
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_challenges_get_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_challenges_get_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="challenges get"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --json | -J)
+
+        # :flag.case_no_arg
+        args['--json']=1
+        shift
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        # :argument.case
+        if [[ -z ${args['challenge_id']+x} ]]; then
+          args['challenge_id']=$1
+          shift
+        else
+          printf "invalid argument: %s\n" "$key" >&2
+          exit 1
+        fi
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_challenges_edit_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_challenges_edit_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="challenges edit"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --title)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--title']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--title requires an argument: --title TITLE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --start)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--start']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--start requires an argument: --start DATE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --end)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--end']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--end requires an argument: --end DATE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --add-blog)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--add-blog']+x} ]]; then
+            args['--add-blog']="$escaped"
+          else
+            args['--add-blog']="${args['--add-blog']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--add-blog requires an argument: --add-blog BLOG_ID:NAME" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --remove-blog)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--remove-blog']+x} ]]; then
+            args['--remove-blog']="$escaped"
+          else
+            args['--remove-blog']="${args['--remove-blog']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--remove-blog requires an argument: --remove-blog BLOG_ID" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --add-badge)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--add-badge']+x} ]]; then
+            args['--add-badge']="$escaped"
+          else
+            args['--add-badge']="${args['--add-badge']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--add-badge requires an argument: --add-badge COUNT:NAME" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --remove-badge)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--remove-badge']+x} ]]; then
+            args['--remove-badge']="$escaped"
+          else
+            args['--remove-badge']="${args['--remove-badge']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--remove-badge requires an argument: --remove-badge COUNT" >&2
+          exit 1
+        fi
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        # :argument.case
+        if [[ -z ${args['challenge_id']+x} ]]; then
+          args['challenge_id']=$1
+          shift
+        else
+          printf "invalid argument: %s\n" "$key" >&2
+          exit 1
+        fi
+
+        ;;
+
+    esac
+  done
+
+  # :command.required_args_filter
+  if [[ -z ${args['challenge_id']+x} ]]; then
+    printf "missing required argument: CHALLENGE_ID\nusage: goodreads challenges edit CHALLENGE_ID [OPTIONS]\n" >&2
+
+    exit 1
+  fi
+
+}
+
+# :command.parse_requirements
+goodreads_challenges_remove_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_challenges_remove_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="challenges remove"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --all | -a)
+
+        # :flag.case_no_arg
+        args['--all']=1
+        shift
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_repeatable
+        # :argument.case_repeatable
+        escaped="$(printf '%q' "$1")"
+        if [[ -z ${args['challenge_id']+x} ]]; then
+          args['challenge_id']="$escaped"
+        else
+          args['challenge_id']="${args['challenge_id']} $escaped"
+
+        fi
+        shift
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_config_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_config_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action=${1:-}
+
+  case $action in
+
+    list | ls)
+      action="list"
+      shift
+      goodreads_config_list_parse_requirements "$@"
+      shift $#
+      ;;
+
+    get)
+      action="get"
+      shift
+      goodreads_config_get_parse_requirements "$@"
+      shift $#
+      ;;
+
+    set)
+      action="set"
+      shift
+      goodreads_config_set_parse_requirements "$@"
+      shift $#
+      ;;
+
+    unset)
+      action="unset"
+      shift
+      goodreads_config_unset_parse_requirements "$@"
+      shift $#
+      ;;
+
+    # :command.command_fallback
+    *)
+      action="list"
+      goodreads_config_list_parse_requirements "$@"
+      shift $#
+      ;;
+
+  esac
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        printf "invalid argument: %s\n" "$key" >&2
+        exit 1
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_config_list_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_config_list_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="config list"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        printf "invalid argument: %s\n" "$key" >&2
+        exit 1
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_config_get_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_config_get_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="config get"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        # :argument.case
+        if [[ -z ${args['key']+x} ]]; then
+          args['key']=$1
+          shift
+        else
+          printf "invalid argument: %s\n" "$key" >&2
+          exit 1
+        fi
+
+        ;;
+
+    esac
+  done
+
+  # :command.required_args_filter
+  if [[ -z ${args['key']+x} ]]; then
+    printf "missing required argument: KEY\nusage: goodreads config get KEY\n" >&2
+
+    exit 1
+  fi
+
+}
+
+# :command.parse_requirements
+goodreads_config_set_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_config_set_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="config set"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        # :argument.case
+        if [[ -z ${args['key']+x} ]]; then
+          args['key']=$1
+          shift
+        # :argument.case
+        elif [[ -z ${args['value']+x} ]]; then
+          args['value']=$1
+          shift
+        else
+          printf "invalid argument: %s\n" "$key" >&2
+          exit 1
+        fi
+
+        ;;
+
+    esac
+  done
+
+  # :command.required_args_filter
+  if [[ -z ${args['key']+x} ]]; then
+    printf "missing required argument: KEY\nusage: goodreads config set KEY VALUE\n" >&2
+
+    exit 1
+  fi
+
+  if [[ -z ${args['value']+x} ]]; then
+    printf "missing required argument: VALUE\nusage: goodreads config set KEY VALUE\n" >&2
+
+    exit 1
+  fi
+
+}
+
+# :command.parse_requirements
+goodreads_config_unset_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_config_unset_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="config unset"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --all | -a)
+
+        # :flag.case_no_arg
+        args['--all']=1
+        shift
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_repeatable
+        # :argument.case_repeatable
+        escaped="$(printf '%q' "$1")"
+        if [[ -z ${args['key']+x} ]]; then
+          args['key']="$escaped"
+        else
+          args['key']="${args['key']} $escaped"
 
         fi
         shift
@@ -4939,16 +8368,27 @@ run() {
     "auth switch") goodreads_auth_switch_command ;;
     "auth logout") goodreads_auth_logout_command ;;
     "blogs") goodreads_blogs_command ;;
-    "blogs update") goodreads_blogs_update_command ;;
+    "blogs fetch") goodreads_blogs_fetch_command ;;
     "blogs list") goodreads_blogs_list_command ;;
     "blogs get") goodreads_blogs_get_command ;;
     "blogs challenge") goodreads_blogs_challenge_command ;;
-    "blogs delete") goodreads_blogs_delete_command ;;
+    "blogs remove") goodreads_blogs_remove_command ;;
     "books") goodreads_books_command ;;
-    "books update") goodreads_books_update_command ;;
+    "books fetch") goodreads_books_fetch_command ;;
     "books list") goodreads_books_list_command ;;
     "books get") goodreads_books_get_command ;;
-    "books delete") goodreads_books_delete_command ;;
+    "books remove") goodreads_books_remove_command ;;
+    "challenges") goodreads_challenges_command ;;
+    "challenges create") goodreads_challenges_create_command ;;
+    "challenges list") goodreads_challenges_list_command ;;
+    "challenges get") goodreads_challenges_get_command ;;
+    "challenges edit") goodreads_challenges_edit_command ;;
+    "challenges remove") goodreads_challenges_remove_command ;;
+    "config") goodreads_config_command ;;
+    "config list") goodreads_config_list_command ;;
+    "config get") goodreads_config_get_command ;;
+    "config set") goodreads_config_set_command ;;
+    "config unset") goodreads_config_unset_command ;;
   esac
 }
 

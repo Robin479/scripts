@@ -51,7 +51,7 @@ fi
 blog_dir="$(gr::blog_dir)"
 
 if [[ ! -d "$blog_dir" ]] || [[ -z "$(ls -A "$blog_dir" 2>/dev/null)" ]]; then
-  echo "No cached blog posts yet. Run 'goodreads blogs update <blog_id>' to fetch one."
+  echo "No cached blog posts yet. Run 'goodreads blogs fetch <blog_id>' to fetch one."
   exit 0
 fi
 

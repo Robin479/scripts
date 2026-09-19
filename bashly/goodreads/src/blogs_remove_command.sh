@@ -13,7 +13,7 @@ if [[ -z "$all" && -z "$blog_ids" ]]; then
   exit 1
 fi
 
-delete_one() {
+remove_one() {
   local id="$1"
   local file
   file="$(gr::blog_file "$id")"
@@ -22,7 +22,7 @@ delete_one() {
     return 1
   fi
   rm -f "$file"
-  echo "$id -> deleted"
+  echo "$id -> removed"
 }
 
 if [[ -n "$all" ]]; then
@@ -42,7 +42,7 @@ ok=0
 fail=0
 # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
 for id in $blog_ids; do
-  if delete_one "$id"; then
+  if remove_one "$id"; then
     ok=$((ok + 1))
   else
     fail=$((fail + 1))
@@ -50,7 +50,7 @@ for id in $blog_ids; do
 done
 
 if [[ "$fail" -gt 0 ]]; then
-  echo "Deleted $ok blog post(s), $fail not found."
+  echo "Removed $ok blog post(s), $fail not found."
   exit 1
 fi
-echo "Deleted $ok blog post(s)."
+echo "Removed $ok blog post(s)."

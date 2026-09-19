@@ -35,6 +35,7 @@ commands:
   - name: list
     alias: ls
     help: List all known accounts
+    default: force
   - name: switch
     help: Make a different known account the current one
     args:
@@ -49,19 +50,26 @@ commands:
 - name: blogs
   help: Manage the local cache of scraped goodreads.com blog posts
   commands:
-  - name: update
-    help: "Fetch blog posts, discovering new ones, unless specific IDs are give."
+  - name: fetch
+    help: "Fetch blog posts, discovering new ones, unless specific IDs are given."
     args:
     - name: blog_id
       repeatable: true
-      help: Fetch the specified blog posts.
+      help: "Fetch these specific blog posts (already-cached ones are skipped unless --update is given)"
     flags:
     - long: --all
-      short: -a
-      help: Discover new blog posts and refresh all existing ones.
+      short: -A
+      help: "Discover new blog posts, and check every already-cached one too (its infinite cache TTL means this only ever reports it as fresh, unless --update is also given)"
+    - long: --update
+      short: -U
+      help: "Force-refresh explicitly given ids that are already cached, or, combined with --all, every already-cached post -- the only way to detect one's since been removed remotely"
+    - long: --batch
+      short: -B
+      help: Suppress the self-updating status line (plain output, suitable for logs/pipes)
   - name: list
     alias: ls
     help: "List cached blog posts, most recent first (last 15 by default)"
+    default: force
     args:
     - name: blog_id
       repeatable: true
@@ -85,14 +93,10 @@ commands:
       short: -l
       arg: n
       help: "Show n posts instead of 15 (not with --all, or both --since+--until)"
-    # bashly's `args:` schema has no per-argument `completions:` (only
-    # `command`/`flag` support it), so this is attached to the command
-    # itself instead. These IDs don't start with "-", so (unlike the
-    # flags above) they show up on a bare tab too -- completely's filter
-    # only hides candidates starting with "-" until you type one.
-    # $GOODREADS_DATA/~/.goodreads only -- doesn't honor a --data-path
-    # override given elsewhere on the command line, since that would need
-    # parsing COMP_WORDS here.
+    # args: has no per-argument completions: (only command:/flag: support
+    # it), so this is attached to the command instead. $GOODREADS_DATA/
+    # ~/.goodreads only -- ignores a --data-path given elsewhere on the
+    # command line (would need parsing COMP_WORDS here).
     completions:
     - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
   - name: get
@@ -105,6 +109,11 @@ commands:
     - long: --json
       short: -J
       help: Print the raw cached JSON instead of a pretty book listing
+    - long: --update
+      short: -U
+      help: Force updating this post even if already cached
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
   - name: challenge
     help: Manually flag (or unflag) blog posts as challenge listings
     args:
@@ -121,7 +130,7 @@ commands:
     - long: --auto
       short: -a
       help: Remove the manual override, falling back to the machine-computed guess again
-  - name: delete
+  - name: remove
     alias: rm
     help: Remove one or more blog posts from the local cache
     args:
@@ -135,31 +144,40 @@ commands:
 - name: books
   help: Manage the local cache of scraped goodreads.com book metadata
   commands:
-  - name: update
-    help: Fetch new books by id, or force-refresh already-cached ones
+  - name: fetch
+    help: Fetch new books by id, or update already-cached ones
     args:
     - name: book_id
       repeatable: true
-      help: Fetch or force-refresh these specific book ids
+      help: "Fetch these specific book ids (already-cached ones are skipped unless --update is given)"
     flags:
     - long: --all
-      short: -a
-      help: Force-refresh every already-cached book
+      short: -A
+      help: "Check every already-cached book, refreshing only stale ones (per their cache TTL) unless --update is given"
+    - long: --update
+      short: -U
+      help: "Force-refresh every explicitly given id (directly, via --blog, or via --challenge), or, combined with --all, every already-cached book -- bypassing the cache TTL entirely"
     - long: --blog
       short: -b
       arg: blog_id
       repeatable: true
       help: Fetch every book referenced by this blog post (see 'goodreads blogs list'); repeatable
-      # Known blog ids from the data dir — same dynamic-candidate convention
-      # blogs list/books list already use for their own id args, just scoped
-      # to this flag's own value instead of a whole command (bashly's flag
-      # completions: is a plain list, unlike args:, which supports none at
-      # all — see CLAUDE.md).
+      # Same dynamic-candidate convention as blogs list/books list, scoped
+      # to this flag instead of a whole command (see CLAUDE.md).
       completions:
       - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
+    - long: --challenge
+      arg: challenge_id
+      help: "Fetch every book referenced by any blog post linked to this challenge (see 'goodreads challenges get'); a book in multiple linked posts is only fetched once"
+      completions:
+      - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/challenges" 2>/dev/null | sed "s/\.json$//")'
+    - long: --batch
+      short: -B
+      help: Suppress the self-updating status line (plain output, suitable for logs/pipes)
   - name: list
     alias: ls
     help: List cached books, sorted by title
+    default: force
     args:
     - name: book_id
       repeatable: true
@@ -181,7 +199,12 @@ commands:
     - long: --json
       short: -J
       help: Print the raw cached JSON instead of a pretty summary
-  - name: delete
+    - long: --update
+      short: -U
+      help: Force updating this book even if already cached and still within its cache TTL
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/books" 2>/dev/null | sed "s/\.json$//")'
+  - name: remove
     alias: rm
     help: Remove one or more books from the local cache
     args:
@@ -192,3 +215,145 @@ commands:
     - long: --all
       short: -a
       help: Remove every cached book
+- name: challenges
+  help: Manually manage reading challenges (title, time window, badge-linked blog posts, book-count badges)
+  commands:
+  - name: create
+    alias: new
+    help: Create a new challenge
+    flags:
+    - long: --id
+      arg: id
+      help: "Manually specify the challenge id instead of auto-generating one (fails if already taken)"
+    - long: --title
+      arg: title
+      help: "Challenge title (default: auto-named from the season, if the window qualifies -- else \"Unnamed Challenge\")"
+    - long: --start
+      arg: date
+      help: "Start date, any format 'date -d' understands (default: right after the latest challenge if that's still recent, else the start of the current quarter)"
+    - long: --end
+      arg: date
+      help: "End date, any format 'date -d' understands (default: the next quarter-end at least 6 weeks after --start)"
+    - long: --badges
+      arg: counts
+      help: "Comma-separated book-count badges to add, each '<count>' or '<count>:<title>' (default: 2:Page-Turner,3:Speed Reader,5:Book Boss; pass an empty string for none, or see --no-badges)"
+    - long: --badge
+      arg: count:title
+      repeatable: true
+      help: "Add one book-count badge, as '<count>' or '<count>:<title>'; repeatable, alternative to --badges"
+    - long: --no-badges
+      help: "Add no book-count badges at all (overrides the default; superfluous, with a warning, alongside --badges/--badge)"
+    - long: --blogs
+      arg: blog_ids
+      help: "Comma-separated blog posts to link, each '<id>' or '<id>:<title>' (default title: the post's own; default list: cached posts published from 1 week before --start to 2 weeks before --end with a challenge likeliness >= 0.7; pass an empty string for none). Every given post is fetched (cached or remotely) to confirm it exists"
+    - long: --blog
+      arg: id:title
+      repeatable: true
+      help: "Add one blog post, as '<id>' or '<id>:<title>'; repeatable, alternative to --blogs"
+    - long: --no-blogs
+      help: "Link no blog posts at all (overrides the default; superfluous, with a warning, alongside --blogs/--blog)"
+    - long: --no-goals
+      help: Shorthand for --no-badges --no-blogs together
+  - name: list
+    alias: ls
+    help: List all challenges, sorted by start date
+    default: force
+  - name: get
+    help: Show one challenge's details
+    args:
+    - name: challenge_id
+      help: "Challenge id (default: the next one to end, ongoing or planned; else the most recently ended one; error if there are no challenges at all)"
+    flags:
+    - long: --json
+      short: -J
+      help: Print the raw JSON instead of a pretty summary
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/challenges" 2>/dev/null | sed "s/\.json$//")'
+  - name: edit
+    help: "Change a challenge's title, time window, badge-linked blog posts, and/or book-count badges"
+    args:
+    - name: challenge_id
+      required: true
+      help: Challenge id
+    flags:
+    - long: --title
+      arg: title
+      help: New title
+    - long: --start
+      arg: date
+      help: New start date
+    - long: --end
+      arg: date
+      help: New end date
+    - long: --add-blog
+      arg: blog_id:name
+      repeatable: true
+      help: "Add (or rename) a badge-linked blog post, as '<blog_id>' or '<blog_id>:<name>'; repeatable"
+      completions:
+      - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
+    - long: --remove-blog
+      arg: blog_id
+      repeatable: true
+      help: Remove a badge-linked blog post; repeatable
+    - long: --add-badge
+      arg: count:name
+      repeatable: true
+      help: "Add (or rename) a book-count badge, as '<count>' or '<count>:<name>'; repeatable"
+    - long: --remove-badge
+      arg: count
+      repeatable: true
+      help: Remove a book-count badge; repeatable
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/challenges" 2>/dev/null | sed "s/\.json$//")'
+  - name: remove
+    alias: rm
+    help: Remove one or more challenges
+    args:
+    - name: challenge_id
+      repeatable: true
+      help: Challenge id(s) to remove
+    flags:
+    - long: --all
+      short: -a
+      help: Remove every challenge
+- name: config
+  help: View or change goodreads' own config.ini settings (curl_bin, throttling, cache TTLs, ...)
+  commands:
+  - name: list
+    alias: ls
+    help: List every setting goodreads understands, with its current value (or default)
+    default: force
+  - name: get
+    help: Print one setting's effective value (falls back to its default silently if unset)
+    args:
+    - name: key
+      required: true
+      help: Setting name (see 'goodreads config list')
+    # Attached to the command, not the arg -- same convention as
+    # blogs/books/challenges list|get (see CLAUDE.md).
+    completions:
+    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays book_cache_ttl'
+  - name: set
+    help: Set a setting's value
+    args:
+    - name: key
+      required: true
+      help: Setting name (see 'goodreads config list')
+    - name: value
+      required: true
+      help: New value
+    # No completions here -- a command-level block applies to *every*
+    # positional arg (confirmed: also hit the value slot), which would
+    # wrongly offer key names as values too.
+  - name: unset
+    help: Unset one or more settings, reverting them to their default
+    args:
+    - name: key
+      repeatable: true
+      help: Setting name(s) to unset
+    completions:
+    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays book_cache_ttl'
+    flags:
+    - long: --all
+      short: -a
+      help: Unset every currently-set setting

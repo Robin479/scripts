@@ -9,31 +9,19 @@ gr::book_file() {
   echo "$(gr::book_dir)/$1.json"
 }
 
-# Goodreads book URLs resolve by id alone — the trailing title-slug part is
-# decorative. Confirmed directly: fetched /book/show/199698485-the-god-of-the-woods
-# and /book/show/199698485 and compared them — both HTTP 200, identical
-# <title> and identical <link rel="canonical"> (which itself always carries
-# the full slug, regardless of which form was requested). So always
-# construct book URLs from the id alone here — gr::refresh_book appends its
-# own decorative random slug (gr::random_book_slug) right before fetching;
-# see there for why that's not done in this function instead.
+# Book URLs resolve by id alone — the trailing title-slug is decorative
+# (confirmed: id-only and id+slug URLs both 200, identical canonical link).
+# Always build URLs from the id alone here; gr::refresh_book appends its own
+# fake slug (gr::random_book_slug) right before fetching — see there for why.
 gr::book_url() {
   echo "https://www.goodreads.com/book/show/$1"
 }
 
-# A random three-word "title" — grammatically plausible but meaningless —
-# for gr::refresh_book to append to gr::book_url's id-only URL right before
-# fetching, purely so the request looks like normal browser traffic
-# (".../show/<id>-a-blue-box") rather than a bare numeric id — never meant
-# to be accurate, and kept out of gr::book_url itself since not every
-# caller of that necessarily wants a fake slug attached. First word is
-# either an article ("a"/"an", chosen for whichever of the two fits the
-# adjective that follows; or "the") or a spelled-out number
-# ("two".."twelve"); second word is a generic adjective (color or similar
-# generic, applicable to any object); third word is a noun naming a
-# generic object, in the singular or plural form the first word
-# grammatically requires (singular after "a"/"an"/"one", plural after any
-# other number, either after "the").
+# A grammatically-plausible but meaningless three-word "title"
+# (".../show/<id>-a-blue-box") for gr::refresh_book to append right before
+# fetching, so the request looks like normal browser traffic rather than a
+# bare id. Kept out of gr::book_url itself since not every caller wants a
+# fake slug. Article/number + adjective + noun, agreeing in number/article.
 gr::random_book_slug() {
   local -a number_words=(one two three four five six seven eight nine ten eleven twelve)
   local -a adjectives=(
@@ -64,60 +52,39 @@ gr::random_book_slug() {
   echo "$first-$adjective-$noun"
 }
 
-# Book pages don't need a login, so this fetches account-less: COOKIE_JAR
-# already points at the shared gr::generic_cookie_jar by the time this runs
-# (src/before.sh's before_hook calls gr::init_cookie_jar once per invocation,
-# right after argument parsing — see there for why that's the correct spot
-# rather than calling it here or in bashly's initialize() hook), unless a
-# caller already set it to something else. gr::http_get itself refuses to
-# run at all when --offline was given, so there's no separate offline check
-# needed here.
+# Book pages need no login, so this fetches account-less (COOKIE_JAR already
+# points at gr::generic_cookie_jar by the time this runs — see
+# src/before.sh). gr::http_get itself refuses to run under --offline, so no
+# separate check is needed here.
 #
-# The book JSON is our own scraped fields (book_id, legacyId, url,
-# canonical_url) flat-merged with the page's own schema.org/Book JSON-LD
-# (<script type="application/ld+json">) — chosen deliberately over nesting
-# the JSON-LD under its own key, and @context/@type are kept (not stripped)
-# so the result stays real, valid JSON-LD, just extended with our own
-# fields. Before merging, every string value in the JSON-LD is squeezed
-# (collapse whitespace runs to one space) and HTML-entity-decoded —
-# Goodreads' own template leaves both kinds of junk in there (e.g. author
-# name "Liz    Moore", awards text containing literal "&amp;" instead of
-# "&" even though this is already inside a <script> block, where entities
-# shouldn't need decoding at all).
+# Output is our own scraped fields (book_id, legacyId, url, canonical_url)
+# flat-merged with the page's schema.org/Book JSON-LD — @context/@type kept
+# so the result stays valid JSON-LD. JSON-LD strings are whitespace-squeezed
+# and HTML-entity-decoded first (Goodreads' template leaves junk like "Liz
+# Moore" double-spaced, or literal "&amp;" inside the <script> block).
 #
-# canonical_url (<link rel="canonical">) is the *work's* preferred edition
-# — it can point at a *different* book id than the one requested (confirmed:
-# fetching id 25098993 got a canonical_url embedding id 1744452 instead).
-# url is different: it's this *specific* edition's own self URL
-# ("webUrl", from Goodreads' embedded Next.js page data — see below), always
-# matching the requested id. Don't conflate the two.
+# canonical_url is the *work's* preferred edition and can point at a
+# *different* book id than requested (confirmed: id 25098993's canonical_url
+# embeds id 1744452). `url` is this specific edition's own self URL
+# (webUrl, from the embedded Next.js data below) — always matching the
+# requested id. Don't conflate the two.
 #
-# Goodreads' frontend is Next.js: every page embeds <script
-# id="__NEXT_DATA__" type="application/json">, whose `.query.book_id` is
-# the literal route parameter used to serve the page — an independent,
-# reliable way to confirm the fetched page is actually for the requested id
-# (not a misdirect/mismatch) before ever caching anything under it. That
-# same blob's `.props.pageProps.apolloState` holds a GraphQL-normalized
-# cache with one or more "Book:<opaque-ref>" entries (one per book
-# referenced anywhere on the page, e.g. "other editions" widgets) — find
-# the one whose own `.legacyId` matches the requested id, and pull its
-# `.legacyId` (stored as-is, in case it ever diverges from book_id — no
-# known case yet, but cheap insurance) and `.webUrl` (stored as `url`) from
-# there.
+# Goodreads is Next.js: every page embeds <script id="__NEXT_DATA__">, whose
+# `.query.book_id` is the literal route parameter — used to confirm the
+# fetched page really is for the requested id before caching anything.
+# `.props.pageProps.apolloState` holds a GraphQL-normalized cache with one
+# "Book:<ref>" entry per book referenced on the page (e.g. "other editions"
+# widgets); the one whose `.legacyId` matches is where `.webUrl` (-> `url`)
+# comes from.
 #
-# All temp files are pre-created and covered by one trap (not one trap per
-# mktemp — traps replace each other, they don't stack) so every stage's
-# leftovers get cleaned up regardless of which one fails. Every stage that
-# can legitimately fail is checked explicitly and returns 1 before the final
-# `mv`, never left to `set -e`: a caller invoking gr::book_json as a
-# non-final part of an && / || / if-condition list — entirely plausible —
-# suppresses errexit for this whole call, and jq treats an empty file as
-# valid empty output (exit 0!), so an implicit-only check would let a failed
-# refresh silently blank a previously-good cache in that situation. Never
-# holds the fetched JSON in a shell variable — only ever in temp files. On
-# success, prints the resulting books/<id>.json path to stdout (not its
-# contents) — gr::book_json redirects this away since it doesn't need it,
-# but it makes gr::refresh_book self-describing for direct/manual use too.
+# All temp files share one trap (traps replace, not stack) so every stage's
+# leftovers get cleaned up regardless of which fails. Every failable stage
+# is checked explicitly and returns 1 before the final `mv`, never left to
+# `set -e` — a caller using this in an && / || / if-condition list disables
+# errexit, and jq treats an empty file as valid empty output (exit 0), so an
+# implicit-only check could silently blank a good cache. Prints the
+# resulting books/<id>.json path on success (gr::book_json discards it, but
+# it makes this self-describing for manual use).
 gr::refresh_book() {
   local id="$1"
   mkdir -p "$(gr::book_dir)"
@@ -130,12 +97,11 @@ gr::refresh_book() {
   tmp_book="$(mktemp)"
   trap 'rm -f "$html" "$ld_json" "$next_data" "$apollo_json" "$tmp_book"' EXIT
 
-  # A fake-but-grammatical slug is appended to the id here (not in
-  # gr::book_url itself — see there) purely so the request looks like
-  # normal browser traffic; goodreads.com ignores it either way (see
-  # gr::book_url). This does mean the fetched page's own `.query.book_id`
-  # (below) reflects the full "<id>-<slug>" segment, not just $id.
+  # Fake slug appended here, not in gr::book_url (see there) — goodreads.com
+  # ignores it either way. Means `.query.book_id` below is "<id>-<slug>",
+  # not just $id.
   if ! gr::http_get "$(gr::book_url "$id")-$(gr::random_book_slug)" > "$html"; then
+    gr::term_clear_line
     echo "error: could not fetch book $id from goodreads.com" >&2
     return 1
   fi
@@ -143,38 +109,34 @@ gr::refresh_book() {
   local canonical_url
   canonical_url="$(xidel -s "$html" -e '(//link[@rel="canonical"])[1]/@href' 2>/dev/null)" || true
   if [[ -z "$canonical_url" ]]; then
+    gr::term_clear_line
     echo "error: no canonical link found for book $id — page may not be a valid book page" >&2
     return 1
   fi
 
   xidel -s "$html" -e '(//script[@id="__NEXT_DATA__"])[1]' > "$next_data" 2>/dev/null
   if [[ ! -s "$next_data" ]]; then
+    gr::term_clear_line
     echo "error: no __NEXT_DATA__ found for book $id — page structure may have changed" >&2
     return 1
   fi
 
-  # .query.book_id is the *entire* route segment we requested, slug and
-  # all (gr::book_url always appends one now, see there) — so only its
-  # numeric prefix (up to the first "-") is meaningful here, not an exact
-  # match against $id.
+  # .query.book_id is the whole "<id>-<slug>" route segment, so only its
+  # numeric prefix is meaningful here, not an exact match against $id.
   local requested_book_id
   requested_book_id="$(jq -r '.query.book_id // empty' "$next_data")"
   if [[ "${requested_book_id%%-*}" != "$id" ]]; then
+    gr::term_clear_line
     echo "error: fetched page is for book '${requested_book_id:-<none>}', not the requested $id — refusing to cache under the wrong id" >&2
     return 1
   fi
 
-  # clean_or_null is applied to every apolloState-sourced string that ends
-  # up in the final output (book/work title, description, contributor and
-  # series names) — apolloState's own strings can carry the same
-  # whitespace-run junk as the JSON-LD's (e.g. author name "Liz    Moore"),
-  # but since the final merge is `$ld[0] * $apollo[0]` (apollo wins on any
-  # shared key), cleaning only the JSON-LD side — as the original version
-  # of this pipeline did — never actually reached the output for these
-  # fields. Also treats "" the same as absent (Goodreads' own
-  # work.details.originalTitle is "" rather than missing when there's no
-  # distinct original title — confirmed directly against a real fetch) so
-  # drop_nulls actually drops it instead of leaving a stray `"title": ""`.
+  # clean_or_null runs on every apolloState string in the output (titles,
+  # description, contributor/series names) — apolloState has the same
+  # whitespace junk as the JSON-LD, but since apollo wins the final merge
+  # (`$ld[0] * $apollo[0]`), cleaning only the JSON-LD side wouldn't reach
+  # these fields. Also maps "" to null (Goodreads' originalTitle is "" not
+  # missing when there's none — confirmed) so drop_nulls actually drops it.
   jq -c --arg id "$id" '
     def epoch_to_date: if . then (./1000 | gmtime | strftime("%Y-%m-%d")) else null end;
     def epoch_to_year: if . then (./1000 | gmtime | strftime("%Y")) else null end;
@@ -187,17 +149,12 @@ gr::refresh_book() {
     .props.pageProps.apolloState as $state
     | ($state | to_entries[] | select(.key | startswith("Book:")) | .value | select((.legacyId | tostring) == $id)) as $book
     | ($state[$book.work.__ref // ""]) as $work
-    # $isbn is every distinct, cleaned, non-empty value from
-    # details.isbn/details.isbn13 combined — deliberately built from both
-    # fields together and deduped, not "details.isbn if it looks like an
-    # ISBN-10" alone: Goodreads sometimes puts the same 13-digit value in
-    # both fields (self-published/POD editions with no true ISBN-10 —
-    # confirmed directly on id 229004405), and `unique` collapses that
-    # automatically instead of needing an explicit isbn-vs-isbn13 equality
-    # check. isbn10/isbn13 are then just "the one 10-char / 13-char entry
-    # in $isbn, if any" — an ISBN-10 is always exactly 10 characters and an
-    # ISBN-13 always exactly 13, so a value can satisfy at most one of the
-    # two regardless of which raw field it came from.
+    # $isbn: every distinct, cleaned, non-empty value from details.isbn and
+    # details.isbn13 combined and deduped — not "isbn if it looks ISBN-10"
+    # alone, since Goodreads sometimes puts the same 13-digit value in both
+    # fields (POD editions with no true ISBN-10; confirmed on id
+    # 229004405), and `unique` collapses that. isbn10/isbn13 are then just
+    # the 10-char / 13-char entry in $isbn, if any.
     | ([$book.details.isbn, $book.details.isbn13] | map(clean_or_null) | map(select(. != null)) | unique | sort_by([-length, .])) as $isbn
     | ($isbn | map(select(length == 10)) | first // null) as $isbn10
     | ($isbn | map(select(length == 13)) | first // null) as $isbn13
@@ -231,6 +188,7 @@ gr::refresh_book() {
   ' "$next_data" | head -n1 > "$apollo_json"
 
   if [[ ! -s "$apollo_json" ]]; then
+    gr::term_clear_line
     echo "error: could not find book data for book $id in __NEXT_DATA__ — page structure may have changed" >&2
     return 1
   fi
@@ -249,6 +207,7 @@ gr::refresh_book() {
     )' > "$ld_json"
 
   if [[ ! -s "$ld_json" ]]; then
+    gr::term_clear_line
     echo "error: no book JSON-LD found for book $id — page may not be a valid book page" >&2
     return 1
   fi
@@ -260,6 +219,7 @@ gr::refresh_book() {
       --slurpfile ld "$ld_json" \
       '{book_id: $id, canonical_url: $canonical_url} * $ld[0] * $apollo[0]' \
       > "$tmp_book" || [[ ! -s "$tmp_book" ]]; then
+    gr::term_clear_line
     echo "error: could not build JSON for book $id" >&2
     return 1
   fi
@@ -268,21 +228,32 @@ gr::refresh_book() {
   gr::book_file "$id"
 }
 
-# Emits one-line JSON for the given book id, backed by an on-disk cache at
-# books/<id>.json, fresh for `book_cache_ttl` config seconds (see
-# GR_BOOK_CACHE_TTL_DEFAULT for the fallback when unset). `find -newermt` on
-# the exact expected path handles "missing" and "stale" as a single check: it
-# prints the path only if the file exists AND is newer than the threshold,
-# so empty output means "needs a refresh" either way — no separate
-# existence/age checks needed. A second "--force" argument bypasses the TTL
-# check and always refreshes — same force-parameter shape as gr::blog_json,
-# used by the `books update` command. Refresh always runs via
-# gr::refresh_book when needed — --offline is gr::http_get's problem (see
-# there), not this function's; a refresh that fails for any reason, offline
-# included, fails gr::book_json outright rather than silently falling back
-# to stale/missing data. Never holds the JSON in a shell variable — the file
-# is the single source of truth, and jq is what reads and re-emits it (which
-# doubles as a "is this valid JSON" check).
+# True (0, prints nothing) if book $1's cache file exists and is still
+# within its `book_cache_ttl` config seconds (GR_BOOK_CACHE_TTL_DEFAULT if
+# unset) -- false (1) if missing or stale. `find -newermt` handles
+# "missing" and "stale" as one check: it prints the path only if the file
+# exists AND is newer, so empty output means "needs a refresh" either
+# way. Factored out of gr::book_json so `books fetch --all` (below) can
+# ask the same question itself, without forcing a call into
+# gr::book_json, to tell "still fresh, left alone" apart from "was stale,
+# refreshed" for its own reporting.
+gr::book_fresh() {
+  local id="$1" book_file ttl threshold fresh
+  book_file="$(gr::book_file "$id")"
+  [[ -f "$book_file" ]] || return 1
+
+  ttl="$(gr::config_get book_cache_ttl "$GR_BOOK_CACHE_TTL_DEFAULT")"
+  threshold="$(date -d "-${ttl} seconds" +'%Y-%m-%d %H:%M:%S')"
+  fresh="$(find "$book_file" -newermt "$threshold" 2>/dev/null)" || true
+  [[ -n "$fresh" ]]
+}
+
+# One-line JSON for the given book id, cached at books/<id>.json, fresh
+# per gr::book_fresh. "--force" bypasses the TTL (same shape as
+# gr::blog_json, used by `books fetch`). A failed refresh fails this
+# outright rather than falling back to stale/missing data. Never holds the
+# JSON in a variable — the file is read back via jq, doubling as a validity
+# check.
 gr::book_json() {
   local id="$1"
   local force="${2:-}"
@@ -290,16 +261,7 @@ gr::book_json() {
   book_file="$(gr::book_file "$id")"
   mkdir -p "$(gr::book_dir)"
 
-  local ttl
-  ttl="$(gr::config_get book_cache_ttl "$GR_BOOK_CACHE_TTL_DEFAULT")"
-
-  local threshold
-  threshold="$(date -d "-${ttl} seconds" +'%Y-%m-%d %H:%M:%S')"
-
-  local fresh
-  fresh="$(find "$book_file" -newermt "$threshold" 2>/dev/null)" || true
-
-  if [[ -z "$fresh" || "$force" == "--force" ]]; then
+  if ! gr::book_fresh "$id" || [[ "$force" == "--force" ]]; then
     gr::refresh_book "$id" > /dev/null || return 1
   fi
 
