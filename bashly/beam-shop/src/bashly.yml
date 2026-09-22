@@ -1,0 +1,282 @@
+name: beam-shop
+help: Scrape and organize book cover images from www.beam-shop.de
+version: 0.1.0
+
+flags:
+- long: --data-path
+  arg: path
+  help: "Root directory for cached data (default: $BEAM_SHOP_DATA, or ~/.beam-shop)"
+- long: --offline
+  help: Skip live network requests and use only cached data
+
+commands:
+# Run `eval "$(beam-shop completions)"` to enable completions in the current shell.
+- name: completions
+  help: Print a bash completions script
+  args:
+  - name: shell
+    help: Shell to generate completions for (only bash is currently supported)
+    allowed: [bash]
+    default: bash
+- name: categories
+  help: Explore the shop's own raw category tree (confusing -- see 'series' for a cleaner view)
+  commands:
+  - name: list
+    alias: ls
+    help: "List categories under a parent (default: the configured discovery root)"
+    default: force
+    args:
+    - name: parent_id
+      help: Only list this category's direct children (default -- crawl from the discovery root)
+    flags:
+    - long: --refresh
+      short: -r
+      help: Re-crawl instead of using the cached category tree
+  - name: get
+    help: Show one cached category's detail
+    args:
+    - name: category_id
+      required: true
+      help: Category id, as shown by 'categories list'
+- name: series
+  help: Manage logical series definitions (one or more shop categories, in order)
+  commands:
+  - name: list
+    alias: ls
+    help: List every defined series
+    default: force
+  - name: get
+    help: Show one series' definition and stats
+    args:
+    - name: series_id
+      required: true
+      help: Series id, as shown by 'series list'
+    completions:
+    - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+  - name: create
+    alias: new
+    help: Create a new series from one or more shop categories
+    args:
+    - name: series_id
+      required: true
+      help: Series id to create (a short slug, e.g. 'perry-rhodan')
+    flags:
+    - long: --categories
+      arg: ids
+      required: true
+      help: Comma-separated shop category ids that together make up this series
+    - long: --name
+      arg: name
+      help: Human-readable series name (default -- the first category's own name)
+    - long: --item-pattern
+      arg: regex
+      help: "Extended regex with one capture group pulling the item number out of a product's title (default: '[0-9]+')"
+    - long: --order
+      arg: mode
+      allowed: [auto, given]
+      default: auto
+      help: "'auto' sorts --categories by the numeric range parsed from each category's name/slug; 'given' keeps them exactly as typed"
+    - long: --resolutions
+      arg: specs
+      help: "Comma-separated ImageMagick resize geometry strings for 'covers resize' to produce, e.g. '700x1000!,300x300' -- the '!' forces that exact size, ignoring aspect ratio (default: none -- 'covers resize' falls back to the image_width/_height/_format config keys)"
+  - name: edit
+    help: Change an existing series' category membership, resize resolutions, name, item-number pattern, and/or category order
+    args:
+    - name: series_id
+      required: true
+      help: Series id to edit, as shown by 'series list'
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+    flags:
+    - long: --categories
+      arg: ids
+      help: Comma-separated shop category ids -- full replacement of the current membership; mutually exclusive with --add-categories/--remove-categories
+    - long: --add-categories
+      arg: ids
+      help: Comma-separated shop category ids to add, instead of retyping the full --categories list
+    - long: --remove-categories
+      arg: ids
+      help: Comma-separated shop category ids to drop
+    - long: --resolutions
+      arg: specs
+      help: "Comma-separated resize geometry strings, e.g. '700x1000!,300x300' -- full replacement; mutually exclusive with --add-resolutions/--remove-resolutions"
+    - long: --add-resolutions
+      arg: specs
+      help: Comma-separated resize geometry strings to add
+    - long: --remove-resolutions
+      arg: specs
+      help: Comma-separated resize geometry strings to drop
+    - long: --name
+      arg: name
+      help: New human-readable series name
+    - long: --item-pattern
+      arg: regex
+      help: New extended regex with one capture group pulling the item number out of a product's title
+    - long: --order
+      arg: mode
+      allowed: [auto, given]
+      default: auto
+      help: "Applies to the resulting category list either way: 'auto' sorts it by the numeric range parsed from each category's name/slug; 'given' keeps it in the order categories end up combined (existing, then --add-categories, minus --remove-categories) without re-sorting"
+  - name: relink
+    help: Rebuild the human-browsable symlink view for one or more series from canonical data
+    args:
+    - name: series_id
+      repeatable: true
+      help: Series id(s) to relink (default -- every defined series)
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+  - name: audit
+    help: "Report gaps/problems in a series' cached data, purely from local metadata (no network access): item numbers missing entirely, 'final' records with no actual image file on disk, and covers still stuck at 'placeholder'"
+    args:
+    - name: series_id
+      required: true
+      help: Series id to audit, as shown by 'series list'
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+  - name: refresh
+    help: "The routine day-to-day command: fetch new covers, relink, and resize (at every preconfigured resolution) for one or more series in one step"
+    args:
+    - name: series_id
+      repeatable: true
+      help: Series id(s) to refresh (default -- every defined series)
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+    flags:
+    - long: --limit
+      arg: n
+      help: Stop after downloading this many new covers per series
+    - long: --force
+      short: -f
+      help: Re-check every product in range for each series, not just up to the first already-final one
+    - long: --batch
+      help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
+  - name: remove
+    alias: rm
+    help: Remove one or more series definitions (categories/products/images are kept -- only the series mapping and its derived views go)
+    args:
+    - name: series_id
+      repeatable: true
+      help: Series id(s) to remove
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+    flags:
+    - long: --all
+      short: -a
+      help: Remove every defined series
+- name: covers
+  help: Fetch and normalize book cover images
+  commands:
+  - name: fetch
+    help: Fetch new covers from one or more shop categories, discovering newly released ones
+    args:
+    - name: category_id
+      repeatable: true
+      help: Shop category id(s) to fetch (see 'categories list') -- omit if --series/--all-series is given
+    flags:
+    - long: --series
+      short: -s
+      arg: series_id
+      repeatable: true
+      help: Fetch every category of this series instead of giving category id(s) directly (repeatable, see 'series list')
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+    - long: --all-series
+      help: Fetch every defined series (alternative to --series/category id(s))
+    - long: --all-children
+      short: -A
+      help: Fetch every direct child category of the given category id(s) instead of the id(s) themselves
+    - long: --limit
+      arg: n
+      help: Stop after downloading this many new covers
+    - long: --force
+      short: -f
+      help: Re-check every product in range, not just up to the first already-final one
+    - long: --resize
+      help: Also resize any newly fetched series' covers afterwards (see 'covers resize')
+    - long: --batch
+      help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
+  - name: resize
+    help: Normalize a series' covers into a common size/format via ImageMagick
+    args:
+    - name: series_id
+      repeatable: true
+      help: Series id(s) to resize (default -- every series with classified covers)
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+    flags:
+    - long: --width
+      arg: px
+      help: Target width in pixels (default -- the image_width config key, 600)
+    - long: --height
+      arg: px
+      help: Target height in pixels (default -- the image_height config key, 900)
+    - long: --format
+      arg: ext
+      help: Target image format/extension (default -- the image_format config key, jpg)
+    - long: --batch
+      help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
+  - name: import
+    help: "Manually register an already-on-disk cover for one product -- for when the shop's own copy is unreachable (e.g. a 404 on what should be its image url) but you already have the real cover some other way"
+    args:
+    - name: image_file
+      required: true
+      help: Path to the cover image file to import
+      completions:
+      - <file>
+    flags:
+    - long: --product
+      arg: product_id
+      help: "Shop product id (from the product's own URL, or from an earlier 'covers fetch' error naming it) -- required together with --category/--title, as an alternative to --series/--item"
+    - long: --category
+      arg: category_id
+      help: Which shop category this product belongs to (see 'categories list') -- required together with --product/--title
+    - long: --title
+      arg: title
+      help: The product's title, exactly as shown on the shop -- required together with --product/--category
+    - long: --series
+      arg: series_id
+      help: "Resolve --product/--category/--title automatically from an already-cached record at this series + --item, instead of giving them directly -- only works for a 'broken' 'series audit' finding (record intact, image file gone); a 'missing' one (never fetched at all) has no id to resolve and needs the --product form"
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+    - long: --item
+      arg: item_number
+      help: Series item number to resolve via --series (see above)
+    - long: --force
+      short: -f
+      help: Overwrite an existing cached-final cover for this product id
+- name: config
+  help: View or change beam-shop's own config.ini settings (curl_bin, throttling, image size, ...)
+  commands:
+  - name: list
+    alias: ls
+    help: List every setting beam-shop understands, with its current value (or default)
+    default: force
+  - name: get
+    help: Print one setting's effective value (falls back to its default silently if unset)
+    args:
+    - name: key
+      required: true
+      help: Setting name (see 'beam-shop config list')
+    completions:
+    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url'
+  - name: set
+    help: Set a setting's value
+    args:
+    - name: key
+      required: true
+      help: Setting name (see 'beam-shop config list')
+    - name: value
+      required: true
+      help: New value
+  - name: unset
+    help: Unset one or more settings, reverting them to their default
+    args:
+    - name: key
+      repeatable: true
+      help: Setting name(s) to unset
+    completions:
+    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url'
+    flags:
+    - long: --all
+      short: -a
+      help: Unset every currently-set setting
