@@ -8,13 +8,13 @@ resolutions_csv="${args[--resolutions]:-}"
 add_resolutions_csv="${args[--add-resolutions]:-}"
 remove_resolutions_csv="${args[--remove-resolutions]:-}"
 name="${args[--name]:-}"
-item_pattern="${args[--item-pattern]:-}"
+item_key_format="${args[--item-key-format]:-}"
 order="${args[--order]:-auto}"
 
 if [[ -z "$categories_csv" && -z "$add_categories_csv" && -z "$remove_categories_csv" \
       && -z "$resolutions_csv" && -z "$add_resolutions_csv" && -z "$remove_resolutions_csv" \
-      && -z "$name" && -z "$item_pattern" ]]; then
-  echo "error: give at least one of --categories, --add-categories, --remove-categories, --resolutions, --add-resolutions, --remove-resolutions, --name, --item-pattern" >&2
+      && -z "$name" && -z "$item_key_format" ]]; then
+  echo "error: give at least one of --categories, --add-categories, --remove-categories, --resolutions, --add-resolutions, --remove-resolutions, --name, --item-key-format" >&2
   exit 1
 fi
 
@@ -28,9 +28,6 @@ if [[ -n "$resolutions_csv" && ( -n "$add_resolutions_csv" || -n "$remove_resolu
   exit 1
 fi
 
-# Validate every category id this call actually introduces before writing
-# anything -- --remove-categories doesn't need this (removing an unknown
-# id from the list is harmless, just a no-op for that id).
 for id_list in "$categories_csv" "$add_categories_csv"; do
   [[ -n "$id_list" ]] || continue
   IFS=',' read -r -a ids <<< "$id_list"
@@ -47,7 +44,7 @@ bs::validate_resize_specs "$add_resolutions_csv" || exit 1
 
 bs::series_edit "$series_id" "$categories_csv" "$add_categories_csv" "$remove_categories_csv" \
   "$resolutions_csv" "$add_resolutions_csv" "$remove_resolutions_csv" \
-  "$name" "$item_pattern" "$order" || exit 1
+  "$name" "$item_key_format" "$order" || exit 1
 
 count="$(jq '.category_ids | length' "$(bs::series_file "$series_id")")"
 echo "Series '$series_id' updated ($count categor$([[ $count -eq 1 ]] && echo y || echo ies))."

@@ -7,8 +7,6 @@ all_children="${args[--all-children]:-}"
 limit="${args[--limit]:-}"
 force="${args[--force]:-}"
 resize="${args[--resize]:-}"
-# Must be a plain if (see bs::fetch_quiet's doc comment, lib/beam_shop.sh)
-# -- a command substitution silently breaks its terminal check.
 quiet=""
 if bs::fetch_quiet "${args[--batch]:-}"; then
   quiet=1
@@ -54,26 +52,14 @@ else
   targets="$category_ids"
 fi
 
-affected_series=""
-
 for id in $targets; do
-  series_id="$(bs::series_for_category "$id")" || series_id=""
-  echo "== category $id${series_id:+ (series: $series_id)} =="
-  bs::fetch_category "$id" "$force" "$series_id" "$limit" "$quiet" || exit 1
-
-  if [[ -n "$series_id" ]]; then
-    affected_series="$affected_series $series_id"
-  fi
+  echo "== category $id =="
+  bs::fetch_category "$id" "$force" "$limit" "$quiet" || exit 1
 done
 
-# Dedup and relink every series touched this run.
-affected_series="$(tr -s ' ' '\n' <<< "$affected_series" | sort -u | tr '\n' ' ')"
-for sid in $affected_series; do
-  [[ -n "$sid" ]] || continue
-  count="$(bs::series_relink "$sid" "$quiet")"
-  echo "series $sid relinked ($count cover(s))"
-  if [[ -n "$resize" ]]; then
+if [[ -n "$resize" ]]; then
+  for sid in $(bs::all_series_ids); do
     resized="$(bs::resize_series "$sid" "" "" "" "$quiet")"
     echo "series $sid resized ($resized file(s))"
-  fi
-done
+  done
+fi

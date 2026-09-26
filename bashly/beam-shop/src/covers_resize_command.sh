@@ -4,30 +4,19 @@ series_ids="${args[series_id]:-}"
 width="${args[--width]:-}"
 height="${args[--height]:-}"
 format="${args[--format]:-}"
-# Must be a plain if (see bs::fetch_quiet's doc comment, lib/beam_shop.sh)
-# -- a command substitution silently breaks its terminal check.
 quiet=""
 if bs::fetch_quiet "${args[--batch]:-}"; then
   quiet=1
 fi
 
-if [[ -z "$series_ids" ]]; then
-  shopt -s nullglob
-  files=("$(bs::series_root)"/*.json)
-  shopt -u nullglob
-  ids=()
-  for f in "${files[@]}"; do
-    ids+=("$(jq -r '.series_id' "$f")")
-  done
-  series_ids="${ids[*]}"
-fi
+[[ -z "$series_ids" ]] && series_ids="$(bs::all_series_ids | tr '\n' ' ')"
 
 if [[ -z "$series_ids" ]]; then
   echo "No series defined yet."
   exit 0
 fi
 
-# shellcheck disable=SC2086 # word-splitting is exactly what's wanted — series_ids is bashly's own space-separated repeatable-arg string, or built the same way just above
+# shellcheck disable=SC2086 # intentional word-splitting
 for id in $series_ids; do
   count="$(bs::resize_series "$id" "$width" "$height" "$format" "$quiet")" || exit 1
   if [[ -n "$width" || -n "$height" ]]; then

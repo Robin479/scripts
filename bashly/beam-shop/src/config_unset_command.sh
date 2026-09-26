@@ -14,7 +14,7 @@ if [[ -z "$all" && -z "$keys" ]]; then
 fi
 
 if [[ -n "$all" ]]; then
-  # shellcheck disable=SC2207 # bs::config_keys' own output is a plain newline-separated list, one key per line, none of them containing whitespace
+  # shellcheck disable=SC2207 # newline-separated keys, no whitespace
   set_keys=($(bs::config_keys))
   if [[ "${#set_keys[@]}" -eq 0 ]]; then
     echo "No settings are currently set."
@@ -24,7 +24,7 @@ if [[ -n "$all" ]]; then
 fi
 
 ok=0
-# shellcheck disable=SC2086 # word-splitting is exactly what's wanted — keys is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+# shellcheck disable=SC2086 # intentional word-splitting
 for key in $keys; do
   bs::config_del "$key"
   echo "$key -> unset (reverts to its default, if any)"

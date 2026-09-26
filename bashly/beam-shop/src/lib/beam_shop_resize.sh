@@ -2,23 +2,16 @@ readonly BS_IMAGE_WIDTH_DEFAULT=600
 readonly BS_IMAGE_HEIGHT_DEFAULT=900
 readonly BS_IMAGE_FORMAT_DEFAULT="jpg"
 
+# Resize output dir for series $1, resolution spec $2 -- series/<id>/covers/<spec>/.
 bs::series_resized_dir() {
-  local dir; dir="$(bs::data_dir)/series-resized/$1"
+  local dir; dir="$(bs::series_dir "$1")/covers/$2"
   mkdir -p "$dir"
   echo "$dir"
 }
 
-# Runs one `convert $src <convert_args> $out` per real (symlinked) cover
-# in $1 (a series view folder), writing into $2 (created if needed) with
-# extension $3 (the target format). $4 (quiet, see bs::fetch_quiet)
-# suppresses the self-updating status line shown per file -- resizing a
-# large series (thousands of covers, potentially several resolutions
-# each) can take a while even though each individual convert is fast, so
-# showing progress matters here too, same reasoning as bs::fetch_category.
-# $5 (label) prefixes the status line (e.g. which resolution this pass
-# is). Prints how many were successfully converted; a per-file failure is
-# reported to stderr (after clearing the status line first) and skipped,
-# not fatal to the batch.
+# Runs `convert $src <args> $out` per symlinked cover in $1, into $2 (ext
+# $3). $4=quiet, $5=status-line label. Prints count converted; a per-file
+# failure is reported and skipped, not fatal.
 bs::_resize_view_dir() {
   local view_dir="$1" out_dir="$2" format="$3" quiet="$4" label="$5"; shift 5
   mkdir -p "$out_dir"
@@ -53,23 +46,11 @@ bs::_resize_view_dir() {
   echo "$count"
 }
 
-# Resizes every cover in series $1's view folder. Never touches the
-# originals or the symlink view either way. $5 (quiet, see
-# bs::fetch_quiet) suppresses the self-updating status line (see
-# bs::_resize_view_dir). Prints how many files were written in total. Two
-# modes:
-#  - $2/$3 (width/height) given, or the series has no 'resolutions' of
-#    its own: the single-profile legacy behavior -- pad to exactly
-#    WxH (never cropping content) on a white background, written flat
-#    into series-resized/$1/. $2/$3/$4 (width/height/format) fall back to
-#    their own config keys (see beam_shop_config.sh) when empty; an
-#    explicit $2/$3 always wins over the series' own resolutions, for a
-#    quick one-off override without touching the series definition.
-#  - otherwise (no $2/$3 override, series has 'resolutions'): one pass
-#    per resolution spec -- a raw ImageMagick geometry string (e.g.
-#    '700x1000!'), passed straight to -resize with none of the padding
-#    logic above -- into series-resized/$1/<spec>/, one subfolder per
-#    spec, so several sizes/aspect-ratio behaviors can coexist.
+# Resizes every cover in series $1's covers/original/ (never touched
+# itself). Prints total files written. $2/$3 (width/height) given, or no
+# 'resolutions' on the series: pad to WxH on white, into
+# covers/<width>x<height>/. Otherwise one pass per resolution spec, into
+# covers/<spec>/.
 bs::resize_series() {
   local id="$1" width="$2" height="$3" format="$4" quiet="$5"
   format="${format:-$(bs::config_get image_format "$BS_IMAGE_FORMAT_DEFAULT")}"
@@ -79,8 +60,8 @@ bs::resize_series() {
     return 1
   }
 
-  local view_dir; view_dir="$(bs::series_view_dir "$id")"
-  [[ -d "$view_dir" ]] || { echo "error: no series view for '$id' -- run 'series relink $id' first" >&2; return 1; }
+  local view_dir; view_dir="$(bs::series_dir "$id")/covers/original"
+  [[ -d "$view_dir" ]] || { echo "error: no covers linked yet for '$id' -- run 'series rebuild $id' first (or 'series rebuild $id --covers-only' if it's already classified but the file tree itself needs repairing)" >&2; return 1; }
 
   local resolutions=""
   [[ -z "$width" && -z "$height" ]] && resolutions="$(bs::series_resolutions "$id" | tr '\n' ' ')"
@@ -89,13 +70,13 @@ bs::resize_series() {
   if [[ -n "${resolutions// /}" ]]; then
     local spec n
     for spec in $resolutions; do
-      n="$(bs::_resize_view_dir "$view_dir" "$(bs::data_dir)/series-resized/${id}/${spec}" "$format" "$quiet" "$id $spec " -resize "$spec")"
+      n="$(bs::_resize_view_dir "$view_dir" "$(bs::series_resized_dir "$id" "$spec")" "$format" "$quiet" "$id $spec " -resize "$spec")"
       total=$((total + n))
     done
   else
     width="${width:-$(bs::config_get image_width "$BS_IMAGE_WIDTH_DEFAULT")}"
     height="${height:-$(bs::config_get image_height "$BS_IMAGE_HEIGHT_DEFAULT")}"
-    total="$(bs::_resize_view_dir "$view_dir" "$(bs::series_resized_dir "$id")" "$format" "$quiet" "$id " \
+    total="$(bs::_resize_view_dir "$view_dir" "$(bs::series_resized_dir "$id" "${width}x${height}")" "$format" "$quiet" "$id " \
       -resize "${width}x${height}" -background white -gravity center -extent "${width}x${height}")"
   fi
 

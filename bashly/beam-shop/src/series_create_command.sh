@@ -4,7 +4,7 @@ series_id="${args[series_id]}"
 categories_csv="${args[--categories]}"
 resolutions_csv="${args[--resolutions]:-}"
 name="${args[--name]:-}"
-item_pattern="${args[--item-pattern]:-}"
+item_key_format="${args[--item-key-format]:-}"
 order="${args[--order]:-auto}"
 
 if [[ "$series_id" == */* ]]; then
@@ -27,11 +27,12 @@ done
 
 bs::validate_resize_specs "$resolutions_csv" || exit 1
 
-bs::series_create "$series_id" "$categories_csv" "$resolutions_csv" "$name" "$item_pattern" "$order" || exit 1
+bs::series_create "$series_id" "$categories_csv" "$resolutions_csv" "$name" "$item_key_format" "$order" || exit 1
 
 count="$(jq '.category_ids | length' "$(bs::series_file "$series_id")")"
 echo "Series '$series_id' created with $count categor$([[ $count -eq 1 ]] && echo y || echo ies)."
 jq -r '
   "Order:       " + (.category_ids | join(", ")),
-  "Resolutions: " + (if (.resolutions | length) > 0 then (.resolutions | join(", ")) else "(none -- see beam-shop config)" end)
+  "Resolutions: " + (if (.resolutions | length) > 0 then (.resolutions | join(", ")) else "(none -- see beam-shop config)" end),
+  "Matchers:    none yet -- run \"series matcher add\" to define membership"
 ' "$(bs::series_file "$series_id")"

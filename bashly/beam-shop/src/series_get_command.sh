@@ -4,20 +4,36 @@ series_id="${args[series_id]}"
 
 file="$(bs::require_series_file "$series_id")" || exit 1
 
+if bs::series_is_dirty "$series_id"; then
+  echo "* matcher rules changed since the last 'series rebuild' -- current classification may be stale"
+fi
+
 jq -r '
-  "Id:            " + .series_id,
-  "Name:          " + .name,
-  "Item pattern:  " + (.item_pattern // "(default: first run of digits)"),
-  "Categories:    " + (.category_ids | join(", ")),
-  "Resolutions:   " + (if (.resolutions | length) > 0 then (.resolutions | join(", ")) else "(none -- see beam-shop config)" end)
+  "Id:              " + .series_id,
+  "Name:            " + .name,
+  "Item key format: " + (.item_key_format // "(default: \"%d\")"),
+  "Categories:      " + (.category_ids | join(", ")),
+  "Resolutions:     " + (if (.resolutions | length) > 0 then (.resolutions | join(", ")) else "(none -- see beam-shop config)" end)
 ' "$file"
 
-view_dir="$(bs::series_view_dir "$series_id")"
-if [[ -d "$view_dir" ]]; then
-  shopt -s nullglob
-  linked=("$view_dir"/*.json)
-  shopt -u nullglob
-  echo "Linked covers: ${#linked[@]}"
+matcher_count="$(jq '(.matchers // []) | length' "$file")"
+echo
+if [[ "$matcher_count" -gt 0 ]]; then
+  echo "Matchers:"
+  {
+    printf 'index\tpattern\tcategories\n'
+    bs::series_matchers "$series_id" | jq -r '[.index, .pattern, ((.categories // []) | join(","))] | @tsv'
+  } | column -t -s $'\t' -R 1 | sed 's/^/  /'
 else
-  echo "Linked covers: 0 (run 'series relink $series_id')"
+  echo "Matchers: none yet -- run 'series matcher add' to add one"
 fi
+
+view_dir="$(bs::series_dir "$series_id")"
+shopt -s nullglob
+linked=("$view_dir"/*.json)
+shopt -u nullglob
+count=0
+for f in "${linked[@]}"; do
+  [[ "$(basename "$f")" == meta.json ]] || count=$((count + 1))
+done
+echo "Linked covers: $count"

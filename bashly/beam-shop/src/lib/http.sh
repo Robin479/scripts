@@ -1,11 +1,8 @@
 readonly BS_USER_AGENT='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
-# Fallback curl binary when nothing else is configured/found -- see
-# bs::init_curl_cmd.
 readonly BS_CURL_BIN_DEFAULT="curl"
 
-# curl-impersonate's wrapper script names, checked in this order against
-# $PATH -- same cascade/reasoning as bashly/goodreads' own http.sh.
+# curl-impersonate wrapper script names, checked in order against $PATH.
 readonly BS_CURL_IMPERSONATE_CANDIDATES=(
   curl_chrome116 curl_chrome110 curl_chrome107 curl_chrome104
   curl_chrome101 curl_chrome100 curl_chrome99 curl_chrome99_android
@@ -17,19 +14,14 @@ readonly BS_CURL_IMPERSONATE_CANDIDATES=(
 readonly BS_CURL_IMPERSONATE_DOCKER_IMAGE="lwthiker/curl-impersonate:0.6.1-chrome"
 readonly BS_CURL_IMPERSONATE_DOCKER_WRAPPER="curl_chrome116"
 
-# Default for the http_retry_delays config key (comma-separated seconds).
 readonly BS_HTTP_RETRY_DELAYS_DEFAULT="20,100,480"
 
-# Defaults for http_request_delay_min/max (seconds) -- tuned to respect
-# www.beam-shop.de's own robots.txt (Crawl-delay: 3).
 readonly BS_HTTP_REQUEST_DELAY_MIN_DEFAULT=3
 readonly BS_HTTP_REQUEST_DELAY_MAX_DEFAULT=8
 
-# Sleeps if needed so this call returns no sooner than a random point
-# between http_request_delay_min/max seconds after its own previous
-# return. State lives on disk (each invocation is its own process),
-# no locking (single-user CLI). Deliberately silent -- see
-# bashly/goodreads' http.sh for why (fires on nearly every request).
+# Sleeps so this call returns no sooner than a random point between
+# http_request_delay_min/max seconds after its own previous return.
+# State lives on disk; no locking (single-user CLI).
 bs::throttle() {
   local state_file; state_file="$(bs::data_dir)/.last_request_at"
 
@@ -47,13 +39,10 @@ bs::throttle() {
   date +%s > "$state_file"
 }
 
-# Resolves which curl command to run into $BS_CURL_CMD (array) and
-# $BS_CURL_UA_OPTS -- same priority cascade and memoization caveats as
-# bashly/goodreads' gr::init_curl_cmd (see its own CLAUDE.md for the full
-# rationale): curl_bin config key -> curl-impersonate on $PATH -> a
-# crafted `docker run` -> plain curl -> hard error. Must be called once by
-# each command before any subshell-forking loop (e.g. gr::run_fetch-style
-# per-item processing), or the memoization flag never reaches the parent.
+# Resolves which curl to run into $BS_CURL_CMD/$BS_CURL_UA_OPTS. Priority:
+# curl_bin config key -> plain curl on $PATH -> curl-impersonate on $PATH
+# -> a crafted `docker run` -> hard error. Call once before any
+# subshell-forking loop, or the memoization flag won't reach the parent.
 bs::init_curl_cmd() {
   if [[ -n "${BS_CURL_CMD_RESOLVED:-}" ]]; then
     return 0
@@ -61,6 +50,10 @@ bs::init_curl_cmd() {
 
   local curl_bin
   curl_bin="$(bs::config_get curl_bin "")"
+
+  if [[ -z "$curl_bin" ]] && command -v "$BS_CURL_BIN_DEFAULT" > /dev/null 2>&1; then
+    curl_bin="$BS_CURL_BIN_DEFAULT"
+  fi
 
   if [[ -z "$curl_bin" ]]; then
     local candidate
@@ -78,10 +71,6 @@ bs::init_curl_cmd() {
     curl_bin="docker run --rm -u $(id -u):$(id -g) -v ${data_dir}:${data_dir} $BS_CURL_IMPERSONATE_DOCKER_IMAGE $BS_CURL_IMPERSONATE_DOCKER_WRAPPER"
   fi
 
-  if [[ -z "$curl_bin" ]] && command -v "$BS_CURL_BIN_DEFAULT" > /dev/null 2>&1; then
-    curl_bin="$BS_CURL_BIN_DEFAULT"
-  fi
-
   if [[ -z "$curl_bin" ]]; then
     echo "error: no usable curl found -- install curl, curl-impersonate, or Docker" >&2
     return 1
@@ -93,14 +82,8 @@ bs::init_curl_cmd() {
   BS_CURL_CMD_RESOLVED=1
 }
 
-# curl wrapper for a single GET: prints the response body to stdout,
-# nothing else. Fails like curl's own --fail. Fails immediately under
-# --offline. No cookie jar -- www.beam-shop.de needs no login for anything
-# this tool touches.
-#
-# A 2xx response with an empty body is treated as retryable (same
-# WAF/anti-bot signature class bashly/goodreads' gr::http_get already
-# handles), retried with backoff from http_retry_delays.
+# GET $1, printing the response body to stdout. Fails immediately under
+# --offline. Retries with backoff (http_retry_delays) on an empty body.
 bs::http_get() {
   local url="$1"
 
@@ -144,10 +127,7 @@ bs::http_get() {
   return 1
 }
 
-# Downloads $1 (a binary asset, e.g. a cover image) to $2. Same
-# offline/throttle/retry-on-empty-body handling as bs::http_get, but
-# writes straight to a file instead of stdout (avoids holding image
-# bytes in a shell variable/pipe).
+# Downloads $1 to file $2. Same handling as bs::http_get, straight to disk.
 bs::http_download() {
   local url="$1" dest="$2"
 

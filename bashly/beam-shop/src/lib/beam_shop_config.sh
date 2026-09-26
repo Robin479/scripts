@@ -1,7 +1,4 @@
-# Every config.ini key beam-shop itself reads -- the registry `config
-# list`/`get`/`set` key off. Just the user-facing catalog; the real
-# default for each one is still asserted at its own bs::config_get call
-# site (http.sh, beam_shop_resize.sh, ...) -- keep in sync with those.
+# Registry `config list`/`get`/`set` key off. Real defaults live at each bs::config_get call site.
 readonly BS_CONFIG_KEYS=(
   curl_bin
   http_request_delay_min

@@ -14,7 +14,7 @@ if [[ -z "$all" && -z "$series_ids" ]]; then
 fi
 
 if [[ -n "$all" ]]; then
-  # shellcheck disable=SC2207 # bs::all_series_ids' own output is a plain newline-separated list, one id per line, none of them containing whitespace
+  # shellcheck disable=SC2207 # newline-separated ids, no whitespace
   ids=($(bs::all_series_ids))
   if [[ "${#ids[@]}" -eq 0 ]]; then
     echo "No series to remove."
@@ -25,7 +25,7 @@ fi
 
 ok=0
 fail=0
-# shellcheck disable=SC2086 # word-splitting is exactly what's wanted -- series_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+# shellcheck disable=SC2086 # intentional word-splitting
 for id in $series_ids; do
   if bs::series_remove "$id"; then
     echo "$id -> removed"

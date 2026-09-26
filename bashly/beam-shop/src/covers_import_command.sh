@@ -7,20 +7,19 @@ title="${args[--title]:-}"
 series_id="${args[--series]:-}"
 item_number="${args[--item]:-}"
 force="${args[--force]:-}"
-# No --batch flag on this command -- just the automatic terminal check
-# (see bs::fetch_quiet); must be a plain if, not a command substitution.
 quiet=""
 if bs::fetch_quiet ""; then
   quiet=1
 fi
 
+# manual_given: --product/--category given (not --title -- that alone doesn't decide the form)
 manual_given=0
-[[ -n "$product_id" || -n "$category_id" || -n "$title" ]] && manual_given=1
+[[ -n "$product_id" || -n "$category_id" ]] && manual_given=1
 lookup_given=0
 [[ -n "$series_id" || -n "$item_number" ]] && lookup_given=1
 
 if [[ "$manual_given" -eq 1 && "$lookup_given" -eq 1 ]]; then
-  echo "error: give either --product/--category/--title, or --series/--item, not both" >&2
+  echo "error: give either --product/--category(/--title), or --series/--item(/--title), not both" >&2
   exit 1
 fi
 
@@ -34,23 +33,40 @@ if [[ "$lookup_given" -eq 1 ]]; then
     exit 1
   fi
 
-  found="$(bs::find_series_item "$series_id" "$item_number")" || {
-    echo "error: no existing record for series '$series_id' item $item_number -- it was never successfully fetched, so its shop product id can't be resolved this way. Find it manually (its own product URL on the shop, or an earlier 'covers fetch' error naming it) and use --product/--category/--title instead." >&2
+  if found="$(bs::find_series_item "$series_id" "$item_number")"; then
+    product_id="$(jq -r '.product_id' <<< "$found")"
+    category_id="$(bs::categories_for_product "$product_id" | head -1)"
+    title="$(jq -r '.title' <<< "$found")"
+
+    status="$(bs::import_cover "$category_id" "$product_id" "$image_file" "$title" "$force" "$quiet")" || exit 1
+    echo "$product_id -> $status (imported from $image_file)"
+  else
+    if [[ -z "$title" ]]; then
+      echo "error: no existing record for series '$series_id' item $item_number, so there's no product to resolve a title from -- pass --title yourself for a fully-manual entry (or use --product/--category/--title if you actually know its shop product id)." >&2
+      exit 1
+    fi
+    status="$(bs::import_manual_cover "$series_id" "$item_number" "$image_file" "$title" "$force" "$quiet")" || exit 1
+    echo "series $series_id item $item_number -> $status (imported from $image_file, no shop product)"
+  fi
+elif [[ "$manual_given" -eq 1 ]]; then
+  if [[ -z "$product_id" ]]; then
+    echo "error: --category alone isn't enough -- give --product too (or use --series/--item instead)" >&2
     exit 1
-  }
-  product_id="$(jq -r '.product_id' <<< "$found")"
-  category_id="$(jq -r '.category_id' <<< "$found")"
-  title="$(jq -r '.title' <<< "$found")"
-elif [[ -z "$product_id" || -z "$category_id" || -z "$title" ]]; then
-  echo "error: give --product, --category, and --title together, or --series and --item" >&2
+  fi
+
+  product_file="$(bs::product_file "$product_id")"
+  if [[ -f "$product_file" ]]; then
+    [[ -n "$title" ]] || title="$(jq -r '.title' "$product_file")"
+    [[ -n "$category_id" ]] || category_id="$(bs::categories_for_product "$product_id" | head -1)"
+  elif [[ -z "$title" ]]; then
+    echo "error: no existing record for product $product_id, so there's no title to fall back on -- pass --title yourself for a brand-new product." >&2
+    exit 1
+  fi
+
+  status="$(bs::import_cover "$category_id" "$product_id" "$image_file" "$title" "$force" "$quiet")" || exit 1
+  echo "$product_id -> $status (imported from $image_file)"
+else
+  echo "error: give --product (plus --category/--title only if needed), or --series and --item (plus --title for a fully-manual entry)" >&2
   exit 1
 fi
 
-status="$(bs::import_cover "$category_id" "$product_id" "$image_file" "$title" "$force" "$quiet")" || exit 1
-echo "$product_id -> $status (imported from $image_file)"
-
-series_owner="$(bs::series_for_category "$category_id")" || series_owner=""
-if [[ -n "$series_owner" ]]; then
-  count="$(bs::series_relink "$series_owner" "$quiet")"
-  echo "series $series_owner relinked ($count cover(s))"
-fi

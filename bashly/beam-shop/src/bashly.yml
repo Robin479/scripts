@@ -52,7 +52,7 @@ commands:
       required: true
       help: Series id, as shown by 'series list'
     completions:
-    - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+    - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
   - name: create
     alias: new
     help: Create a new series from one or more shop categories
@@ -68,9 +68,9 @@ commands:
     - long: --name
       arg: name
       help: Human-readable series name (default -- the first category's own name)
-    - long: --item-pattern
-      arg: regex
-      help: "Extended regex with one capture group pulling the item number out of a product's title (default: '[0-9]+')"
+    - long: --item-key-format
+      arg: pattern
+      help: "Printf pattern applied to a matched item number to build a series-item's filename, e.g. 'PR%04d' (default: '%d'). Matchers themselves are managed separately via 'series matcher add' -- a freshly created series starts with none."
     - long: --order
       arg: mode
       allowed: [auto, given]
@@ -80,13 +80,13 @@ commands:
       arg: specs
       help: "Comma-separated ImageMagick resize geometry strings for 'covers resize' to produce, e.g. '700x1000!,300x300' -- the '!' forces that exact size, ignoring aspect ratio (default: none -- 'covers resize' falls back to the image_width/_height/_format config keys)"
   - name: edit
-    help: Change an existing series' category membership, resize resolutions, name, item-number pattern, and/or category order
+    help: Change an existing series' category membership, resize resolutions, name, item-key format, and/or category order
     args:
     - name: series_id
       required: true
       help: Series id to edit, as shown by 'series list'
       completions:
-      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
     flags:
     - long: --categories
       arg: ids
@@ -109,38 +109,46 @@ commands:
     - long: --name
       arg: name
       help: New human-readable series name
-    - long: --item-pattern
-      arg: regex
-      help: New extended regex with one capture group pulling the item number out of a product's title
+    - long: --item-key-format
+      arg: pattern
+      help: New printf pattern applied to a matched item number to build a series-item's filename, e.g. 'PR%04d'
     - long: --order
       arg: mode
       allowed: [auto, given]
       default: auto
       help: "Applies to the resulting category list either way: 'auto' sorts it by the numeric range parsed from each category's name/slug; 'given' keeps it in the order categories end up combined (existing, then --add-categories, minus --remove-categories) without re-sorting"
-  - name: relink
-    help: Rebuild the human-browsable symlink view for one or more series from canonical data
-    args:
-    - name: series_id
-      repeatable: true
-      help: Series id(s) to relink (default -- every defined series)
-      completions:
-      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
   - name: audit
-    help: "Report gaps/problems in a series' cached data, purely from local metadata (no network access): item numbers missing entirely, 'final' records with no actual image file on disk, and covers still stuck at 'placeholder'"
+    help: "Report gaps/problems in a series' cached data, purely from local metadata (no network access): item numbers missing entirely, items with no actual image file on disk, covers still stuck at 'placeholder', fallback-keyed items still awaiting a manual rename ('unsorted'), two or more products currently matching the same item ('ambiguous'), and a manually-pinned product that doesn't (or no longer) naturally match its own item ('promoted')"
     args:
     - name: series_id
       required: true
       help: Series id to audit, as shown by 'series list'
       completions:
-      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
+    flags:
+    - long: --hide-promoted
+      help: "Don't show 'promoted' findings (a manually-pinned product absent from its item's own matched list) -- shown by default since it's not yet decided whether this is normally a deliberate choice or a leftover worth flagging"
+  - name: rebuild
+    help: "Re-run series-membership classification against every already-cached product, with no network access at all -- for after changing a series' matchers ('series matcher add/remove'); a single product's own override ('product exclude/set-item/unset') already applies immediately on its own and doesn't need this. --covers-only skips classification entirely and just repairs the covers/ symlink tree from whatever's already classified -- the rare case where the file tree itself needs fixing (a manually deleted image/symlink, say), not the classification data."
+    args:
+    - name: series_id
+      repeatable: true
+      help: Series id(s) to rebuild (default -- every defined series)
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
+    flags:
+    - long: --covers-only
+      help: Skip classification entirely -- just resync the covers/ symlink tree from each series-item's already-classified state
+    - long: --batch
+      help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
   - name: refresh
-    help: "The routine day-to-day command: fetch new covers, relink, and resize (at every preconfigured resolution) for one or more series in one step"
+    help: "The routine day-to-day command: fetch new covers and resize them (at every preconfigured resolution) for one or more series in one step -- covers are already kept linked as they're classified, no separate relink step needed"
     args:
     - name: series_id
       repeatable: true
       help: Series id(s) to refresh (default -- every defined series)
       completions:
-      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
     flags:
     - long: --limit
       arg: n
@@ -158,11 +166,93 @@ commands:
       repeatable: true
       help: Series id(s) to remove
       completions:
-      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
     flags:
     - long: --all
       short: -a
       help: Remove every defined series
+  - name: matcher
+    help: "Manage a series' own membership-matching regexes (also see 'series get' for the current list)"
+    commands:
+    - name: add
+      help: Add a new matcher to a series, appended to the end of its list
+      args:
+      - name: series_id
+        required: true
+        help: Series id to add a matcher to, as shown by 'series list'
+        completions:
+        - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
+      flags:
+      - long: --pattern
+        arg: regex
+        required: true
+        help: "PCRE regex asserting series membership against a product's title; may embed named capture groups (?<index>...) and/or (?<title>...) to also extract an item number and/or a cleaned title from that same match. Neither group is required -- a pure membership-only pattern (e.g. for a series with no derivable numbering) is fine"
+      - long: --categories
+        arg: ids
+        help: "Comma-separated shop category ids -- scopes this matcher to only apply when the product's own fetch-time category is in this list (default: applies regardless of category -- the common case; deliberately always its own separate flag, never combined with --pattern on one command line, since a regex can itself contain a literal ':' that would make a compact shorthand ambiguous)"
+    - name: list
+      alias: ls
+      help: List a series' matchers, each with its current position (0-based) for addressing -- not a stable id, see 'series matcher remove'
+      args:
+      - name: series_id
+        required: true
+        help: Series id to list matchers for, as shown by 'series list'
+        completions:
+        - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
+    - name: edit
+      help: Change a matcher's pattern and/or category scope in place, addressed by its current position (see 'series matcher list') -- keeps its position, unlike remove+add
+      args:
+      - name: series_id
+        required: true
+        help: Series id to edit a matcher of, as shown by 'series list'
+        completions:
+        - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
+      flags:
+      - long: --index
+        arg: n
+        required: true
+        help: 0-based current position of the matcher to edit, as shown by 'series matcher list'
+      - long: --pattern
+        arg: regex
+        help: Replace this matcher's PCRE regex (same rules as 'series matcher add' --pattern) -- omit to leave the current pattern unchanged
+      - long: --categories
+        arg: ids
+        help: Comma-separated shop category ids -- full replacement of this matcher's category scope; mutually exclusive with --add-categories/--remove-categories
+      - long: --add-categories
+        arg: ids
+        help: Comma-separated shop category ids to add to this matcher's category scope
+      - long: --remove-categories
+        arg: ids
+        help: Comma-separated shop category ids to remove from this matcher's category scope
+    - name: set-order
+      help: Reorder a series' matchers -- the given (ordered) indices move to the front in the order given, everything else follows in its current relative order
+      args:
+      - name: series_id
+        required: true
+        help: Series id to reorder matchers of, as shown by 'series list'
+        completions:
+        - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
+      flags:
+      - long: --index
+        arg: n
+        repeatable: true
+        required: true
+        help: "0-based current position of a matcher to move to the front, as shown by 'series matcher list' -- repeatable, and order matters here (unlike 'series matcher remove'): give indices in the order you want the matchers to end up in"
+    - name: remove
+      alias: rm
+      help: Remove one or more matchers from a series, addressed by their current position (see 'series matcher list') -- never by retyping the pattern
+      args:
+      - name: series_id
+        required: true
+        help: Series id to remove matcher(s) from, as shown by 'series list'
+        completions:
+        - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
+      flags:
+      - long: --index
+        arg: n
+        repeatable: true
+        required: true
+        help: "0-based current position of a matcher to remove, as shown by 'series matcher list' -- repeatable; when removing more than one in the same call, each index is resolved against the list as it stood before this call, not after an earlier removal in the same call has already shifted it"
 - name: covers
   help: Fetch and normalize book cover images
   commands:
@@ -179,7 +269,7 @@ commands:
       repeatable: true
       help: Fetch every category of this series instead of giving category id(s) directly (repeatable, see 'series list')
       completions:
-      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
     - long: --all-series
       help: Fetch every defined series (alternative to --series/category id(s))
     - long: --all-children
@@ -202,7 +292,7 @@ commands:
       repeatable: true
       help: Series id(s) to resize (default -- every series with classified covers)
       completions:
-      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
     flags:
     - long: --width
       arg: px
@@ -216,7 +306,7 @@ commands:
     - long: --batch
       help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
   - name: import
-    help: "Manually register an already-on-disk cover for one product -- for when the shop's own copy is unreachable (e.g. a 404 on what should be its image url) but you already have the real cover some other way"
+    help: "Manually register an already-on-disk cover -- for when the shop's own copy is unreachable (e.g. a 404 on what should be its image url), or an item the shop never listed at all, but you already have the real cover some other way"
     args:
     - name: image_file
       required: true
@@ -226,24 +316,70 @@ commands:
     flags:
     - long: --product
       arg: product_id
-      help: "Shop product id (from the product's own URL, or from an earlier 'covers fetch' error naming it) -- required together with --category/--title, as an alternative to --series/--item"
+      help: "Shop product id (from the product's own URL, or from an earlier 'covers fetch' error naming it) -- an alternative to --series/--item. On its own this is enough for an already-cached product (its own title/category link are reused); --category/--title only need to be given by hand for a brand-new product id with no existing record at all"
     - long: --category
       arg: category_id
-      help: Which shop category this product belongs to (see 'categories list') -- required together with --product/--title
+      help: "Which shop category this product belongs to (see 'categories list') -- optional, and only ever used together with --product: an already-cached product's own category link is reused if omitted, and \"no known category at all\" is a perfectly valid state (category->product is a purely informative link, never required for a product to exist)"
     - long: --title
       arg: title
-      help: The product's title, exactly as shown on the shop -- required together with --product/--category
+      help: "The cover's title -- only required together with --product for a brand-new product id with no existing record to fall back on (same for --series/--item when nothing existing resolves there, a fully-manual entry with no shop product involved); otherwise unused (an existing record's own title always wins)"
     - long: --series
       arg: series_id
-      help: "Resolve --product/--category/--title automatically from an already-cached record at this series + --item, instead of giving them directly -- only works for a 'broken' 'series audit' finding (record intact, image file gone); a 'missing' one (never fetched at all) has no id to resolve and needs the --product form"
+      help: "Resolve --product/--category/--title automatically from an already-cached record at this series + --item, instead of giving them directly. If nothing resolves there at all (a genuine 'series audit' \"missing\" gap the shop never actually listed, or a cover from some other archive entirely), pass --title too for a fully-manual entry -- no shop product id needed at all in that case"
       completions:
-      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null | grep -v "/$" | sed "s/\.json$//")'
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
     - long: --item
       arg: item_number
       help: Series item number to resolve via --series (see above)
     - long: --force
       short: -f
       help: Overwrite an existing cached-final cover for this product id
+- name: product
+  help: "Manage per-product series-classification overrides -- exclude a false match, or force an item number when automatic matching can't get there on its own"
+  commands:
+  - name: exclude
+    help: Exclude a product from ever being auto-classified into a series (a matcher that would otherwise match it is ignored)
+    args:
+    - name: product_id
+      required: true
+      help: Shop product id (from its own URL, or a 'series audit'/'covers fetch' error naming it)
+    flags:
+    - long: --series
+      arg: series_id
+      required: true
+      help: Series id to exclude this product from
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
+  - name: set-item
+    help: Force a product to a specific item number in a series, bypassing matcher-derived classification entirely for it
+    args:
+    - name: product_id
+      required: true
+      help: Shop product id (from its own URL, or a 'series audit'/'covers fetch' error naming it)
+    flags:
+    - long: --series
+      arg: series_id
+      required: true
+      help: Series id to force this product's item number in
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
+    - long: --item
+      arg: n
+      required: true
+      help: Item number to force this product to
+  - name: unset
+    help: Remove a product's override for a series -- falls back to normal matcher-based classification again
+    args:
+    - name: product_id
+      required: true
+      help: Shop product id (from its own URL, or a 'series audit'/'covers fetch' error naming it)
+    flags:
+    - long: --series
+      arg: series_id
+      required: true
+      help: Series id to remove the override from
+      completions:
+      - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
 - name: config
   help: View or change beam-shop's own config.ini settings (curl_bin, throttling, image size, ...)
   commands:

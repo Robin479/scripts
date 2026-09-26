@@ -1,12 +1,4 @@
-# Default root category to crawl from when nothing else is configured --
-# the shop's whole "Serien & Abo" section.
 readonly BS_DISCOVERY_ROOT_URL_DEFAULT="https://www.beam-shop.de/serien-abo/"
-
-# Default for the category_cache_ttl config key (seconds), used when unset.
-# Unlike a book/product's cache (immutable once fetched), a category's own
-# child list genuinely does change over time -- e.g. a new Perry Rhodan
-# cycle is added roughly every ~50 issues -- so this needs a real TTL, not
-# just "cached forever until --refresh".
 readonly BS_CATEGORY_CACHE_TTL_DEFAULT=$((30 * 24 * 3600))
 
 bs::categories_dir() {
@@ -15,34 +7,93 @@ bs::categories_dir() {
   echo "$dir"
 }
 
+# Every category (root genre or not) lives flatly under categories/, never nested under its parent.
+bs::category_dir() {
+  local dir; dir="$(bs::categories_dir)/$1"
+  mkdir -p "$dir"
+  echo "$dir"
+}
+
 bs::category_file() {
-  echo "$(bs::categories_dir)/$1.json"
+  echo "$(bs::category_dir "$1")/meta.json"
+}
+
+# Folder a category's children get symlinked into: $1's own folder, or categories/.root/ for the nil-parent.
+bs::category_children_dir() {
+  local parent_id="$1"
+  if [[ -z "$parent_id" ]]; then
+    local dir; dir="$(bs::categories_dir)/.root"
+    mkdir -p "$dir"
+    echo "$dir"
+  else
+    bs::category_dir "$parent_id"
+  fi
+}
+
+# Lists $1's already-cached children, one id per line (symlink basenames).
+bs::list_category_children() {
+  local dir="$1" f
+  shopt -s nullglob
+  for f in "$dir"/*; do
+    [[ -L "$f" ]] && basename "$f"
+  done
+  shopt -u nullglob
+}
+
+# Sorts category ids (stdin) by leading numeric prefix, then alphabetically.
+bs::_sort_category_ids() {
+  local id num alpha
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    num="$(grep -oE '^[0-9]+' <<< "$id")"
+    alpha="${id#"$num"}"
+    printf '%s\t%s\t%s\n' "${num:-0}" "$alpha" "$id"
+  done | sort -t $'\t' -k1,1n -k2,2 | cut -f3
+}
+
+# Records that product $2 was found under category $1 (a plain symlink).
+bs::link_category_product() {
+  local category_id="$1" product_id="$2"
+  local dir; dir="$(bs::category_dir "$category_id")/products"
+  mkdir -p "$dir"
+  ln -sf "../../../products/${product_id}.json" "${dir}/${product_id}.json"
+}
+
+# Every category id product $1 is currently linked from, one per line.
+bs::categories_for_product() {
+  local product_id="$1" d
+  shopt -s nullglob
+  for d in "$(bs::categories_dir)"/*/; do
+    [[ -f "${d}products/${product_id}.json" ]] && basename "$d"
+  done
+  shopt -u nullglob
+}
+
+# Prints "product_id\x01category_id" for every (product, category) link -- the full set,
+# for every product at once (one pass per category, not per product).
+bs::_all_categories_for_products() {
+  local d cid pfile pid
+  shopt -s nullglob
+  for d in "$(bs::categories_dir)"/*/; do
+    cid="${d%/}"
+    cid="${cid##*/}"
+    for pfile in "${d}products/"*.json; do
+      pid="${pfile##*/}"
+      pid="${pid%.json}"
+      printf '%s\x01%s\n' "$pid" "$cid"
+    done
+  done
+  shopt -u nullglob
 }
 
 bs::discovery_root_url() {
   bs::config_get discovery_root_url "$BS_DISCOVERY_ROOT_URL_DEFAULT"
 }
 
-# Extracts every sidebar navigation link on a fetched category page as
-# {id, url, name} triples (url absolute, name whitespace-normalized).
-# Shopware only expands this sidebar tree one level below (and one level
-# alongside) whatever category the page actually belongs to -- so this is
-# never a full-site tree, just whatever's currently in view. Confirmed
-# directly: fetching a series' own page (e.g. Perry Rhodan Erstauflage)
-# reveals its ~46 cycles *and* its sibling series within the same genre,
-# but not other genres, and not a genre landing page's own children
-# either -- see bs::extract_menu_links for the one level this can't reach.
+# Extracts a fetched category page's sidebar nav links as {id, url, name} triples.
 bs::extract_nav_links() {
   local html_file="$1"
-  # shellcheck disable=SC2016 # single-quoted on purpose -- this is an xidel xquery program, its own $-variables aren't bash's
-  # A category that itself has sub-categories gets extra classes on this
-  # same link (e.g. "navigation--link link--go-forward has--sub-categories",
-  # or "navigation--link is--active" for the current page's own entry) --
-  # confirmed directly (Perry Rhodan Erstauflage's link in
-  # /serien-abo/science-fiction/ is class="navigation--link link--go-forward",
-  # not the bare class), so this must match the class *token*, not the
-  # whole attribute string, or every parent-of-a-series category silently
-  # vanishes from the crawl.
+  # shellcheck disable=SC2016 # xidel xquery, not bash vars
   xidel -s "$html_file" --extract-kind=xquery3 -e '
     [for $a in //a[contains(concat(" ", normalize-space(@class), " "), " navigation--link ")]
      return {
@@ -53,17 +104,10 @@ bs::extract_nav_links() {
   ' --output-format=json-wrapped 2> /dev/null | jq -c '.[0][]'
 }
 
-# Extracts the sitewide mega-menu's links (present in every page's header,
-# server-rendered) as {id, url, name} triples -- id is always "" here,
-# unlike bs::extract_nav_links, since this menu carries no
-# data-categoryId at all. This is the *only* place the top-level genre
-# list (science-fiction, fantasy, ...) is discoverable, so
-# bs::crawl_children uses this specifically for the discovery root, and
-# bs::filter_direct_children synthesizes an id from the url's own slug in
-# that case.
+# Extracts the sitewide mega-menu's links as {id, url, name} triples (id always "").
 bs::extract_menu_links() {
   local html_file="$1"
-  # shellcheck disable=SC2016 # single-quoted on purpose -- this is an xidel xquery program, its own $-variables aren't bash's
+  # shellcheck disable=SC2016 # xidel xquery, not bash vars
   xidel -s "$html_file" --extract-kind=xquery3 -e '
     [for $a in //a[@class="menu--list-item-link"]
      return {
@@ -74,14 +118,8 @@ bs::extract_menu_links() {
   ' --output-format=json-wrapped 2> /dev/null | jq -c '.[0][]'
 }
 
-# Given a fetched page's links (one JSON {id, url, name} object per line,
-# on stdin) and a parent url, prints {id, url, name} for each direct child
-# -- a link whose url starts with $parent_url and has exactly one more
-# path segment (excludes the parent's own self-link, and excludes
-# deeper-nested links that happen to share the prefix). $2 ("synthesize"),
-# when set, fills in a missing id from the url's own trailing slug instead
-# of dropping the entry -- only the root-level mega-menu extraction needs
-# this, since it carries no data-categoryId at all.
+# Given fetched links (stdin) and a parent url, prints {id, url, name} for each direct
+# child. $2 (synthesize), if set, derives a missing id from the url's own slug.
 bs::filter_direct_children() {
   local parent_url="$1" synthesize="${2:-}"
   jq -s -c --arg parent "$parent_url" --arg synth "$synthesize" '
@@ -96,13 +134,10 @@ bs::filter_direct_children() {
   '
 }
 
-# Crawls $2 (a category's own url) for its direct child categories,
-# caches each one's own {category_id, name, url, parent_id} in
-# categories/<id>.json, and prints the same set of child ids, one per
-# line. $1 is the parent's own category id, or "" for the discovery root
-# (which has no numeric id of its own, and whose own children -- the
-# genre list -- only ever appear in the sitewide mega-menu, never the
-# sidebar; see bs::extract_menu_links).
+# Crawls $2 (parent url) for direct child categories, caches each under
+# categories/<id>/meta.json, symlinks it into the parent's children-dir, prints
+# each child id. $1 is the parent's own id, or "" for the discovery root.
+# Self-correcting: any stale child symlink not among this run's children is removed.
 bs::crawl_children() {
   local parent_id="$1" parent_url="$2"
   local html_file; html_file="$(mktemp)"
@@ -118,6 +153,9 @@ bs::crawl_children() {
     extractor="bs::extract_nav_links"
   fi
 
+  local children_dir; children_dir="$(bs::category_children_dir "$parent_id")"
+  local new_ids=()
+
   local child_json
   while IFS= read -r child_json; do
     local id name url
@@ -130,16 +168,26 @@ bs::crawl_children() {
       '{category_id: $id, name: $name, url: $url, parent_id: (if $parent_id == "" then null else $parent_id end)}' \
       > "$(bs::category_file "$id")"
 
+    ln -sf "../${id}" "${children_dir}/${id}"
+    new_ids+=("$id")
     echo "$id"
   done < <("$extractor" "$html_file" | bs::filter_direct_children "$parent_url" "$synthesize")
+
+  local old base keep nid
+  shopt -s nullglob
+  for old in "$children_dir"/*; do
+    [[ -L "$old" ]] || continue
+    base="$(basename "$old")"
+    keep=""
+    for nid in "${new_ids[@]}"; do
+      [[ "$base" == "$nid" ]] && { keep=1; break; }
+    done
+    [[ -z "$keep" ]] && rm -f "$old"
+  done
+  shopt -u nullglob
 }
 
-# True (0, prints nothing) if $1's cached child-list marker exists and is
-# still within its `category_cache_ttl` config seconds
-# (BS_CATEGORY_CACHE_TTL_DEFAULT if unset) -- false (1) if missing or
-# stale. Same `find -newermt` single-check idiom as gr::book_fresh in
-# bashly/goodreads (handles "missing" and "stale" as one case: empty
-# output either way means "needs a re-crawl").
+# True if $1's cached child-list marker exists and is within category_cache_ttl.
 bs::category_children_fresh() {
   local cache_marker="$1" ttl threshold fresh
   [[ -f "$cache_marker" ]] || return 1
@@ -150,11 +198,10 @@ bs::category_children_fresh() {
   [[ -n "$fresh" ]]
 }
 
-# Finds an already-cached category id whose own url is exactly $1 --
-# empty if none is cached yet.
+# Finds an already-cached category id whose own url is exactly $1.
 bs::category_id_for_url() {
   local url="$1" f
-  for f in "$(bs::categories_dir)"/*.json; do
+  for f in "$(bs::categories_dir)"/*/meta.json; do
     [[ -e "$f" ]] || continue
     if [[ "$(jq -r '.url' "$f" 2> /dev/null)" == "$url" ]]; then
       jq -r '.category_id' "$f"
@@ -164,12 +211,9 @@ bs::category_id_for_url() {
   return 1
 }
 
-# Prints the children of $1 (a category id, or, as an escape hatch for
-# anything the sitewide menu/sidebar crawl genuinely can't reach on its
-# own, a raw https:// url), crawling live if there's no cached result
-# within category_cache_ttl (or --refresh forces it regardless of age).
-# With no argument, crawls/reads the configured discovery root's own
-# direct children (the genre list).
+# Children of $1 (a category id, or a raw https:// url as an escape hatch), crawling
+# live if not cached within category_cache_ttl (or --refresh). No argument: the
+# discovery root's own direct children (the genre list).
 bs::category_children() {
   local parent_id="${1:-}" refresh="${2:-}"
 
@@ -177,9 +221,6 @@ bs::category_children() {
   if [[ -z "$parent_id" ]]; then
     parent_url="$(bs::discovery_root_url)"
   elif [[ "$parent_id" == http*://* ]]; then
-    # A raw url: register it as a category of its own first (reusing an
-    # existing id if this exact url is already cached under one) so
-    # later commands can refer to it by id from here on.
     parent_url="$parent_id"
     local existing_id; existing_id="$(bs::category_id_for_url "$parent_url")"
     if [[ -n "$existing_id" ]]; then
@@ -197,13 +238,14 @@ bs::category_children() {
     parent_url="$(jq -r '.url' "$parent_file")"
   fi
 
-  local cache_marker; cache_marker="$(bs::categories_dir)/.children-of-${parent_id:-root}"
+  local children_dir; children_dir="$(bs::category_children_dir "$parent_id")"
+  local cache_marker="${children_dir}/.synced"
   if [[ -z "$refresh" ]] && bs::category_children_fresh "$cache_marker"; then
-    cat "$cache_marker"
+    bs::list_category_children "$children_dir" | bs::_sort_category_ids
     return 0
   fi
 
   local ids; ids="$(bs::crawl_children "$parent_id" "$parent_url")" || return 1
-  echo "$ids" > "$cache_marker"
-  echo "$ids"
+  touch "$cache_marker"
+  bs::_sort_category_ids <<< "$ids"
 }
