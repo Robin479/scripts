@@ -19,8 +19,8 @@ if [[ -n "$json" ]]; then
 fi
 
 # JSON result, so book rows can be column-aligned across sections below.
-# Prepends jq defs from lib/goodreads_blogs.sh to the program.
-result="$(jq "$GR_CHALLENGE_JQ_DEFS"'
+# Prepends jq defs from lib/goodreads_blogs.sh and lib/goodreads_books.sh.
+result="$(jq "$GR_CHALLENGE_JQ_DEFS$GR_TITLE_JQ_DEFS"'
   if .removed_remotely then
     {
       removed: true,
@@ -46,7 +46,7 @@ result="$(jq "$GR_CHALLENGE_JQ_DEFS"'
         header: (if .section then "\(.section) (\(.books | length)):" else "Books (\(.books | length)):" end),
         count: (.books | length)
       }],
-      rows: [(.book_sections // [])[].books[] | "\(.book_id)\t\(.title // "(no title)")\thttps://goodreads.com/book/show/\(.book_id)"]
+      rows: [(.book_sections // [])[].books[] | "\(.book_id)\t\((.title // "(no title)") | strip_tagline)\thttps://goodreads.com/book/show/\(.book_id)"]
     }
   end
 ' "$file")"

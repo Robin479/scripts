@@ -30,13 +30,44 @@ gr::set_current() {
   echo "$1" > "$(gr::data_dir)/current"
 }
 
+# Offline sanity check of cookie file $1 before any request; prints a reason
+# and returns 1 if it can't be a usable goodreads.com session.
+gr::check_cookie_file() {
+  local file="$1"
+
+  if [[ "$(head -c 1 "$file")" == [\[\{] ]]; then
+    echo "this is a JSON cookie export, not Netscape cookies.txt format — re-export as cookies.txt (Netscape) instead"
+    return 1
+  fi
+
+  # Netscape lines: 7 tab-separated fields; "#HttpOnly_" prefixed ones aren't comments.
+  local cookie_lines names
+  cookie_lines="$(awk -F'\t' '(!/^#/ || /^#HttpOnly_/) && NF >= 7' "$file")"
+  if [[ -z "$cookie_lines" ]]; then
+    echo "no Netscape-format cookie lines found (7 tab-separated fields) — re-export as cookies.txt (Netscape) format"
+    return 1
+  fi
+
+  names="$(awk -F'\t' '$1 ~ /(^|[._])goodreads\.com$/ { print $6 }' <<<"$cookie_lines")"
+  if [[ -z "$names" ]]; then
+    echo "no goodreads.com cookies in this file — export while on www.goodreads.com"
+    return 1
+  fi
+  if ! grep -qx 'at-main' <<<"$names" || ! grep -qx 'session-token' <<<"$names"; then
+    echo "goodreads.com cookies found, but no login cookies (at-main, session-token) — export from a browser that's logged in to goodreads.com, with an exporter that includes HttpOnly cookies"
+    return 1
+  fi
+}
+
 # Prints {"id","username","profile_url"} for the session in cookie jar $1
-# (from the homepage's profile link); returns 1 if not logged in.
+# (from the homepage's profile link). Returns 1 if the homepage couldn't be
+# fetched, 2 if it's the logged-out page, 3 if it's neither logged out nor
+# has a recognizable profile link (markup change?).
 gr::identify_account_from_cookiejar() {
   local cookiejar="$1"
   local home_html
   home_html="$(mktemp)"
-  trap 'rm -f "$home_html"' RETURN
+  trap 'rm -f "$home_html"; trap - RETURN' RETURN
 
   COOKIE_JAR="$cookiejar" gr::http_get "https://www.goodreads.com/" > "$home_html" || return 1
 
@@ -44,7 +75,10 @@ gr::identify_account_from_cookiejar() {
   href="$(xidel -s "$home_html" -e '(//a[contains(@class,"dropdown__trigger--profileMenu")])[1]/@href' 2>/dev/null)" || true
 
   if [[ ! "$href" =~ /user/show/([0-9]+)-([A-Za-z0-9_-]+) ]]; then
-    return 1
+    if grep -q 'href="/user/sign_in"' "$home_html"; then
+      return 2
+    fi
+    return 3
   fi
 
   jq -n \
@@ -52,6 +86,16 @@ gr::identify_account_from_cookiejar() {
     --arg username "${BASH_REMATCH[2]}" \
     --arg profile_url "https://www.goodreads.com$href" \
     '{id: $id, username: $username, profile_url: $profile_url}'
+}
+
+# Explains a non-zero gr::identify_account_from_cookiejar return code $1.
+gr::identify_failure_reason() {
+  case "$1" in
+    1) echo "couldn't fetch the goodreads.com homepage (network error or bot block — see the error above)" ;;
+    2) echo "goodreads.com doesn't accept this session (got the logged-out homepage) — expired, or logged out in the browser since the export?" ;;
+    3) echo "the homepage doesn't look logged out, but has no recognizable profile link — goodreads.com markup may have changed (see the account identification notes in CLAUDE.md)" ;;
+    *) echo "unknown failure (code $1)" ;;
+  esac
 }
 
 # Prints account $1's session state; always returns 0 (safe in $(...)
@@ -72,15 +116,24 @@ gr::cookies_state() {
   fi
 
   local tmp_cookiejar
-  tmp_cookiejar="$(mktemp)"
-  trap 'rm -f "$tmp_cookiejar"' RETURN
+  # In the data dir, see auth_import_command.sh.
+  tmp_cookiejar="$(mktemp -p "$(gr::data_dir)" .cookies.XXXXXX)"
+  trap 'rm -f "$tmp_cookiejar"; trap - RETURN' RETURN
   cp "$cookie_jar" "$tmp_cookiejar"
 
-  local live_identity
-  if ! live_identity="$(gr::identify_account_from_cookiejar "$tmp_cookiejar")"; then
-    echo "expired or invalid — run 'goodreads auth import' to refresh"
-    return
-  fi
+  local live_identity rc=0
+  live_identity="$(gr::identify_account_from_cookiejar "$tmp_cookiejar")" || rc=$?
+  case "$rc" in
+    0) ;;
+    2)
+      echo "expired or invalid — run 'goodreads auth import' to refresh"
+      return
+      ;;
+    *)
+      echo "unknown — $(gr::identify_failure_reason "$rc")"
+      return
+      ;;
+  esac
 
   local live_id
   live_id="$(jq -r '.id' <<<"$live_identity")"

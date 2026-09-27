@@ -27,6 +27,8 @@ commands:
     - name: cookie_file
       required: true
       help: Path to a Netscape-format cookie file for goodreads.com
+    completions:
+    - <file>
   - name: status
     help: Show an account's session state (defaults to the current account)
     args:

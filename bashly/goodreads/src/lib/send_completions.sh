@@ -1218,6 +1218,7 @@ send_completions() {
   echo $'      return'
   echo $'      ;;'
   echo $'    3:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -A file -- "$cur")'
   echo $'      return'
   echo $'      ;;'
   echo $'    4:0)'

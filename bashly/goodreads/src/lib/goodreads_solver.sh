@@ -346,14 +346,14 @@ gr::solve_draw_separators() {
 gr::solve_format() {
   local optimize="$1"
   local report
-  report="$(jq -s -c --arg opt "$optimize" '
+  report="$(jq -s -c --arg opt "$optimize" "$GR_TITLE_JQ_DEFS"'
     .[0] as $p | .[1] as $c | .[2] as $r
     | def cut($n): if length > $n then .[:$n - 1] + "…" else . end;
       def url: "https://www.goodreads.com/book/show/\(.)";
       # Rows of [{t, tag?}, pages, rating, pref, link]: one per edition if a
       # work has several; tag = "[<lists>]".
       def book($w): $p.works[$w] as $x
-        | ($x.title // "(not cached)") as $t
+        | (($x.title | if . then strip_tagline else . end) // "(not cached)") as $t
         | [
             (if ($x.pages // 0) > 0 then "\($x.pages)p" else "?p" end),
             (if $x.rating != null then "\($x.rating)" else "" end),
@@ -365,13 +365,16 @@ gr::solve_format() {
           else
             [[{t: $t}] + $info + [($x.book_id // ($w | ltrimstr("b")) | url)]]
           end;
-      # Rows -> TSV lines; titles cut to $limit, tags right-aligned at the
-      # widest title. ($limit, not $max: it would shadow the max builtin.)
-      def table($limit):
-        ([.[] | select(length > 1) | .[1]
+      # Width of the title cell for rows $limit: widest (cut) title plus tag.
+      # ($limit, not $max: it would shadow the max builtin.)
+      def title_width($limit):
+        [.[] | select(length > 1) | .[1]
           | if .tag then [(.t | length) + 1 + (.tag | length), $limit] | min else (.t | cut($limit) | length) end
-         ] | max // 0) as $w
-        | map(if length > 1 then
+        ] | max // 0;
+      # Rows -> TSV lines; titles cut to $limit, tags right-aligned at $w
+      # (shared across all solutions, so every table lines up the same).
+      def table($limit; $w):
+        map(if length > 1 then
             .[1] |= (if .tag then
                 ($w - (.tag | length) - 1) as $avail
                 | (.t | cut($avail)) as $cut
@@ -405,8 +408,8 @@ gr::solve_format() {
         (.urls | join(" ")),
         (if ($p.challenges | length) > 1 then (.challenges | join(",") | if . == "" then "-" else . end) else empty end),
         (.status + (
-          if .status == "done" then ": " + (.done_by | map($p.works[.].title // .) | join(", "))
-          elif .status == "pinned" then ": " + (.pinned_by | map($p.works[.].title // .) | join(", "))
+          if .status == "done" then ": " + (.done_by | map(($p.works[.].title | if . then strip_tagline else . end) // .) | join(", "))
+          elif .status == "pinned" then ": " + (.pinned_by | map(($p.works[.].title | if . then strip_tagline else . end) // .) | join(", "))
           else "" end))
       ] | @tsv],
       summary: (if ($r | length) == 0 then
@@ -416,8 +419,9 @@ gr::solve_format() {
       | [$r | to_entries[] | {
         # "more" = what the size options count; pinned books separately.
         title: ("#\(.key + 1)  \(.value.more) more book(s)" + (($p.pinned | length) as $n | if $n > 0 then " + \($n) pinned" else "" end) + ", \(.value.pages) pages" + (if .value.rating != null then ", \(.value.rating | . * 100 | round / 100) avg rating" else "" end)),
-        # Pinned books, then one block per pick, "@@"-separated; a single-list
-        # pick starts with its list link (any book on it will do).
+        # Pinned books, then one block per pick, with "@@" rules between,
+        # before the first and after the last; a single-list pick starts
+        # with its list link (any book on it will do).
         rows: (
           [(if ($pinned | length) > 0 then $pinned else empty end),
            (.value.picks[] | . as $pick | ($pick.sig | length == 1) as $single
@@ -427,8 +431,10 @@ gr::solve_format() {
             | ($pick.options - ($pick.best | length)) as $more
             | (if $more > 0 then [[{t: "(+\($more) more)"}, "", "", "", ""]] else [] end) as $tail
             | [$head + $books + $tail | to_entries[] | [(if .key == 0 then ($pick.lists | join(" ")) else "" end)] + .value])]
-          | [.[] | ., [["@@"]]] | .[:-1] | add | table(50))
-      }])
+          | [[["@@"]]] + [.[] | ., [["@@"]]] | add)
+      }]
+      | (map(.rows) | add // [] | title_width(50)) as $w
+      | map(.rows |= table(50; $w)))
     }
   ')" || return 1
 
@@ -439,13 +445,21 @@ gr::solve_format() {
   echo
   jq -r '.summary' <<< "$report"
 
-  # One jq call for all solutions (--top all): NUL-terminated blocks of a
-  # title line plus table rows.
-  local block
-  while IFS= read -r -d '' block; do
-    echo
-    echo "${block%%$'\n'*}"
-    printf '%s\n' "${block#*$'\n'}" \
-      | column -t -s $'\t' | sed 's/ *$//' | gr::solve_draw_separators | sed 's/^/  /'
-  done < <(jq -j '.solutions[] | .title + "\n" + (.rows | join("\n")) + "\u0000"' <<< "$report")
+  # All solutions' rows go through one `column` (and one separator width),
+  # "@#"-split per solution, so every solution's table has the same columns.
+  local titles=() line i=0
+  mapfile -t titles < <(jq -r '.solutions[].title' <<< "$report")
+  [[ "${#titles[@]}" -eq 0 ]] && return 0
+  echo
+  echo "${titles[0]}"
+  while IFS= read -r line; do
+    if [[ "$line" == "@#" ]]; then
+      ((++i))
+      echo
+      echo "${titles[i]}"
+    else
+      echo "  $line"
+    fi
+  done < <(jq -r '.solutions | to_entries[] | (if .key > 0 then "@#" else empty end), .value.rows[]' <<< "$report" \
+    | column -t -s $'\t' -R 3 | sed 's/ *$//' | gr::solve_draw_separators)
 }

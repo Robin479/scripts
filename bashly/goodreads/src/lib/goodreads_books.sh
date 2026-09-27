@@ -1,6 +1,25 @@
 # Default for the book_cache_ttl config key (seconds).
 readonly GR_BOOK_CACHE_TTL_DEFAULT=$((100 * 24 * 3600))
 
+# jq defs for displaying book titles. Prepend to jq programs.
+# strip_tagline: heuristic, not a real parse -- "Title: tag-line" gets the
+# tag-line dropped only when the whole title exceeds 30 chars AND the part
+# before the (first) colon is shorter than the part after (a real tag-line
+# is normally the longer half). Display only: the cache, --json output and
+# `books get` keep the full title.
+# shellcheck disable=SC2034,SC2016 # used elsewhere; $ is jq, not shell
+readonly GR_TITLE_JQ_DEFS='
+  def strip_tagline:
+    . as $title
+    | ($title | index(":")) as $i
+    | if $i == null or ($title | length) <= 30 then $title
+      else
+        ($title[0:$i] | sub("\\s+$"; "")) as $before
+        | ($title[($i + 1):] | sub("^\\s+"; "")) as $after
+        | if ($before | length) < ($after | length) then $before else $title end
+      end;
+'
+
 gr::book_dir() {
   echo "$(gr::data_dir)/books"
 }

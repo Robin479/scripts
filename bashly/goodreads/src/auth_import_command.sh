@@ -10,13 +10,21 @@ if [[ ! -s "$cookie_file" ]]; then
   echo "error: cookie file is empty: $cookie_file" >&2
   exit 1
 fi
+if ! reason="$(gr::check_cookie_file "$cookie_file")"; then
+  echo "error: $cookie_file: $reason" >&2
+  exit 1
+fi
 
-tmp_cookiejar="$(mktemp)"
+# Inside the data dir: the Docker curl fallback only mounts that, a /tmp jar
+# would silently be invisible to it (cookie-less request).
+tmp_cookiejar="$(mktemp -p "$(gr::data_dir)" .cookies.XXXXXX)"
 trap 'rm -f "$tmp_cookiejar"' EXIT
 cp "$cookie_file" "$tmp_cookiejar"
 
-if ! identity="$(gr::identify_account_from_cookiejar "$tmp_cookiejar")"; then
-  echo "error: could not identify an authenticated account from this cookie file — is it a valid, logged-in goodreads.com session?" >&2
+rc=0
+identity="$(gr::identify_account_from_cookiejar "$tmp_cookiejar")" || rc=$?
+if ((rc != 0)); then
+  echo "error: could not identify an account from $cookie_file: $(gr::identify_failure_reason "$rc")" >&2
   exit 1
 fi
 

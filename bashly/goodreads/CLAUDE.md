@@ -289,6 +289,13 @@ Priority order (user decision):
     paths resolve on both sides — which is why the command is crafted per
     process from `gr::data_dir` (a hand-written `curl_bin` can't follow
     `--data-path`).
+  - Consequently, **every path handed to curl itself** (cookie jar,
+    headers file — not stdout redirects, those stay host-side) must live
+    under the data dir: a plain `mktemp` jar in `/tmp` is invisible inside
+    the container, and curl silently sends a cookie-less request. That's
+    what broke `auth import`/`auth status` (logged-out homepage → "could not
+    identify"/"expired or invalid"); their temp jars now use `mktemp -p
+    "$(gr::data_dir)" .cookies.XXXXXX`.
   - `-u $(id -u):$(id -g)`: the container runs as root by default, so
     anything written into the mount would come back root-owned (same fix as
     the repo `Makefile`'s dockerized bashly).
@@ -545,7 +552,18 @@ authenticated homepage and take the profile-menu link:
 `/user/show/<id>-<username>`. `dropdown__trigger--personalNav` alone is
 ambiguous (shared by at least the notifications and profile-menu triggers).
 If identification ever breaks (markup change), that's the one selector to
-fix.
+fix. Return codes: `1` homepage fetch failed (network/bot block), `2`
+logged-out homepage (has a `href="/user/sign_in"` link — absent when logged
+in), `3` neither (no sign-in link *and* no profile link → markup change);
+`gr::identify_failure_reason <rc>` turns them into the user-facing text.
+
+**Cookie file pre-check** (`gr::check_cookie_file`, `auth import` only,
+offline, before any request): rejects a JSON export (first byte `[`/`{`),
+a file with no Netscape lines (7 tab-separated fields; `#HttpOnly_`-prefixed
+lines count, other `#` lines are comments), no goodreads.com cookies, or
+goodreads.com cookies without the login pair `at-main` + `session-token`
+(logged-out export, or an exporter that drops HttpOnly cookies). Each gets
+its own error naming the fix.
 
 **bashly runs under `set -e`**: a non-zero command substitution in a bare
 `x="$(fn)"` aborts the script before any following `if [[ -z "$x" ]]` runs.
@@ -553,8 +571,9 @@ So:
 - helpers that signal "not found"/"nothing yet" (e.g. `gr::current_account`)
   always `return 0` — use `if/fi`, not `test && cmd` (a false test leaks a
   non-zero status; an `if` with no taken branch is exit 0);
-- calls that legitimately fail (e.g. `gr::identify_account_from_cookiejar`)
-  are guarded as `if ! x="$(fn)"; then ...`.
+- calls that legitimately fail are guarded as `if ! x="$(fn)"; then ...`,
+  or `rc=0; x="$(fn)" || rc=$?` when the code matters (e.g.
+  `gr::identify_account_from_cookiejar`).
 
 Keep this in mind for every new command.
 
@@ -580,8 +599,9 @@ check is how the tool actually finds out, per account.
 (`src/lib/goodreads_auth.sh`) — if the account's `cookies.txt` exists, it
 copies the jar to a temp file and runs `gr::identify_account_from_cookiejar`
 against the copy (never mutating the stored jar), reporting `valid`,
-`expired or invalid — run 'goodreads auth import' to refresh`, or a
-mismatch warning if the jar resolves to a different account. No jar →
+`expired or invalid — run 'goodreads auth import' to refresh` (rc 2 only),
+`unknown — <reason>` (fetch failure or markup change: says nothing about
+the session itself), or a mismatch warning if the jar resolves to a different account. No jar →
 `missing (logged out ...)`; `--offline` → `present (not checked —
 offline)`. Always returns 0 (state is in the printed string) — same
 `set -e` rule as above.
@@ -986,8 +1006,13 @@ History: see DESIGN-HISTORY.md › Fetch status line.
   after (a real tag-line is normally the longer half). E.g. `"Stupid TV, Be
   More Funny: How the Golden Era of The Simpsons Changed Television—and
   America—Forever"` → `"Stupid TV, Be More Funny"`; `"All About Love: New
-  Visions"` (28 chars) stays whole. Display only — the cache and `books
-  get` keep the full title.
+  Visions"` (28 chars) stays whole. Display only, but applied to every
+  book-title display (user decision): `books list`, `collections get`,
+  `blogs get`'s book rows, and `solve`'s text report. The cache, every
+  `--json` output and `books get` keep the full title. Shared as
+  `GR_TITLE_JQ_DEFS` (`src/lib/goodreads_books.sh`), prepended to jq
+  programs like `GR_CHALLENGE_JQ_DEFS`. Not applied to blog-post,
+  challenge or collection titles (not book titles).
 - `--limit n` shows the alphabetically first `n` (validated as a positive
   integer) plus a "Showing n of N" note; default is unlimited (no "most
   recent N" concept to cap by). No `--since`/`--until`/`--all`/`--reverse`
@@ -1224,9 +1249,8 @@ clears itself as its last action: `trap 'rm -f "$x"; trap - RETURN' RETURN`
 (`gr::refresh_blog`, `gr::mark_blog_removed`, `blogs challenge`, the
 challenge helpers). `gr::discover_blog_ids` instead creates and removes a
 temp file per page, since a function-level trap would only clean up the
-last page's file. **Still latent**: `goodreads_auth.sh`'s
-`gr::identify_account_from_cookiejar` and `gr::cookies_state` use
-non-self-clearing `trap ... RETURN` — fix if touched again.
+last page's file. `goodreads_auth.sh`'s `gr::identify_account_from_cookiejar`
+and `gr::cookies_state` follow the same self-clearing pattern.
 
 ## `blogs` commands (implemented)
 
@@ -2010,22 +2034,27 @@ JSON in/out, so they can be tested in isolation):
      for the rest. Excluded books are never among the options. An explicit
      `--alternatives` applies to every pick. A pick cut off by either limit
      ends with a `(+N more)` row.
-5. `gr::solve_format` → the report (or `--json`). Each solution is one
-   `column -t` table:
+5. `gr::solve_format` → the report (or `--json`). Each solution is a
+   table, but all solutions share **one** `column -t -R 3` pass (`pages`
+   right-aligned, user decision), split per solution on `@#` marker lines,
+   so every solution has the same column widths and rule width (user
+   decision):
    - Pinned books come first.
    - Then one block per pick: its lists, then its books (see `--alternatives`)
      as short id-only links (`https://www.goodreads.com/book/show/<id>`,
      see "Book URLs").
    - A work found under several edition ids gets one row per edition, each
      repeating all of the work's information, with its own link and a
-     `[<lists>]` tag. The tag is right-aligned at the widest title in the
-     table, and the title is cut with `…` to make room.
+     `[<lists>]` tag. The tag is right-aligned at the widest title across
+     *all* solutions (`title_width`, passed to `table`), and the title is cut
+     with `…` to make room.
      **jq gotcha**: `def f($max)` also defines a *filter* `max` in its body,
-     which shadows the builtin (that's why `table`'s parameter is
-     `$limit`).
+     which shadows the builtin (that's why `table`'s/`title_width`'s
+     parameter is `$limit`).
    - A pick covering a single list starts with that blog post's link
      ("(any book on the list)"), since any book on that list will do.
-   - Blocks are separated by rules. `gr::solve_draw_separators` turns
+   - Blocks are separated by rules, with one more rule before the first and
+     after the last block (user decision). `gr::solve_draw_separators` turns
      `@@` marker rows into lines after alignment; the marker is printable
      because `column` drops control characters.
 
@@ -2086,6 +2115,11 @@ all the solver needs.
 
 ## TODO
 
+- **`--add-*` flags of `edit` commands shouldn't behave like an upsert**
+  (user decision). Today they also update an existing entry:
+  `collections edit --add-book` (re)sets an existing book's date/pref,
+  `challenges edit --add-blog`/`--add-badge` rename an existing entry
+  ("added/updated").
 - **Revisit how books read during a challenge count toward solution size**
   (user: "it is confusing"). Today `--min-size`/`--max-size`/`--size` and
   the `N more book(s)` heading count only the solver's picks; pinned books

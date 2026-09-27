@@ -23,7 +23,7 @@ jq -r '.books[] | [.book_id, .added, (.pref // "" | tostring)] | @tsv' "$file" \
   | while IFS=$'\t' read -r book_id added pref; do
       book_title="(not cached)"
       if [[ -f "$book_dir/$book_id.json" ]]; then
-        book_title="$(jq -r '.title // .name // "(untitled)"' "$book_dir/$book_id.json")"
+        book_title="$(jq -r "$GR_TITLE_JQ_DEFS"'(.title // .name // "(untitled)") | strip_tagline' "$book_dir/$book_id.json")"
       fi
       printf '%s\t%s\t%s\t%s\n' "$book_id" "$added" "${pref:--}" "$book_title"
     done \

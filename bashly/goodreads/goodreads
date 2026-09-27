@@ -1815,13 +1815,44 @@ gr::set_current() {
   echo "$1" > "$(gr::data_dir)/current"
 }
 
+# Offline sanity check of cookie file $1 before any request; prints a reason
+# and returns 1 if it can't be a usable goodreads.com session.
+gr::check_cookie_file() {
+  local file="$1"
+
+  if [[ "$(head -c 1 "$file")" == [\[\{] ]]; then
+    echo "this is a JSON cookie export, not Netscape cookies.txt format — re-export as cookies.txt (Netscape) instead"
+    return 1
+  fi
+
+  # Netscape lines: 7 tab-separated fields; "#HttpOnly_" prefixed ones aren't comments.
+  local cookie_lines names
+  cookie_lines="$(awk -F'\t' '(!/^#/ || /^#HttpOnly_/) && NF >= 7' "$file")"
+  if [[ -z "$cookie_lines" ]]; then
+    echo "no Netscape-format cookie lines found (7 tab-separated fields) — re-export as cookies.txt (Netscape) format"
+    return 1
+  fi
+
+  names="$(awk -F'\t' '$1 ~ /(^|[._])goodreads\.com$/ { print $6 }' <<<"$cookie_lines")"
+  if [[ -z "$names" ]]; then
+    echo "no goodreads.com cookies in this file — export while on www.goodreads.com"
+    return 1
+  fi
+  if ! grep -qx 'at-main' <<<"$names" || ! grep -qx 'session-token' <<<"$names"; then
+    echo "goodreads.com cookies found, but no login cookies (at-main, session-token) — export from a browser that's logged in to goodreads.com, with an exporter that includes HttpOnly cookies"
+    return 1
+  fi
+}
+
 # Prints {"id","username","profile_url"} for the session in cookie jar $1
-# (from the homepage's profile link); returns 1 if not logged in.
+# (from the homepage's profile link). Returns 1 if the homepage couldn't be
+# fetched, 2 if it's the logged-out page, 3 if it's neither logged out nor
+# has a recognizable profile link (markup change?).
 gr::identify_account_from_cookiejar() {
   local cookiejar="$1"
   local home_html
   home_html="$(mktemp)"
-  trap 'rm -f "$home_html"' RETURN
+  trap 'rm -f "$home_html"; trap - RETURN' RETURN
 
   COOKIE_JAR="$cookiejar" gr::http_get "https://www.goodreads.com/" > "$home_html" || return 1
 
@@ -1829,7 +1860,10 @@ gr::identify_account_from_cookiejar() {
   href="$(xidel -s "$home_html" -e '(//a[contains(@class,"dropdown__trigger--profileMenu")])[1]/@href' 2>/dev/null)" || true
 
   if [[ ! "$href" =~ /user/show/([0-9]+)-([A-Za-z0-9_-]+) ]]; then
-    return 1
+    if grep -q 'href="/user/sign_in"' "$home_html"; then
+      return 2
+    fi
+    return 3
   fi
 
   jq -n \
@@ -1837,6 +1871,16 @@ gr::identify_account_from_cookiejar() {
     --arg username "${BASH_REMATCH[2]}" \
     --arg profile_url "https://www.goodreads.com$href" \
     '{id: $id, username: $username, profile_url: $profile_url}'
+}
+
+# Explains a non-zero gr::identify_account_from_cookiejar return code $1.
+gr::identify_failure_reason() {
+  case "$1" in
+    1) echo "couldn't fetch the goodreads.com homepage (network error or bot block — see the error above)" ;;
+    2) echo "goodreads.com doesn't accept this session (got the logged-out homepage) — expired, or logged out in the browser since the export?" ;;
+    3) echo "the homepage doesn't look logged out, but has no recognizable profile link — goodreads.com markup may have changed (see the account identification notes in CLAUDE.md)" ;;
+    *) echo "unknown failure (code $1)" ;;
+  esac
 }
 
 # Prints account $1's session state; always returns 0 (safe in $(...)
@@ -1857,15 +1901,24 @@ gr::cookies_state() {
   fi
 
   local tmp_cookiejar
-  tmp_cookiejar="$(mktemp)"
-  trap 'rm -f "$tmp_cookiejar"' RETURN
+  # In the data dir, see auth_import_command.sh.
+  tmp_cookiejar="$(mktemp -p "$(gr::data_dir)" .cookies.XXXXXX)"
+  trap 'rm -f "$tmp_cookiejar"; trap - RETURN' RETURN
   cp "$cookie_jar" "$tmp_cookiejar"
 
-  local live_identity
-  if ! live_identity="$(gr::identify_account_from_cookiejar "$tmp_cookiejar")"; then
-    echo "expired or invalid — run 'goodreads auth import' to refresh"
-    return
-  fi
+  local live_identity rc=0
+  live_identity="$(gr::identify_account_from_cookiejar "$tmp_cookiejar")" || rc=$?
+  case "$rc" in
+    0) ;;
+    2)
+      echo "expired or invalid — run 'goodreads auth import' to refresh"
+      return
+      ;;
+    *)
+      echo "unknown — $(gr::identify_failure_reason "$rc")"
+      return
+      ;;
+  esac
 
   local live_id
   live_id="$(jq -r '.id' <<<"$live_identity")"
@@ -2227,6 +2280,25 @@ gr::blog_json() {
 # src/lib/goodreads_books.sh
 # Default for the book_cache_ttl config key (seconds).
 readonly GR_BOOK_CACHE_TTL_DEFAULT=$((100 * 24 * 3600))
+
+# jq defs for displaying book titles. Prepend to jq programs.
+# strip_tagline: heuristic, not a real parse -- "Title: tag-line" gets the
+# tag-line dropped only when the whole title exceeds 30 chars AND the part
+# before the (first) colon is shorter than the part after (a real tag-line
+# is normally the longer half). Display only: the cache, --json output and
+# `books get` keep the full title.
+# shellcheck disable=SC2034,SC2016 # used elsewhere; $ is jq, not shell
+readonly GR_TITLE_JQ_DEFS='
+  def strip_tagline:
+    . as $title
+    | ($title | index(":")) as $i
+    | if $i == null or ($title | length) <= 30 then $title
+      else
+        ($title[0:$i] | sub("\\s+$"; "")) as $before
+        | ($title[($i + 1):] | sub("^\\s+"; "")) as $after
+        | if ($before | length) < ($after | length) then $before else $title end
+      end;
+'
 
 gr::book_dir() {
   echo "$(gr::data_dir)/books"
@@ -3448,14 +3520,14 @@ gr::solve_draw_separators() {
 gr::solve_format() {
   local optimize="$1"
   local report
-  report="$(jq -s -c --arg opt "$optimize" '
+  report="$(jq -s -c --arg opt "$optimize" "$GR_TITLE_JQ_DEFS"'
     .[0] as $p | .[1] as $c | .[2] as $r
     | def cut($n): if length > $n then .[:$n - 1] + "…" else . end;
       def url: "https://www.goodreads.com/book/show/\(.)";
       # Rows of [{t, tag?}, pages, rating, pref, link]: one per edition if a
       # work has several; tag = "[<lists>]".
       def book($w): $p.works[$w] as $x
-        | ($x.title // "(not cached)") as $t
+        | (($x.title | if . then strip_tagline else . end) // "(not cached)") as $t
         | [
             (if ($x.pages // 0) > 0 then "\($x.pages)p" else "?p" end),
             (if $x.rating != null then "\($x.rating)" else "" end),
@@ -3467,13 +3539,16 @@ gr::solve_format() {
           else
             [[{t: $t}] + $info + [($x.book_id // ($w | ltrimstr("b")) | url)]]
           end;
-      # Rows -> TSV lines; titles cut to $limit, tags right-aligned at the
-      # widest title. ($limit, not $max: it would shadow the max builtin.)
-      def table($limit):
-        ([.[] | select(length > 1) | .[1]
+      # Width of the title cell for rows $limit: widest (cut) title plus tag.
+      # ($limit, not $max: it would shadow the max builtin.)
+      def title_width($limit):
+        [.[] | select(length > 1) | .[1]
           | if .tag then [(.t | length) + 1 + (.tag | length), $limit] | min else (.t | cut($limit) | length) end
-         ] | max // 0) as $w
-        | map(if length > 1 then
+        ] | max // 0;
+      # Rows -> TSV lines; titles cut to $limit, tags right-aligned at $w
+      # (shared across all solutions, so every table lines up the same).
+      def table($limit; $w):
+        map(if length > 1 then
             .[1] |= (if .tag then
                 ($w - (.tag | length) - 1) as $avail
                 | (.t | cut($avail)) as $cut
@@ -3507,8 +3582,8 @@ gr::solve_format() {
         (.urls | join(" ")),
         (if ($p.challenges | length) > 1 then (.challenges | join(",") | if . == "" then "-" else . end) else empty end),
         (.status + (
-          if .status == "done" then ": " + (.done_by | map($p.works[.].title // .) | join(", "))
-          elif .status == "pinned" then ": " + (.pinned_by | map($p.works[.].title // .) | join(", "))
+          if .status == "done" then ": " + (.done_by | map(($p.works[.].title | if . then strip_tagline else . end) // .) | join(", "))
+          elif .status == "pinned" then ": " + (.pinned_by | map(($p.works[.].title | if . then strip_tagline else . end) // .) | join(", "))
           else "" end))
       ] | @tsv],
       summary: (if ($r | length) == 0 then
@@ -3518,8 +3593,9 @@ gr::solve_format() {
       | [$r | to_entries[] | {
         # "more" = what the size options count; pinned books separately.
         title: ("#\(.key + 1)  \(.value.more) more book(s)" + (($p.pinned | length) as $n | if $n > 0 then " + \($n) pinned" else "" end) + ", \(.value.pages) pages" + (if .value.rating != null then ", \(.value.rating | . * 100 | round / 100) avg rating" else "" end)),
-        # Pinned books, then one block per pick, "@@"-separated; a single-list
-        # pick starts with its list link (any book on it will do).
+        # Pinned books, then one block per pick, with "@@" rules between,
+        # before the first and after the last; a single-list pick starts
+        # with its list link (any book on it will do).
         rows: (
           [(if ($pinned | length) > 0 then $pinned else empty end),
            (.value.picks[] | . as $pick | ($pick.sig | length == 1) as $single
@@ -3529,8 +3605,10 @@ gr::solve_format() {
             | ($pick.options - ($pick.best | length)) as $more
             | (if $more > 0 then [[{t: "(+\($more) more)"}, "", "", "", ""]] else [] end) as $tail
             | [$head + $books + $tail | to_entries[] | [(if .key == 0 then ($pick.lists | join(" ")) else "" end)] + .value])]
-          | [.[] | ., [["@@"]]] | .[:-1] | add | table(50))
-      }])
+          | [[["@@"]]] + [.[] | ., [["@@"]]] | add)
+      }]
+      | (map(.rows) | add // [] | title_width(50)) as $w
+      | map(.rows |= table(50; $w)))
     }
   ')" || return 1
 
@@ -3541,15 +3619,23 @@ gr::solve_format() {
   echo
   jq -r '.summary' <<< "$report"
 
-  # One jq call for all solutions (--top all): NUL-terminated blocks of a
-  # title line plus table rows.
-  local block
-  while IFS= read -r -d '' block; do
-    echo
-    echo "${block%%$'\n'*}"
-    printf '%s\n' "${block#*$'\n'}" \
-      | column -t -s $'\t' | sed 's/ *$//' | gr::solve_draw_separators | sed 's/^/  /'
-  done < <(jq -j '.solutions[] | .title + "\n" + (.rows | join("\n")) + "\u0000"' <<< "$report")
+  # All solutions' rows go through one `column` (and one separator width),
+  # "@#"-split per solution, so every solution's table has the same columns.
+  local titles=() line i=0
+  mapfile -t titles < <(jq -r '.solutions[].title' <<< "$report")
+  [[ "${#titles[@]}" -eq 0 ]] && return 0
+  echo
+  echo "${titles[0]}"
+  while IFS= read -r line; do
+    if [[ "$line" == "@#" ]]; then
+      ((++i))
+      echo
+      echo "${titles[i]}"
+    else
+      echo "  $line"
+    fi
+  done < <(jq -r '.solutions | to_entries[] | (if .key > 0 then "@#" else empty end), .value.rows[]' <<< "$report" \
+    | column -t -s $'\t' -R 3 | sed 's/ *$//' | gr::solve_draw_separators)
 }
 
 # src/lib/http.sh
@@ -5401,6 +5487,7 @@ send_completions() {
   echo $'      return'
   echo $'      ;;'
   echo $'    3:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -A file -- "$cur")'
   echo $'      return'
   echo $'      ;;'
   echo $'    4:0)'
@@ -5485,13 +5572,21 @@ goodreads_auth_import_command() {
     echo "error: cookie file is empty: $cookie_file" >&2
     exit 1
   fi
+  if ! reason="$(gr::check_cookie_file "$cookie_file")"; then
+    echo "error: $cookie_file: $reason" >&2
+    exit 1
+  fi
 
-  tmp_cookiejar="$(mktemp)"
+  # Inside the data dir: the Docker curl fallback only mounts that, a /tmp jar
+  # would silently be invisible to it (cookie-less request).
+  tmp_cookiejar="$(mktemp -p "$(gr::data_dir)" .cookies.XXXXXX)"
   trap 'rm -f "$tmp_cookiejar"' EXIT
   cp "$cookie_file" "$tmp_cookiejar"
 
-  if ! identity="$(gr::identify_account_from_cookiejar "$tmp_cookiejar")"; then
-    echo "error: could not identify an authenticated account from this cookie file — is it a valid, logged-in goodreads.com session?" >&2
+  rc=0
+  identity="$(gr::identify_account_from_cookiejar "$tmp_cookiejar")" || rc=$?
+  if ((rc != 0)); then
+    echo "error: could not identify an account from $cookie_file: $(gr::identify_failure_reason "$rc")" >&2
     exit 1
   fi
 
@@ -5968,8 +6063,8 @@ goodreads_blogs_get_command() {
   fi
 
   # JSON result, so book rows can be column-aligned across sections below.
-  # Prepends jq defs from lib/goodreads_blogs.sh to the program.
-  result="$(jq "$GR_CHALLENGE_JQ_DEFS"'
+  # Prepends jq defs from lib/goodreads_blogs.sh and lib/goodreads_books.sh.
+  result="$(jq "$GR_CHALLENGE_JQ_DEFS$GR_TITLE_JQ_DEFS"'
     if .removed_remotely then
       {
         removed: true,
@@ -5995,7 +6090,7 @@ goodreads_blogs_get_command() {
           header: (if .section then "\(.section) (\(.books | length)):" else "Books (\(.books | length)):" end),
           count: (.books | length)
         }],
-        rows: [(.book_sections // [])[].books[] | "\(.book_id)\t\(.title // "(no title)")\thttps://goodreads.com/book/show/\(.book_id)"]
+        rows: [(.book_sections // [])[].books[] | "\(.book_id)\t\((.title // "(no title)") | strip_tagline)\thttps://goodreads.com/book/show/\(.book_id)"]
       }
     end
   ' "$file")"
@@ -6349,25 +6444,11 @@ goodreads_books_list_command() {
     exit 0
   fi
 
-  result="$(cat "${files[@]}" | jq -s --argjson limit "${limit:-0}" '
+  result="$(cat "${files[@]}" | jq -s --argjson limit "${limit:-0}" "$GR_TITLE_JQ_DEFS"'
     # Truncates to at most n characters, replacing the tail with a single "…"
     # (not "..."; one character, so a truncated string is never longer than n)
     # once the untruncated value would exceed it.
     def trunc(n): if (length > n) then (.[0:(n - 1)] + "…") else . end;
-
-    # Heuristic, not a real parse: "Title: tag-line" gets the tag-line
-    # dropped only when the whole title exceeds 30 chars AND the part before
-    # the (first) colon is shorter than the part after (a real tag-line is
-    # normally the longer half). Full title always available via `books get`.
-    def strip_tagline:
-      . as $title
-      | ($title | index(":")) as $i
-      | if $i == null or ($title | length) <= 30 then $title
-        else
-          ($title[0:$i] | sub("\\s+$"; "")) as $before
-          | ($title[($i + 1):] | sub("^\\s+"; "")) as $after
-          | if ($before | length) < ($after | length) then $before else $title end
-        end;
 
     # Truncates joined author names to at most n characters, cutting at a
     # name boundary rather than mid-name whenever possible. Falls back to a
@@ -7534,7 +7615,7 @@ goodreads_collections_get_command() {
     | while IFS=$'\t' read -r book_id added pref; do
         book_title="(not cached)"
         if [[ -f "$book_dir/$book_id.json" ]]; then
-          book_title="$(jq -r '.title // .name // "(untitled)"' "$book_dir/$book_id.json")"
+          book_title="$(jq -r "$GR_TITLE_JQ_DEFS"'(.title // .name // "(untitled)") | strip_tagline' "$book_dir/$book_id.json")"
         fi
         printf '%s\t%s\t%s\t%s\n' "$book_id" "$added" "${pref:--}" "$book_title"
       done \

@@ -41,25 +41,12 @@ if [[ "${#files[@]}" -eq 0 ]]; then
   exit 0
 fi
 
-result="$(cat "${files[@]}" | jq -s --argjson limit "${limit:-0}" '
+result="$(cat "${files[@]}" | jq -s --argjson limit "${limit:-0}" "$GR_TITLE_JQ_DEFS"'
   # Truncates to at most n characters, replacing the tail with a single "…"
   # (not "..."; one character, so a truncated string is never longer than n)
   # once the untruncated value would exceed it.
   def trunc(n): if (length > n) then (.[0:(n - 1)] + "…") else . end;
 
-  # Heuristic, not a real parse: "Title: tag-line" gets the tag-line
-  # dropped only when the whole title exceeds 30 chars AND the part before
-  # the (first) colon is shorter than the part after (a real tag-line is
-  # normally the longer half). Full title always available via `books get`.
-  def strip_tagline:
-    . as $title
-    | ($title | index(":")) as $i
-    | if $i == null or ($title | length) <= 30 then $title
-      else
-        ($title[0:$i] | sub("\\s+$"; "")) as $before
-        | ($title[($i + 1):] | sub("^\\s+"; "")) as $after
-        | if ($before | length) < ($after | length) then $before else $title end
-      end;
 
   # Truncates joined author names to at most n characters, cutting at a
   # name boundary rather than mid-name whenever possible. Falls back to a
