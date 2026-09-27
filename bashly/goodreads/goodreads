@@ -32,6 +32,8 @@ goodreads_usage() {
   printf "  %s   Manage the local cache of scraped goodreads.com blog posts\n" "blogs      "
   printf "  %s   Manage the local cache of scraped goodreads.com book metadata\n" "books      "
   printf "  %s   Manually manage reading challenges (title, time window, badge-linked blog posts, book-count badges)\n" "challenges "
+  printf "  %s   Find the fewest (or cheapest) books to read so every list has one of them -- by default a challenge's blog posts\n" "solve      "
+  printf "  %s   Manage local collections of books (e.g. books read, solver preferences)\n" "collections"
   printf "  %s   View or change goodreads' own config.ini settings (curl_bin, throttling, cache TTLs, ...)\n" "config     "
   echo
 
@@ -587,8 +589,8 @@ goodreads_books_fetch_usage() {
     echo
 
     # :flag.usage
-    printf "  %s\n" "--challenge CHALLENGE_ID"
-    printf "    Fetch every book referenced by any blog post linked to this challenge (see\n    'goodreads challenges get'); a book in multiple linked posts is only fetched\n    once\n"
+    printf "  %s\n" "--challenge CHALLENGE_ID (repeatable)"
+    printf "    Fetch every book referenced by any blog post linked to this challenge (see\n    'goodreads challenges get'); repeatable; a book in multiple linked posts (or\n    challenges) is only fetched once\n"
     echo
 
     # :flag.usage
@@ -1008,6 +1010,357 @@ goodreads_challenges_remove_usage() {
     # :argument.usage
     printf "  %s\n" "CHALLENGE_ID..."
     printf "    Challenge id(s) to remove\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_solve_usage() {
+  printf "goodreads solve - Find the fewest (or cheapest) books to read so every list has one of them -- by default a challenge's blog posts\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads solve [CHALLENGE_ID] [OPTIONS]\n"
+  printf "  goodreads solve --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--challenge, -c CHALLENGE_ID (repeatable)"
+    printf "    Use this challenge's blog posts as lists (default without\n    --challenge/--blog: the next one to end, else the latest); repeatable, all\n    challenges' lists form one problem\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--blog, -b BLOG_ID (repeatable)"
+    printf "    Add this blog post's books as a list (without any challenge, only these\n    lists are used); repeatable\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--read COLLECTION_ID"
+    printf "    Collection of books read, dated (default: 'read', if it exists). Read during\n    the challenge: done, its lists are covered. Read before: gets --reread-pref\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--no-read"
+    printf "    Ignore any read collection\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--prefs COLLECTION_ID (repeatable)"
+    printf "    Collection whose books' pref values (-1..1) apply (default: 'prefs', if it\n    exists); repeatable, later ones win\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--no-prefs"
+    printf "    Ignore any preference collection\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--pref BOOK=P (repeatable)"
+    printf "    Preference for one book, '<book id or URL>=<p>', p from -1 (must not) to 1\n    (must); overrides collections; repeatable\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--reread-pref P"
+    printf "    Preference for books read before the challenge (-1 = never re-read)\n"
+    printf "    %s\n" "Default: -1"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--optimize, -o CRITERIA"
+    printf "    Comma-separated ranking criteria, compared in order: count (fewest books),\n    pages (fewest pages), rating (best average rating, shrunk toward the median\n    for books with few ratings); the others follow as tie-breakers, in the order\n    count, rating, pages\n"
+    printf "    %s\n" "Default: count"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--max-size, -m N"
+    printf "    Consider solutions of at most n more books (default: per challenge, its\n    largest badge minus books read during it, summed, minus pinned books, plus\n    1, or --min-size if larger; if nothing is that small, the smallest\n    solutions)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--min-size N"
+    printf "    Only show solutions of at least n more books\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--size, -s N"
+    printf "    Only show solutions of exactly n more books: --min-size n --max-size n,\n    except that there's no fallback to the smallest solutions if there are none\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--top, -n N"
+    printf "    Show the n best solutions, or 'all' of them\n"
+    printf "    %s\n" "Default: 5"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--alternatives, -a N"
+    printf "    Show up to n book options per pick (default: all of them, except for a pick\n    covering a single list -- any book on it will do -- which shows the best 10)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--json, -J"
+    printf "    Print the ranked solutions as JSON\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "CHALLENGE_ID"
+    printf "    Shorthand for --challenge <challenge_id>\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_collections_usage() {
+  printf "goodreads collections - Manage local collections of books (e.g. books read, solver preferences)\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads collections [COMMAND]\n"
+  printf "  goodreads collections [COMMAND] --help | -h\n"
+  echo
+  # :command.usage_commands
+  printf "%s\n" "Commands:"
+  printf "  %s   List all collections (default)\n" "list  "
+  printf "  %s   Create a new collection\n" "create"
+  printf "  %s   Show one collection's books\n" "get   "
+  printf "  %s   Change a collection's title and/or books\n" "edit  "
+  printf "  %s   Remove one or more collections\n" "remove"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_collections_list_usage() {
+  printf "goodreads collections list - List all collections\n\n"
+  printf "Alias: ls\n"
+  echo
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads collections [list]\n"
+  printf "  goodreads collections list --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_collections_create_usage() {
+  printf "goodreads collections create - Create a new collection\n\n"
+  printf "Alias: new\n"
+  echo
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads collections create COLLECTION_ID [OPTIONS]\n"
+  printf "  goodreads collections create --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--title TITLE"
+    printf "    Collection title\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--books BOOK_REFS"
+    printf "    Comma-separated books to add, each a book id or goodreads book URL\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--date DATE"
+    printf "    Date the given books were added, any format 'date -d' understands (default:\n    today); for a read collection, the date read\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--pref P"
+    printf "    Solver preference for the given books, from -1 (must not) through 0\n    (neutral) to 1 (must)\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "COLLECTION_ID"
+    printf "    Collection id (any name without '/', e.g. 'read' or 'prefs')\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_collections_get_usage() {
+  printf "goodreads collections get - Show one collection's books\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads collections get COLLECTION_ID [OPTIONS]\n"
+  printf "  goodreads collections get --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--json, -J"
+    printf "    Print the raw JSON instead of a pretty listing\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "COLLECTION_ID"
+    printf "    Collection id\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_collections_edit_usage() {
+  printf "goodreads collections edit - Change a collection's title and/or books\n\n"
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads collections edit COLLECTION_ID [OPTIONS]\n"
+  printf "  goodreads collections edit --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--title TITLE"
+    printf "    New title (an empty string removes it)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--books BOOK_REFS"
+    printf "    Replace all books with this comma-separated list, each a book id or\n    goodreads book URL (pass an empty string to remove all). Books already in\n    the collection keep their date and preference unless --date/--pref is given.\n    Can't be combined with --add-book/--remove-book\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--add-book BOOK_REFS (repeatable)"
+    printf "    Add (or update) books, each a book id or goodreads book URL,\n    comma-separated; repeatable\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--remove-book BOOK_REFS (repeatable)"
+    printf "    Remove books, comma-separated; repeatable\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--date DATE"
+    printf "    Set this added (for a read collection: read) date on every book given via\n    --books/--add-book (default for new books: today)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--pref P"
+    printf "    Set this solver preference (-1..1) on every book given via\n    --books/--add-book; '-' removes it\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "COLLECTION_ID"
+    printf "    Collection id\n"
+    echo
+
+  fi
+}
+
+# :command.usage
+goodreads_collections_remove_usage() {
+  printf "goodreads collections remove - Remove one or more collections\n\n"
+  printf "Alias: rm\n"
+  echo
+
+  printf "%s\n" "Usage:"
+  printf "  goodreads collections remove [COLLECTION_ID...] [OPTIONS]\n"
+  printf "  goodreads collections remove --help | -h\n"
+  echo
+
+  # :command.long_usage
+  if [[ -n "$long_usage" ]]; then
+    # :command.usage_options
+    printf "%s\n" "Options:"
+
+    # :command.usage_flags
+    # :flag.usage
+    printf "  %s\n" "--all, -a"
+    printf "    Remove every collection\n"
+    echo
+
+    # :command.usage_fixed_flags
+    printf "  %s\n" "--help, -h"
+    printf "    Show this help\n"
+    echo
+
+    # :command.usage_args
+    printf "%s\n" "Arguments:"
+
+    # :argument.usage
+    printf "  %s\n" "COLLECTION_ID..."
+    printf "    Collection id(s) to remove\n"
     echo
 
   fi
@@ -2545,6 +2898,158 @@ gr::default_challenge_blogs() {
     '
 }
 
+# src/lib/goodreads_collections.sh
+# Collections: named, locally curated lists of books (e.g. "read", "prefs").
+# Schema: {collection_id, title, books: [{book_id, added, pref?}]}, books
+# kept sorted by numeric book_id.
+
+gr::collection_dir() {
+  echo "$(gr::data_dir)/collections"
+}
+
+gr::collection_file() {
+  echo "$(gr::collection_dir)/$1.json"
+}
+
+# Prints collection $1's file path, or errors (return 1) if it doesn't exist.
+gr::require_collection_file() {
+  local id="$1"
+  local file
+  file="$(gr::collection_file "$id")"
+  if [[ ! -f "$file" ]]; then
+    echo "error: no collection $id" >&2
+    return 1
+  fi
+  echo "$file"
+}
+
+# Normalizes a book reference to its numeric id: a bare id, '<id>-<slug>',
+# '<id>.<Slug>', or a .../book/show/<id>... URL. Returns 1 if none found.
+gr::parse_book_ref() {
+  local ref="$1"
+  ref="${ref##*/book/show/}"
+  if [[ "$ref" =~ ^([0-9]+)([-._].*)?$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  else
+    return 1
+  fi
+}
+
+# Splits $1 on commas/whitespace and prints each book ref's id, one per line.
+# Errors (return 1) on the first unparseable ref.
+gr::parse_book_refs() {
+  local refs ref id
+  read -r -a refs <<< "${1//,/ }"
+  for ref in "${refs[@]}"; do
+    if ! id="$(gr::parse_book_ref "$ref")"; then
+      echo "error: not a book id or goodreads book URL: $ref" >&2
+      return 1
+    fi
+    echo "$id"
+  done
+}
+
+# True if $1 is a valid preference value: a decimal number in [-1, 1].
+gr::valid_pref() {
+  local p="$1"
+  [[ "$p" =~ ^[-+]?([0-9]+\.?[0-9]*|\.[0-9]+)$ ]] || return 1
+  jq -en --argjson p "${p#+}" '$p >= -1 and $p <= 1' > /dev/null 2>&1
+}
+
+gr::create_collection() {
+  local id="$1" title="$2"
+  mkdir -p "$(gr::collection_dir)"
+  jq -n -S \
+    --arg id "$id" \
+    --arg title "$title" \
+    '{collection_id: $id, title: ($title | if . == "" then null else . end), books: []}' \
+    > "$(gr::collection_file "$id")"
+}
+
+gr::update_collection_title() {
+  local id="$1" title="$2"
+  local file
+  file="$(gr::require_collection_file "$id")" || return 1
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  jq -S --arg title "$title" '.title = ($title | if . == "" then null else . end)' "$file" > "$tmp_file" || return 1
+  mv "$tmp_file" "$file"
+}
+
+# Upserts book $2. $3 = added date (YYYY-MM-DD), $4 = pref; for each, ""
+# keeps an existing entry's value (a new entry gets today / no pref), and
+# "-" (pref only) removes it. Prints "added" or "updated".
+gr::add_collection_book() {
+  local id="$1" book_id="$2" added="${3:-}" pref="${4:-}"
+  local file
+  file="$(gr::require_collection_file "$id")" || return 1
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  local outcome=added
+  if jq -e --arg b "$book_id" 'any(.books[]?; .book_id == $b)' "$file" > /dev/null; then
+    outcome=updated
+  fi
+
+  jq -S \
+    --arg b "$book_id" \
+    --arg added "$added" \
+    --arg today "$(date +%Y-%m-%d)" \
+    --arg pref "$pref" \
+    '
+      def apply:
+        (if $added != "" then .added = $added else . end)
+        | (if $pref == "-" then del(.pref)
+           elif $pref != "" then .pref = ($pref | ltrimstr("+") | tonumber)
+           else . end);
+      if any(.books[]?; .book_id == $b) then
+        .books |= map(if .book_id == $b then apply else . end)
+      else
+        .books += [{book_id: $b, added: $today} | apply]
+      end
+      | .books |= sort_by(.book_id | tonumber)
+    ' "$file" > "$tmp_file" || return 1
+
+  mv "$tmp_file" "$file"
+  echo "$outcome"
+}
+
+# Returns 1 (nothing written) if the book isn't in the collection.
+gr::remove_collection_book() {
+  local id="$1" book_id="$2"
+  local file
+  file="$(gr::require_collection_file "$id")" || return 1
+
+  if ! jq -e --arg b "$book_id" 'any(.books[]?; .book_id == $b)' "$file" > /dev/null; then
+    return 1
+  fi
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  jq -S --arg b "$book_id" '.books |= map(select(.book_id != $b))' "$file" > "$tmp_file" || return 1
+  mv "$tmp_file" "$file"
+}
+
+gr::clear_collection_books() {
+  local id="$1"
+  local file
+  file="$(gr::require_collection_file "$id")" || return 1
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  jq -S '.books = []' "$file" > "$tmp_file" || return 1
+  mv "$tmp_file" "$file"
+}
+
 # src/lib/goodreads_config.sh
 # Every config.ini key goodreads reads, for `config list/get/set`. Defaults
 # live at each gr::config_get call site; keep in sync.
@@ -2592,6 +3097,459 @@ gr::config_default_display() {
     book_cache_ttl) echo "$GR_BOOK_CACHE_TTL_DEFAULT" ;;
     *) echo "" ;;
   esac
+}
+
+# src/lib/goodreads_solver.sh
+# Hitting-set solver (see CLAUDE.md "Solver"): jq stages, JSON in/out.
+#   gr::solve_prepare   problem -> reduced problem (works, groups, cache key)
+#   gr::solve_enumerate reduced problem + max size -> irredundant group covers
+#   gr::solve_rank      reduced problem + covers + options -> ranked solutions
+# Only covers are cached (gr::solve_covers); they depend only on the group
+# signatures, so weights and preferences never invalidate them.
+
+readonly GR_SOLVE_CACHE_VERSION=1
+# gr::solve_estimate probes; gr::solve_warn_if_large thresholds (search
+# nodes, jq manages ~10k/s; covers).
+readonly GR_SOLVE_ESTIMATE_PROBES=200
+readonly GR_SOLVE_WARN_NODES=100000
+readonly GR_SOLVE_WARN_COVERS=50000
+# Bayesian rating prior: this many virtual ratings at the problem's median.
+readonly GR_SOLVE_RATING_PRIOR_COUNT=1000
+# Options shown for a single-list pick without --alternatives (others: all).
+readonly GR_SOLVE_SINGLE_LIST_ALTERNATIVES=10
+
+gr::solver_cache_dir() {
+  echo "$(gr::data_dir)/solver"
+}
+
+# Prints {book_id: {work, title, pages, rating, ratings}} for the given ids
+# found in the book cache (never fetches).
+gr::solve_book_meta() {
+  local book_dir files=() id
+  book_dir="$(gr::book_dir)"
+  for id in "$@"; do
+    [[ -f "$book_dir/$id.json" ]] && files+=("$book_dir/$id.json")
+  done
+  if [[ "${#files[@]}" -eq 0 ]]; then
+    echo '{}'
+    return 0
+  fi
+  jq -n -c '
+    [inputs | {key: .book_id, value: {
+      work: (.work.legacyId // null),
+      title: (.title // .name),
+      pages: .numberOfPages,
+      rating: .aggregateRating.ratingValue,
+      ratings: .aggregateRating.ratingCount
+    }}] | from_entries
+  ' "${files[@]}"
+}
+
+# Input: {lists: [{id, name, url?, challenges: [challenge_id], books: [book_id]}],
+# meta: gr::solve_book_meta, read: [{book_id, added}], prefs: {book_id: p},
+# challenges: [{challenge_id, title, start, end, max_badge, badge}],
+# reread_pref}.
+#
+# Books become works (w<work id>, or b<book id> uncached); lists are sorted
+# canonically. Read during a challenge covers that challenge's (and
+# challenge-less) lists; read before gets reread_pref unless prefs overrides.
+# pref >= 1 pins a work, pref <= -1 excludes it.
+gr::solve_prepare() {
+  jq -c '
+    . as $in
+    | def wkey: ($in.meta[.].work) as $w | if $w == null then "b\(.)" else "w\($w)" end;
+
+    # Canonical lists; identical ones are merged.
+    ($in.lists
+      | map(. + {works: (.books | map(wkey) | unique)})
+      | group_by(.works)
+      | map({ids: map(.id), names: map(.name), urls: map(.url // empty), challenges: (map(.challenges // [] | .[]) | unique), works: .[0].works})
+      | sort_by([(.works | length), .works])
+    ) as $lists
+
+    # Editions per work, with the lists each appears in.
+    | ([$in.lists[] | .id as $l | .books[] | {book_id: ., list: $l}]
+       | group_by(.book_id)
+       | map({book_id: .[0].book_id, work: (.[0].book_id | wkey), lists: (map(.list) | unique)})
+       | group_by(.work)
+       | map({key: .[0].work, value: map({book_id, lists})})
+       | from_entries
+    ) as $editions
+
+    # Read books, relative to the challenge windows.
+    | ($in.read | map(
+        .added as $a
+        | . + {work: (.book_id | wkey), during: [$in.challenges[] | select($a >= .start and $a <= .end) | .challenge_id]}
+        | . + {when: (
+            if (.during | length) > 0 then "during"
+            elif ($in.challenges | length) == 0 or any($in.challenges[]; $a < .start) then "before"
+            else "after" end
+          )}
+      )) as $read
+    | ($read | map(select(.when == "during") | .work) | unique) as $done
+
+    # Effective preference per work: reread default, then explicit prefs.
+    | (($read | map(select(.when == "before") | {key: .work, value: $in.reread_pref}))
+       + ($in.prefs | to_entries | map({key: (.key | wkey), value: .value}))
+       | from_entries
+    ) as $pref
+    # Only works on some list matter; preferences may be global.
+    | ([$lists[].works[]] | unique) as $listed
+    | ($pref | to_entries | map(select(.value >= 1) | .key) - $done | . - (. - $listed)) as $pinned
+    | ($pref | to_entries | map(select(.value <= -1) | .key) - $done | . - (. - $listed)) as $excluded
+
+    | ($lists | map(
+        . as $l
+        # Read during one of the challenges of this list (any, if it has none).
+        | ([$read[] | select(.when == "during")
+            | select(($l.challenges | length) == 0 or any(.during[]; . as $c | $l.challenges | index($c)))
+            | .work] | unique) as $done_here
+        | ($l.works - ($l.works - $done_here)) as $done_by
+        | ($l.works - ($l.works - $pinned)) as $pinned_by
+        | ($l.works - $excluded) as $available
+        | . + {done_by: $done_by, pinned_by: $pinned_by, available: $available, status: (
+            if ($done_by | length) > 0 then "done"
+            elif ($pinned_by | length) > 0 then "pinned"
+            elif ($available | length) == 0 then "uncoverable"
+            else "open" end
+          )}
+      )) as $lists
+    | [$lists[] | select(.status == "open")] as $open
+
+    # Signature groups over the open lists.
+    | ([$open | to_entries[] | .key as $i | .value.available[] | {work: ., list: $i}]
+       | group_by(.work)
+       | map({work: .[0].work, sig: map(.list)})
+       | group_by(.sig)
+       | map({sig: .[0].sig, works: map(.work)})
+       | sort_by(.sig)
+    ) as $groups
+
+    | ([$groups[].works[]] + $done + $pinned | unique) as $all_works
+    | {
+        lists: [$lists[] | {ids, names, urls, challenges, status, size: (.works | length), done_by, pinned_by}],
+        open: [$open[] | .ids],
+        open_urls: [$open[] | .urls],
+        n: ($open | length),
+        sigs: [$groups[].sig],
+        groups: [$groups[].works],
+        works: ($all_works | map(. as $wk | {key: $wk, value: (
+          ($editions[$wk] // []) as $eds
+          | ([$eds[].book_id] + [($read[] | .book_id), ($in.prefs | keys[])] | map(select(wkey == $wk)) | unique) as $bids
+          | [$bids[] | $in.meta[.] // empty] as $metas
+          | {
+              title: ([$metas[].title | select(. != null)] | first // null),
+              pages: ([$metas[].pages | select(. != null)] | first // null),
+              rating: ([$metas[].rating | select(. != null)] | first // null),
+              ratings: ([$metas[] | select(.rating != null) | .ratings] | first // null),
+              book_id: ([$eds[].book_id] + $bids | first),
+              pref: ($pref[$wk] // 0),
+              editions: $eds
+            }
+        )}) | from_entries),
+        done: $done,
+        pinned: $pinned,
+        excluded: $excluded,
+        challenges: [$in.challenges[] | .challenge_id as $c | . + {read_during: ([$read[] | select(any(.during[]; . == $c))] | length)}]
+      }
+    | .key = ({v: '"$GR_SOLVE_CACHE_VERSION"', n, sigs} | tojson)
+  '
+}
+
+# Input: gr::solve_prepare's output; $1 = max cover size. Prints {max_size,
+# covers: [[group index]]}: every irredundant cover of at most $1 groups.
+# Branches on the first uncovered list; siblings forbid the groups tried
+# before them (each cover exactly once); prunes once a group turns redundant.
+gr::solve_enumerate() {
+  local max_size="$1"
+  jq -c --argjson k "$max_size" '
+    .n as $n | .sigs as $sigs
+    | ([range(0; $n)] | map(. as $i | [$sigs | to_entries[] | select(.value | index($i)) | .key])) as $by
+    | def rec($chosen; $cnt; $forbidden):
+        ([range(0; $n) | select($cnt[.] == 0)] | first) as $u
+        | if $u == null then $chosen
+          elif ($chosen | length) >= $k then empty
+          else
+            $by[$u] as $cands
+            | range(0; $cands | length) as $j
+            | $cands[$j] as $g
+            | select($forbidden[$g | tostring] | not)
+            | (reduce $sigs[$g][] as $l ($cnt; .[$l] += 1)) as $cnt2
+            | select([$chosen[], $g] | all(. as $h | $sigs[$h] | any(.[]; $cnt2[.] == 1)))
+            | rec($chosen + [$g]; $cnt2; $forbidden + ($cands[0:$j] | map({key: tostring, value: true}) | from_entries))
+          end;
+    {max_size: $k, covers: [rec([]; [range(0; $n) | 0]; {}) | sort]}
+  '
+}
+
+# Input: gr::solve_prepare's output; $1 = max cover size. Prints {nodes,
+# covers}: Knuth's estimate of gr::solve_enumerate's tree size and result
+# count (random probes, weighted by the product of their branching factors).
+gr::solve_estimate() {
+  local max_size="$1"
+  # A file, not --argjson: probes * K numbers can exceed the argument size limit.
+  jq -c --argjson k "$max_size" --argjson probes "$GR_SOLVE_ESTIMATE_PROBES" \
+    --slurpfile seeds <(for (( i = 0; i < GR_SOLVE_ESTIMATE_PROBES * (max_size + 1); i++ )); do echo "$RANDOM"; done) '
+    .n as $n | .sigs as $sigs | ($seeds | map(. / 32768)) as $seeds
+    | ([range(0; $n)] | map(. as $i | [$sigs | to_entries[] | select(.value | index($i)) | .key])) as $by
+    | def probe($p):
+        {chosen: [], cnt: [range(0; $n) | 0], forb: {}, w: 1, nodes: 1, covers: 0, done: false}
+        | until(.done;
+            . as $s
+            | ([range(0; $n) | select($s.cnt[.] == 0)] | first) as $u
+            | if $u == null then .covers = .w | .done = true
+              elif (.chosen | length) >= $k then .done = true
+              else
+                $by[$u] as $cands
+                | [range(0; $cands | length) as $j | $cands[$j] as $g
+                    | select($s.forb[$g | tostring] | not)
+                    | (reduce $sigs[$g][] as $l ($s.cnt; .[$l] += 1)) as $cnt2
+                    | select([$s.chosen[], $g] | all(. as $h | $sigs[$h] | any(.[]; $cnt2[.] == 1)))
+                    | {chosen: ($s.chosen + [$g]), cnt: $cnt2, forb: ($s.forb + ($cands[0:$j] | map({key: tostring, value: true}) | from_entries))}
+                  ] as $kids
+                | if ($kids | length) == 0 then .done = true
+                  else
+                    $kids[$seeds[$p * ($k + 1) + ($s.chosen | length)] * ($kids | length) | floor] as $next
+                    | .w *= ($kids | length) | .nodes += .w
+                    | .chosen = $next.chosen | .cnt = $next.cnt | .forb = $next.forb
+                  end
+              end)
+        | {nodes, covers};
+    [range(0; $probes) | probe(.)]
+    | {nodes: (map(.nodes) | add / length | round), covers: (map(.covers) | add / length | round)}
+  '
+}
+
+# $1 = gr::solve_prepare's output, $2 = max cover size. Warns on stderr if
+# gr::solve_estimate expects the enumeration to explode (it runs anyway).
+gr::solve_warn_if_large() {
+  local estimate nodes covers
+  estimate="$(gr::solve_estimate "$2" <<< "$1")" || return 1
+  nodes="$(jq -r '.nodes' <<< "$estimate")"
+  covers="$(jq -r '.covers' <<< "$estimate")"
+  if (( nodes > GR_SOLVE_WARN_NODES || covers > GR_SOLVE_WARN_COVERS )); then
+    echo "warning: large search space (~$nodes steps, ~$covers solutions of up to $2 more book(s)) -- this may take very long. Consider a smaller --max-size, or recording books read." >&2
+  fi
+  return 0
+}
+
+# $1 = gr::solve_prepare's output, $2 = max cover size, $3 = strict. Prints
+# {max_size, requested, covers}: covers of at most $2 groups, else (unless
+# strict) the smallest ones there are; cached under gr::solver_cache_dir.
+gr::solve_covers() {
+  local prepared="$1" max_size="$2" strict="${3:-}"
+  local n key cache_file cached_max requested="$max_size"
+  n="$(jq -r '.n' <<< "$prepared")"
+  (( max_size > n )) && max_size="$n"
+  (( max_size < 0 )) && max_size=0
+  key="$(jq -r '.key' <<< "$prepared" | sha256sum | cut -d' ' -f1)"
+  cache_file="$(gr::solver_cache_dir)/$key.json"
+
+  local result=""
+  if [[ -f "$cache_file" ]]; then
+    cached_max="$(jq -r '.max_size // -1' "$cache_file" 2>/dev/null || echo -1)"
+    if (( cached_max >= max_size )); then
+      result="$(jq -c . "$cache_file")" || result=""
+    fi
+  fi
+
+  if [[ -z "$result" ]]; then
+    gr::solve_warn_if_large "$prepared" "$max_size" || return 1
+    result="$(gr::solve_enumerate "$max_size" <<< "$prepared")" || return 1
+    # Nothing that small: every cover is <= n groups, so enumerate them all.
+    if [[ -z "$strict" && "$(jq '.covers | length' <<< "$result")" -eq 0 ]] && (( max_size < n )); then
+      max_size="$n"
+      gr::solve_warn_if_large "$prepared" "$max_size" || return 1
+      result="$(gr::solve_enumerate "$max_size" <<< "$prepared")" || return 1
+    fi
+    mkdir -p "$(gr::solver_cache_dir)"
+    jq -c --argjson problem "$(jq -c '{n, sigs}' <<< "$prepared")" '. + $problem' <<< "$result" > "$cache_file.tmp" \
+      && mv "$cache_file.tmp" "$cache_file"
+  fi
+
+  # A cache entry may cover more than asked for; keep what was asked, or
+  # the smallest covers if nothing is that small.
+  jq -c --argjson k "$max_size" --argjson requested "$requested" --arg strict "$strict" '
+    (.covers | map(select(length <= $k))) as $small
+    | if ($small | length) > 0 or $strict != "" or (.covers | length) == 0 then {max_size: $k, covers: $small}
+      else (.covers | (map(length) | min) as $m | {max_size: $m, covers: map(select(length == $m))}) end
+    | .requested = $requested
+  ' <<< "$result"
+}
+
+# Input: {prepared, covers, optimize: [count|pages|rating], top: n | null,
+# alternatives: n | null}. Per work, m = (1 - pref) / (1 + pref): count = m,
+# pages = pages * m, rating = (5 - r') * m (r' Bayesian-shrunk); unknowns
+# take the median. Groups pick their cheapest work; covers compare
+# lexicographically by summed count/pages and mean rating.
+gr::solve_rank() {
+  jq -c --argjson prior "$GR_SOLVE_RATING_PRIOR_COUNT" --argjson single_alternatives "$GR_SOLVE_SINGLE_LIST_ALTERNATIVES" '
+    .prepared as $p | .optimize as $crit | .top as $top | .alternatives as $alternatives
+    | def median: sort | if length > 0 then .[length / 2 | floor] else null end;
+    ([$p.works[] | .pages | select(. != null and . > 0)] | median // 300) as $median_pages
+    | ([$p.works[] | .rating | select(. != null)] | median // 3.5) as $median_rating
+    | def pages($w): $p.works[$w].pages | if . != null and . > 0 then . else $median_pages end;
+    def adjusted($w): $p.works[$w] as $x
+      | if $x.rating == null then $median_rating
+        else ($x.ratings // 0) as $n | ($prior * $median_rating + $n * $x.rating) / ($prior + $n) end;
+    def costs($w): $p.works[$w] as $x | ((1 - $x.pref) / (1 + $x.pref)) as $m
+      | {count: $m, pages: (pages($w) * $m), rating: ((5 - adjusted($w)) * $m)};
+    def vec: . as $c | [$crit[] | $c[.]];
+    ($p.groups | map(map({work: ., costs: costs(.)}) | sort_by((.costs | vec), .work))) as $ranked
+    | [.covers.covers[]
+        | . as $groups
+        | ([$groups[] | $ranked[.][0].work] + $p.pinned) as $books
+        | ($books | map(costs(.))) as $c
+        | {
+            groups: $groups,
+            books: ($books | length),
+            more: ($groups | length),
+            pages: ($books | map(pages(.)) | add // 0),
+            rating: ([$books[] | $p.works[.].rating | select(. != null)] | if length > 0 then add / length else null end),
+            key: ({
+              count: ($c | map(.count) | add // 0),
+              pages: ($c | map(.pages) | add // 0),
+              rating: ($c | if length > 0 then (map(.rating) | add) / length else 0 end)
+            } | vec)
+          }
+      ]
+    | sort_by(.key)
+    | .[:$top]
+    | map(. + {picks: [.groups[] | {
+        lists: [$p.sigs[.][] | $p.open[.][]],
+        options: ($ranked[.] | length),
+        best: $ranked[.][:($alternatives // (if ($p.sigs[.] | length) == 1 then $single_alternatives else null end))],
+        sig: $p.sigs[.]
+      }]})
+  '
+}
+
+# Replaces "@@" marker lines by a rule as wide as the widest line (printable:
+# column(1) drops control characters).
+gr::solve_draw_separators() {
+  local lines=() line width=0 rule
+  mapfile -t lines
+  for line in "${lines[@]}"; do
+    (( ${#line} > width )) && width="${#line}"
+  done
+  printf -v rule '%*s' "$width" ''
+  rule="${rule// /─}"
+  for line in "${lines[@]}"; do
+    if [[ "$line" == @@* ]]; then
+      echo "$rule"
+    else
+      echo "$line"
+    fi
+  done
+}
+
+# Input (3 JSON documents): prepared, covers, ranked.
+# $1 = the criteria ranked by (comma-separated). Prints the report.
+gr::solve_format() {
+  local optimize="$1"
+  local report
+  report="$(jq -s -c --arg opt "$optimize" '
+    .[0] as $p | .[1] as $c | .[2] as $r
+    | def cut($n): if length > $n then .[:$n - 1] + "…" else . end;
+      def url: "https://www.goodreads.com/book/show/\(.)";
+      # Rows of [{t, tag?}, pages, rating, pref, link]: one per edition if a
+      # work has several; tag = "[<lists>]".
+      def book($w): $p.works[$w] as $x
+        | ($x.title // "(not cached)") as $t
+        | [
+            (if ($x.pages // 0) > 0 then "\($x.pages)p" else "?p" end),
+            (if $x.rating != null then "\($x.rating)" else "" end),
+            (if $x.pref != 0 then "pref \($x.pref)" else "" end)
+          ] as $info
+        | ($x.editions // []) as $eds
+        | if ($eds | length) > 1 then
+            [$eds[] | [{t: $t, tag: "[\(.lists | join(","))]"}] + $info + [(.book_id | url)]]
+          else
+            [[{t: $t}] + $info + [($x.book_id // ($w | ltrimstr("b")) | url)]]
+          end;
+      # Rows -> TSV lines; titles cut to $limit, tags right-aligned at the
+      # widest title. ($limit, not $max: it would shadow the max builtin.)
+      def table($limit):
+        ([.[] | select(length > 1) | .[1]
+          | if .tag then [(.t | length) + 1 + (.tag | length), $limit] | min else (.t | cut($limit) | length) end
+         ] | max // 0) as $w
+        | map(if length > 1 then
+            .[1] |= (if .tag then
+                ($w - (.tag | length) - 1) as $avail
+                | (.t | cut($avail)) as $cut
+                | $cut + (" " * ($avail - ($cut | length) + 1)) + .tag
+              else .t | cut($limit) end)
+            | @tsv
+          else .[0] end);
+      def ids: join("+");
+      # max_size is capped at the open lists; a larger min_size shows the request.
+      def range: (if (.min_size // 0) > .max_size then .requested else .max_size end) as $max
+        | if (.min_size // 0) == 0 then "up to \($max)"
+          elif .min_size == $max then "exactly \($max)"
+          else "\(.min_size) to \($max)" end;
+    {
+      header: [
+        (if ($p.challenges | length) == 0 then "Lists: " + ([$p.lists[].ids | ids] | join(", ")) else
+          $p.challenges[] | "\(.title // "(untitled)") (\(.challenge_id)): \(.start) to \(.end) · read during it: \(.read_during)"
+            + (if .max_badge != null then " · largest badge: \(.badge.name // "(unnamed)") (\(.max_badge))" else "" end)
+        end),
+        ([
+          "pinned: \($p.pinned | length)",
+          "excluded: \($p.excluded | length)",
+          (if $c.max_size > $c.requested then "no solution with up to \($c.requested) more book(s), showing the smallest (\($c.max_size))"
+           else "solving for \($c | range) more book(s)" end)
+        ] | join(" · "))
+      ],
+      lists: [$p.lists[] | [
+        (.ids | ids),
+        ((.names | map(. // "(unnamed)") | join(" / ")) | cut(60)),
+        (.size | tostring),
+        (.urls | join(" ")),
+        (if ($p.challenges | length) > 1 then (.challenges | join(",") | if . == "" then "-" else . end) else empty end),
+        (.status + (
+          if .status == "done" then ": " + (.done_by | map($p.works[.].title // .) | join(", "))
+          elif .status == "pinned" then ": " + (.pinned_by | map($p.works[.].title // .) | join(", "))
+          else "" end))
+      ] | @tsv],
+      summary: (if ($r | length) == 0 then
+          (if $p.n == 0 then "Nothing left to solve: every list is done, pinned or uncoverable." else "No solutions with \($c | range) more book(s)." end)
+        else "Solutions (best \($r | length) of \($c.covers | length) with \($c | range) more book(s), by \($opt)):" end),
+      solutions: (([$p.pinned[] | book(.) | to_entries[] | [(if .key == 0 then "pinned" else "" end)] + .value]) as $pinned
+      | [$r | to_entries[] | {
+        # "more" = what the size options count; pinned books separately.
+        title: ("#\(.key + 1)  \(.value.more) more book(s)" + (($p.pinned | length) as $n | if $n > 0 then " + \($n) pinned" else "" end) + ", \(.value.pages) pages" + (if .value.rating != null then ", \(.value.rating | . * 100 | round / 100) avg rating" else "" end)),
+        # Pinned books, then one block per pick, "@@"-separated; a single-list
+        # pick starts with its list link (any book on it will do).
+        rows: (
+          [(if ($pinned | length) > 0 then $pinned else empty end),
+           (.value.picks[] | . as $pick | ($pick.sig | length == 1) as $single
+            | (if $single then [$p.open_urls[$pick.sig[0]][] | [{t: "(any book on the list)"}, "", "", "", .]] else [] end) as $head
+            | [$pick.best[] | book(.work)[]] as $books
+            # Options cut off by --alternatives (or the single-list default).
+            | ($pick.options - ($pick.best | length)) as $more
+            | (if $more > 0 then [[{t: "(+\($more) more)"}, "", "", "", ""]] else [] end) as $tail
+            | [$head + $books + $tail | to_entries[] | [(if .key == 0 then ($pick.lists | join(" ")) else "" end)] + .value])]
+          | [.[] | ., [["@@"]]] | .[:-1] | add | table(50))
+      }])
+    }
+  ')" || return 1
+
+  jq -r '.header[]' <<< "$report"
+  echo
+  echo "Lists ($(jq '.lists | length' <<< "$report")):"
+  jq -r '.lists[]' <<< "$report" | column -t -s $'\t' -R 3 | sed 's/^/  /'
+  echo
+  jq -r '.summary' <<< "$report"
+
+  # One jq call for all solutions (--top all): NUL-terminated blocks of a
+  # title line plus table rows.
+  local block
+  while IFS= read -r -d '' block; do
+    echo
+    echo "${block%%$'\n'*}"
+    printf '%s\n' "${block#*$'\n'}" \
+      | column -t -s $'\t' | sed 's/ *$//' | gr::solve_draw_separators | sed 's/^/  /'
+  done < <(jq -j '.solutions[] | .title + "\n" + (.rows | join("\n")) + "\u0000"' <<< "$report")
 }
 
 # src/lib/http.sh
@@ -3361,8 +4319,23 @@ send_completions() {
   echo $'    24:--help|24:-h) return 0 ;;'
   echo $'    24:--all|24:-a) return 0 ;;'
   echo $'    25:--data-path) return 2 ;;'
+  echo $'    25:--challenge|25:-c) return 2 ;;'
+  echo $'    25:--blog|25:-b) return 2 ;;'
+  echo $'    25:--read) return 2 ;;'
+  echo $'    25:--prefs) return 2 ;;'
+  echo $'    25:--pref) return 2 ;;'
+  echo $'    25:--reread-pref) return 2 ;;'
+  echo $'    25:--optimize|25:-o) return 2 ;;'
+  echo $'    25:--max-size|25:-m) return 2 ;;'
+  echo $'    25:--min-size) return 2 ;;'
+  echo $'    25:--size|25:-s) return 2 ;;'
+  echo $'    25:--top|25:-n) return 2 ;;'
+  echo $'    25:--alternatives|25:-a) return 2 ;;'
   echo $'    25:--offline) return 0 ;;'
   echo $'    25:--help|25:-h) return 0 ;;'
+  echo $'    25:--no-read) return 0 ;;'
+  echo $'    25:--no-prefs) return 0 ;;'
+  echo $'    25:--json|25:-J) return 0 ;;'
   echo $'    26:--data-path) return 2 ;;'
   echo $'    26:--offline) return 0 ;;'
   echo $'    26:--help|26:-h) return 0 ;;'
@@ -3370,12 +4343,45 @@ send_completions() {
   echo $'    27:--offline) return 0 ;;'
   echo $'    27:--help|27:-h) return 0 ;;'
   echo $'    28:--data-path) return 2 ;;'
+  echo $'    28:--title) return 2 ;;'
+  echo $'    28:--books) return 2 ;;'
+  echo $'    28:--date) return 2 ;;'
+  echo $'    28:--pref) return 2 ;;'
   echo $'    28:--offline) return 0 ;;'
   echo $'    28:--help|28:-h) return 0 ;;'
   echo $'    29:--data-path) return 2 ;;'
   echo $'    29:--offline) return 0 ;;'
   echo $'    29:--help|29:-h) return 0 ;;'
-  echo $'    29:--all|29:-a) return 0 ;;'
+  echo $'    29:--json|29:-J) return 0 ;;'
+  echo $'    30:--data-path) return 2 ;;'
+  echo $'    30:--title) return 2 ;;'
+  echo $'    30:--books) return 2 ;;'
+  echo $'    30:--add-book) return 2 ;;'
+  echo $'    30:--remove-book) return 2 ;;'
+  echo $'    30:--date) return 2 ;;'
+  echo $'    30:--pref) return 2 ;;'
+  echo $'    30:--offline) return 0 ;;'
+  echo $'    30:--help|30:-h) return 0 ;;'
+  echo $'    31:--data-path) return 2 ;;'
+  echo $'    31:--offline) return 0 ;;'
+  echo $'    31:--help|31:-h) return 0 ;;'
+  echo $'    31:--all|31:-a) return 0 ;;'
+  echo $'    32:--data-path) return 2 ;;'
+  echo $'    32:--offline) return 0 ;;'
+  echo $'    32:--help|32:-h) return 0 ;;'
+  echo $'    33:--data-path) return 2 ;;'
+  echo $'    33:--offline) return 0 ;;'
+  echo $'    33:--help|33:-h) return 0 ;;'
+  echo $'    34:--data-path) return 2 ;;'
+  echo $'    34:--offline) return 0 ;;'
+  echo $'    34:--help|34:-h) return 0 ;;'
+  echo $'    35:--data-path) return 2 ;;'
+  echo $'    35:--offline) return 0 ;;'
+  echo $'    35:--help|35:-h) return 0 ;;'
+  echo $'    36:--data-path) return 2 ;;'
+  echo $'    36:--offline) return 0 ;;'
+  echo $'    36:--help|36:-h) return 0 ;;'
+  echo $'    36:--all|36:-a) return 0 ;;'
   echo $'  esac'
   echo $''
   echo $'  return 1'
@@ -3420,8 +4426,16 @@ send_completions() {
   echo $'        node_id=19'
   echo $'        node_word_count=1'
   echo $'        ;;'
-  echo $'      0:config)'
+  echo $'      0:solve)'
   echo $'        node_id=25'
+  echo $'        node_word_count=1'
+  echo $'        ;;'
+  echo $'      0:collections)'
+  echo $'        node_id=26'
+  echo $'        node_word_count=1'
+  echo $'        ;;'
+  echo $'      0:config)'
+  echo $'        node_id=32'
   echo $'        node_word_count=1'
   echo $'        ;;'
   echo $'      2:import)'
@@ -3532,24 +4546,56 @@ send_completions() {
   echo $'        node_id=24'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      25:list)'
-  echo $'        node_id=26'
-  echo $'        node_word_count=2'
-  echo $'        ;;'
-  echo $'      25:ls)'
-  echo $'        node_id=26'
-  echo $'        node_word_count=2'
-  echo $'        ;;'
-  echo $'      25:get)'
+  echo $'      26:list)'
   echo $'        node_id=27'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      25:set)'
+  echo $'      26:ls)'
+  echo $'        node_id=27'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      26:create)'
   echo $'        node_id=28'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      25:unset)'
+  echo $'      26:new)'
+  echo $'        node_id=28'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      26:get)'
   echo $'        node_id=29'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      26:edit)'
+  echo $'        node_id=30'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      26:remove)'
+  echo $'        node_id=31'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      26:rm)'
+  echo $'        node_id=31'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      32:list)'
+  echo $'        node_id=33'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      32:ls)'
+  echo $'        node_id=33'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      32:get)'
+  echo $'        node_id=34'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      32:set)'
+  echo $'        node_id=35'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      32:unset)'
+  echo $'        node_id=36'
   echo $'        node_word_count=2'
   echo $'        ;;'
   echo $'      *)'
@@ -3774,6 +4820,48 @@ send_completions() {
   echo $'    25:--data-path)'
   echo $'      return'
   echo $'      ;;'
+  echo $'    25:--challenge|25:-c)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/challenges\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--blog|25:-b)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/blogs\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--read)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/collections\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--prefs)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/collections\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--pref)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--reread-pref)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--optimize|25:-o)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "count pages rating" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--max-size|25:-m)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--min-size)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--size|25:-s)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--top|25:-n)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "all" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    25:--alternatives|25:-a)'
+  echo $'      return'
+  echo $'      ;;'
   echo $'    26:--data-path)'
   echo $'      return'
   echo $'      ;;'
@@ -3783,7 +4871,58 @@ send_completions() {
   echo $'    28:--data-path)'
   echo $'      return'
   echo $'      ;;'
+  echo $'    28:--title)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    28:--books)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    28:--date)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    28:--pref)'
+  echo $'      return'
+  echo $'      ;;'
   echo $'    29:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    30:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    30:--title)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    30:--books)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    30:--add-book)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    30:--remove-book)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    30:--date)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    30:--pref)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    31:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    32:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    33:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    34:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    35:--data-path)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    36:--data-path)'
   echo $'      return'
   echo $'      ;;'
   echo $'  esac'
@@ -3791,7 +4930,7 @@ send_completions() {
   echo $'  if [[ "${cur:0:1}" != "-" ]] && (( positional_index == 0 )); then'
   echo $'    case "$node_id" in'
   echo $'      0)'
-  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "completions auth blogs books challenges config" -- "$cur")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "completions auth blogs books challenges solve collections config" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
   echo $'      2)'
@@ -3810,7 +4949,11 @@ send_completions() {
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "create new list ls get edit remove rm" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
-  echo $'      25)'
+  echo $'      26)'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "list ls create new get edit remove rm" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      32)'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "list ls get set unset" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -3968,7 +5111,7 @@ send_completions() {
   echo $'        _goodreads_completions_option_seen "--all" "-A" || words+=("--all" "-A")'
   echo $'        _goodreads_completions_option_seen "--update" "-U" || words+=("--update" "-U")'
   echo $'        words+=("--blog" "-b")'
-  echo $'        _goodreads_completions_option_seen "--challenge" || words+=("--challenge")'
+  echo $'        words+=("--challenge")'
   echo $'        _goodreads_completions_option_seen "--batch" "-B" || words+=("--batch" "-B")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
@@ -4076,6 +5219,21 @@ send_completions() {
   echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
   echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        words+=("--challenge" "-c")'
+  echo $'        words+=("--blog" "-b")'
+  echo $'        _goodreads_completions_option_seen "--read" || words+=("--read")'
+  echo $'        _goodreads_completions_option_seen "--no-read" || words+=("--no-read")'
+  echo $'        words+=("--prefs")'
+  echo $'        _goodreads_completions_option_seen "--no-prefs" || words+=("--no-prefs")'
+  echo $'        words+=("--pref")'
+  echo $'        _goodreads_completions_option_seen "--reread-pref" || words+=("--reread-pref")'
+  echo $'        _goodreads_completions_option_seen "--optimize" "-o" || words+=("--optimize" "-o")'
+  echo $'        _goodreads_completions_option_seen "--max-size" "-m" || words+=("--max-size" "-m")'
+  echo $'        _goodreads_completions_option_seen "--min-size" || words+=("--min-size")'
+  echo $'        _goodreads_completions_option_seen "--size" "-s" || words+=("--size" "-s")'
+  echo $'        _goodreads_completions_option_seen "--top" "-n" || words+=("--top" "-n")'
+  echo $'        _goodreads_completions_option_seen "--alternatives" "-a" || words+=("--alternatives" "-a")'
+  echo $'        _goodreads_completions_option_seen "--json" "-J" || words+=("--json" "-J")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -4100,10 +5258,78 @@ send_completions() {
   echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
   echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--title" || words+=("--title")'
+  echo $'        _goodreads_completions_option_seen "--books" || words+=("--books")'
+  echo $'        _goodreads_completions_option_seen "--date" || words+=("--date")'
+  echo $'        _goodreads_completions_option_seen "--pref" || words+=("--pref")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
   echo $'      29)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--json" "-J" || words+=("--json" "-J")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      30)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--title" || words+=("--title")'
+  echo $'        _goodreads_completions_option_seen "--books" || words+=("--books")'
+  echo $'        words+=("--add-book")'
+  echo $'        words+=("--remove-book")'
+  echo $'        _goodreads_completions_option_seen "--date" || words+=("--date")'
+  echo $'        _goodreads_completions_option_seen "--pref" || words+=("--pref")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      31)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        _goodreads_completions_option_seen "--all" "-a" || words+=("--all" "-a")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      32)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      33)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      34)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      35)'
+  echo $'        local words=()'
+  echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
+  echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
+  echo $'        _goodreads_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
+  echo $'        return'
+  echo $'        ;;'
+  echo $'      36)'
   echo $'        local words=()'
   echo $'        _goodreads_completions_option_seen "--data-path" || words+=("--data-path")'
   echo $'        _goodreads_completions_option_seen "--offline" || words+=("--offline")'
@@ -4159,7 +5385,12 @@ send_completions() {
   echo $'    return'
   echo $'  fi'
   echo $''
-  echo $'  if [[ "$node_id" == "29" ]] && (( positional_index >= 0 )); then'
+  echo $'  if [[ "$node_id" == "31" ]] && (( positional_index >= 0 )); then'
+  echo $'    while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/collections\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'    return'
+  echo $'  fi'
+  echo $''
+  echo $'  if [[ "$node_id" == "36" ]] && (( positional_index >= 0 )); then'
   echo $'    while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_interval http_challenge_pause http_challenge_probe_pct http_challenge_max_probes fetch_max_consecutive_failures book_cache_ttl" -- "$cur")'
   echo $'    return'
   echo $'  fi'
@@ -4197,14 +5428,29 @@ send_completions() {
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/challenges\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
   echo $'      return'
   echo $'      ;;'
-  echo $'    27:0)'
-  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_interval http_challenge_pause http_challenge_probe_pct http_challenge_max_probes fetch_max_consecutive_failures book_cache_ttl" -- "$cur")'
+  echo $'    25:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/challenges\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
   echo $'      return'
   echo $'      ;;'
   echo $'    28:0)'
   echo $'      return'
   echo $'      ;;'
-  echo $'    28:1)'
+  echo $'    29:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/collections\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    30:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/collections\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    34:0)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_interval http_challenge_pause http_challenge_probe_pct http_challenge_max_probes fetch_max_consecutive_failures book_cache_ttl" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    35:0)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    35:1)'
   echo $'      return'
   echo $'      ;;'
   echo $'  esac'
@@ -4931,7 +6177,9 @@ goodreads_books_fetch_command() {
   update_flag="${args[--update]:-}"
   book_ids="${args[book_id]:-}"
   blog_ids="${args[--blog]:-}"
-  challenge_id="${args[--challenge]:-}"
+  challenge_ids=()
+  # bashly joins repeated values %q-escaped; eval re-splits them.
+  [[ -n "${args[--challenge]:-}" ]] && eval "challenge_ids=(${args[--challenge]})"
   # Plain if: $(...) would break gr::fetch_quiet's tty check, `&&` trips set -e.
   quiet=""
   if gr::fetch_quiet "${args[--batch]:-}"; then
@@ -4941,24 +6189,26 @@ goodreads_books_fetch_command() {
   # Resolve curl before gr::run_fetch's per-item subshells (memoization wouldn't survive them).
   gr::offline || gr::init_curl_cmd || exit 1
 
-  if [[ -n "$all" && ( -n "$book_ids" || -n "$blog_ids" || -n "$challenge_id" ) ]]; then
+  if [[ -n "$all" && ( -n "$book_ids" || -n "$blog_ids" || "${#challenge_ids[@]}" -gt 0 ) ]]; then
     echo "error: --all and specific book ids (directly, via --blog, or via --challenge) are mutually exclusive" >&2
     exit 1
   fi
 
-  if [[ -z "$all" && -z "$book_ids" && -z "$blog_ids" && -z "$challenge_id" ]]; then
+  if [[ -z "$all" && -z "$book_ids" && -z "$blog_ids" && "${#challenge_ids[@]}" -eq 0 ]]; then
     echo "error: give one or more book ids, --blog <blog_id>, --challenge <challenge_id>, or --all" >&2
     exit 1
   fi
 
-  if [[ -n "$challenge_id" ]]; then
-    challenge_file="$(gr::require_challenge_file "$challenge_id")" || exit 1
-    challenge_blog_ids="$(jq -r '.blogs[]?.blog_id' "$challenge_file")"
-    if [[ -z "$challenge_blog_ids" ]]; then
-      echo "note: challenge $challenge_id has no linked blog posts" >&2
-    fi
-    blog_ids="${blog_ids} ${challenge_blog_ids}"
-    # Dedup: a post may come both via --blog and via --challenge.
+  if [[ "${#challenge_ids[@]}" -gt 0 ]]; then
+    for challenge_id in "${challenge_ids[@]}"; do
+      challenge_file="$(gr::require_challenge_file "$challenge_id")" || exit 1
+      challenge_blog_ids="$(jq -r '.blogs[]?.blog_id' "$challenge_file")"
+      if [[ -z "$challenge_blog_ids" ]]; then
+        echo "note: challenge $challenge_id has no linked blog posts" >&2
+      fi
+      blog_ids="${blog_ids} ${challenge_blog_ids}"
+    done
+    # Dedup: a post may come via --blog and/or several --challenge.
     blog_ids="$(tr -s ' ' '\n' <<< "$blog_ids" | grep -v '^$' | sort -n -u | tr '\n' ' ')"
   fi
 
@@ -5935,6 +7185,529 @@ goodreads_challenges_remove_command() {
 }
 
 # :command.function
+goodreads_solve_command() {
+
+  # src/solve_command.sh
+  : # no-op, keeps the shellcheck directive below line-scoped
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  read_id="${args[--read]:-}"
+  no_read="${args[--no-read]:-}"
+  no_prefs="${args[--no-prefs]:-}"
+  reread_pref="${args[--reread-pref]}"
+  optimize="${args[--optimize]}"
+  max_size="${args[--max-size]:-}"
+  min_size="${args[--min-size]:-}"
+  size="${args[--size]:-}"
+  top="${args[--top]}"
+  alternatives="${args[--alternatives]:-}"
+  json="${args[--json]:-}"
+
+  blog_specs=()
+  challenge_ids=()
+  prefs_ids=()
+  pref_specs=()
+  # bashly joins repeated values %q-escaped; eval re-splits them.
+  [[ -n "${args[--blog]:-}" ]] && eval "blog_specs=(${args[--blog]})"
+  [[ -n "${args[--challenge]:-}" ]] && eval "challenge_ids=(${args[--challenge]})"
+  # The positional challenge id is shorthand for --challenge.
+  [[ -n "${args[challenge_id]:-}" ]] && challenge_ids=("${args[challenge_id]}" "${challenge_ids[@]}")
+  [[ -n "${args[--prefs]:-}" ]] && eval "prefs_ids=(${args[--prefs]})"
+  [[ -n "${args[--pref]:-}" ]] && eval "pref_specs=(${args[--pref]})"
+
+  # Validate numeric options up front.
+  for opt in top alternatives; do
+    [[ "$opt" == alternatives && -z "$alternatives" ]] && continue
+    [[ "$opt" == top && "$top" == all ]] && continue
+    if ! [[ "${!opt}" =~ ^[1-9][0-9]*$ ]]; then
+      hint=""
+      [[ "$opt" == top ]] && hint=" or 'all'"
+      echo "error: --$opt must be a positive integer${hint}: ${!opt}" >&2
+      exit 1
+    fi
+  done
+  for opt in max-size min-size size; do
+    var="${opt//-/_}"
+    if [[ -n "${!var}" ]] && ! [[ "${!var}" =~ ^[0-9]+$ ]]; then
+      echo "error: --$opt must be a non-negative integer: ${!var}" >&2
+      exit 1
+    fi
+  done
+  # --size n = --min-size n --max-size n, strictly (no fallback to larger ones).
+  strict=""
+  if [[ -n "$size" ]]; then
+    if [[ -n "$min_size" || -n "$max_size" ]]; then
+      echo "error: --size can't be combined with --min-size/--max-size" >&2
+      exit 1
+    fi
+    min_size="$size"
+    max_size="$size"
+    strict=1
+  fi
+  if [[ -n "$min_size" && -n "$max_size" ]] && (( min_size > max_size )); then
+    echo "error: --min-size ($min_size) is larger than --max-size ($max_size)" >&2
+    exit 1
+  fi
+  min_size="${min_size:-0}"
+  # --optimize: criteria compared in order, then the remaining ones as tie-breakers.
+  criteria=()
+  IFS=',' read -r -a optimize_specs <<< "$optimize"
+  for c in "${optimize_specs[@]}"; do
+    if [[ ! "$c" =~ ^(count|pages|rating)$ ]]; then
+      echo "error: --optimize takes a comma-separated list of count, pages, rating: $optimize" >&2
+      exit 1
+    fi
+    if [[ " ${criteria[*]} " == *" $c "* ]]; then
+      echo "error: --optimize lists $c twice: $optimize" >&2
+      exit 1
+    fi
+    criteria+=("$c")
+  done
+  if [[ "${#criteria[@]}" -eq 0 ]]; then
+    echo "error: --optimize needs at least one of count, pages, rating" >&2
+    exit 1
+  fi
+  for c in count rating pages; do
+    [[ " ${criteria[*]} " == *" $c "* ]] || criteria+=("$c")
+  done
+  criteria_json="$(printf '%s\n' "${criteria[@]}" | jq -R . | jq -s -c .)"
+  criteria_label="$(IFS=','; echo "${criteria[*]}")"
+
+  if ! gr::valid_pref "$reread_pref"; then
+    echo "error: --reread-pref must be a number from -1 to 1: $reread_pref" >&2
+    exit 1
+  fi
+  if [[ -n "$read_id" && -n "$no_read" ]]; then
+    echo "error: --read and --no-read are mutually exclusive" >&2
+    exit 1
+  fi
+  if [[ "${#prefs_ids[@]}" -gt 0 && -n "$no_prefs" ]]; then
+    echo "error: --prefs and --no-prefs are mutually exclusive" >&2
+    exit 1
+  fi
+
+  explicit_prefs='{}'
+  for spec in "${pref_specs[@]}"; do
+    ref="${spec%=*}"
+    p="${spec##*=}"
+    if [[ "$spec" != *=* ]] || ! book_id="$(gr::parse_book_ref "$ref")" || ! gr::valid_pref "$p"; then
+      echo "error: --pref must be '<book id or URL>=<p>' with p from -1 to 1: $spec" >&2
+      exit 1
+    fi
+    explicit_prefs="$(jq -c --arg b "$book_id" --argjson p "${p#+}" '.[$b] = $p' <<< "$explicit_prefs")"
+  done
+
+  # Lists: every challenge's blog posts (default challenge only without
+  # --challenge/--blog), plus any --blog; a shared post is one list.
+  if [[ "${#challenge_ids[@]}" -eq 0 && "${#blog_specs[@]}" -eq 0 ]]; then
+    next="$(gr::next_ending_challenge "$(date +%Y-%m-%d)")"
+    [[ -z "$next" ]] && next="$(gr::latest_challenge)"
+    if [[ -z "$next" ]]; then
+      echo "error: no challenges yet. Give --blog <blog_id>, or run 'goodreads challenges create'." >&2
+      exit 1
+    fi
+    IFS=$'\t' read -r default_id _ _ <<< "$next"
+    challenge_ids=("$default_id")
+  fi
+
+  challenges='[]'
+  blog_entries='[]'
+  for cid in "${challenge_ids[@]}"; do
+    jq -e --arg c "$cid" 'any(.[]; .challenge_id == $c)' <<< "$challenges" > /dev/null && continue
+    challenge_file="$(gr::require_challenge_file "$cid")" || exit 1
+    # `end` is a jq keyword: no {end} shorthand (see gr::create_challenge).
+    challenges="$(jq -c --slurpfile c "$challenge_file" '. + [$c[0] | {challenge_id, title, start, end: .end, max_badge: ([.count_badges[]?.count] | max), badge: (.count_badges // [] | max_by(.count) // null)}]' <<< "$challenges")"
+    blog_entries="$(jq -c --slurpfile c "$challenge_file" '
+      reduce ($c[0] | .challenge_id as $cid | .blogs[]? | {id: .blog_id, name, challenges: [$cid]}) as $b (.;
+        if any(.[]; .id == $b.id) then map(if .id == $b.id then .challenges += $b.challenges | .name //= $b.name else . end) else . + [$b] end)
+    ' <<< "$blog_entries")"
+    if [[ "$(jq -r --arg c "$cid" '[.[] | select(.challenges | index($c))] | length' <<< "$blog_entries")" -eq 0 ]]; then
+      echo "warning: challenge $cid has no linked blog posts" >&2
+    fi
+  done
+  for bid in "${blog_specs[@]}"; do
+    blog_entries="$(jq -c --arg id "$bid" 'if any(.[]; .id == $id) then . else . + [{id: $id, name: null, challenges: []}] end' <<< "$blog_entries")"
+  done
+  if [[ "$(jq 'length' <<< "$blog_entries")" -eq 0 ]]; then
+    echo "error: no lists to solve for" >&2
+    exit 1
+  fi
+
+  lists='[]'
+  # \x1f, not a tab: IFS whitespace would collapse an empty name field.
+  while IFS=$'\x1f' read -r bid bname bchallenges; do
+    blog="$(gr::blog_json "$bid")" || {
+      echo "error: could not fetch blog post $bid" >&2
+      exit 1
+    }
+    entry="$(jq -c --arg name "$bname" --argjson ch "$bchallenges" '{id: .blog_id, name: (if $name != "" then $name else .title end), url: "https://www.goodreads.com/blog/show/\(.blog_id)", challenges: $ch, books: ([.book_sections[]?.books[]?.book_id] | unique)}' <<< "$blog")"
+    lists="$(jq -c --argjson e "$entry" '. + [$e]' <<< "$lists")"
+  done < <(jq -r '.[] | [.id, (.name // ""), (.challenges | tojson)] | join("\u001f")' <<< "$blog_entries")
+
+  # Read books and preferences, from collections (defaults only if they exist).
+  read='[]'
+  if [[ -z "$no_read" ]]; then
+    if [[ -n "$read_id" ]]; then
+      read_file="$(gr::require_collection_file "$read_id")" || exit 1
+    else
+      read_file="$(gr::collection_file read)"
+    fi
+    [[ -f "$read_file" ]] && read="$(jq -c '[.books[] | {book_id, added}]' "$read_file")"
+  fi
+
+  prefs_files=()
+  if [[ -z "$no_prefs" ]]; then
+    if [[ "${#prefs_ids[@]}" -gt 0 ]]; then
+      for pid in "${prefs_ids[@]}"; do
+        prefs_file="$(gr::require_collection_file "$pid")" || exit 1
+        prefs_files+=("$prefs_file")
+      done
+    elif [[ -f "$(gr::collection_file prefs)" ]]; then
+      prefs_files+=("$(gr::collection_file prefs)")
+    fi
+  fi
+  prefs="$explicit_prefs"
+  if [[ "${#prefs_files[@]}" -gt 0 ]]; then
+    prefs="$(jq -n -c --argjson explicit "$explicit_prefs" 'reduce (inputs | .books[] | select(.pref != null)) as $b ({}; .[$b.book_id] = $b.pref) | . + $explicit' "${prefs_files[@]}")"
+  fi
+
+  # Book metadata (cache only) for work merging and page counts.
+  mapfile -t all_ids < <(jq -r '.[].books[]' <<< "$lists"; jq -r '.[].book_id' <<< "$read"; jq -r 'keys[]' <<< "$prefs")
+  list_ids_count="$(jq '[.[].books[]] | unique | length' <<< "$lists")"
+  meta="$(gr::solve_book_meta "${all_ids[@]}")"
+  missing="$({ echo "$lists"; echo "$meta"; } | jq -s '.[1] as $meta | [.[0][].books[]] | unique | map(select($meta[.] == null)) | length')"
+  if [[ "$missing" -gt 0 ]]; then
+    fetch_hint="goodreads books fetch --challenge <id>"
+    [[ "${#challenge_ids[@]}" -gt 0 ]] && fetch_hint="goodreads books fetch$(printf ' --challenge %s' "${challenge_ids[@]}")"
+    echo "warning: $missing of $list_ids_count listed books aren't cached -- their editions can't be merged into works, and their page counts are unknown. Run '$fetch_hint' first." >&2
+  fi
+
+  prepared="$(
+    {
+      echo "$lists"; echo "$meta"; echo "$read"; echo "$prefs"; echo "$challenges"
+    } | jq -s -c --argjson reread "${reread_pref#+}" '{
+      lists: .[0], meta: .[1], read: .[2], prefs: .[3], challenges: .[4],
+      reread_pref: $reread
+    }' | gr::solve_prepare
+  )" || exit 1
+
+  # Default size: sum over challenges of (largest badge - read during it),
+  # minus pinned, plus one.
+  if [[ -z "$max_size" ]]; then
+    max_size="$(jq -r '[.challenges[] | select(.max_badge != null)] as $c | if ($c | length) == 0 then .n else ([($c | map([.max_badge - .read_during, 0] | max) | add) - (.pinned | length), 0] | max) + 1 end' <<< "$prepared")"
+  fi
+
+  (( max_size < min_size )) && max_size="$min_size"
+
+  covers="$(gr::solve_covers "$prepared" "$max_size" "$strict")" || exit 1
+  covers="$(jq -c --argjson min "$min_size" '.min_size = $min | .covers |= map(select(length >= $min))' <<< "$covers")"
+
+  ranked="$(
+    { echo "$prepared"; echo "$covers"; } \
+      | jq -s -c --argjson crit "$criteria_json" --argjson top "$([[ "$top" == all ]] && echo null || echo "$top")" --argjson alt "${alternatives:-null}" '{prepared: .[0], covers: .[1], optimize: $crit, top: $top, alternatives: $alt}' \
+      | gr::solve_rank
+  )" || exit 1
+
+  if [[ -n "$json" ]]; then
+    { echo "$prepared"; echo "$covers"; echo "$ranked"; } | jq -s '.[0].works as $works | {
+      lists: .[0].lists,
+      done: [.[0].done[] | {work: ., book: $works[.]}],
+      pinned: [.[0].pinned[] | {work: ., book: $works[.]}],
+      max_size: .[1].max_size,
+      solutions: [.[2][] | del(.groups) | .picks |= map(.best |= map(. + {book: $works[.work]}))]
+    }'
+    exit 0
+  fi
+
+  { echo "$prepared"; echo "$covers"; echo "$ranked"; } | gr::solve_format "$criteria_label"
+
+}
+
+# :command.function
+goodreads_collections_list_command() {
+
+  # src/collections_list_command.sh
+  : # no-op
+  collection_dir="$(gr::collection_dir)"
+
+  files=()
+  for file in "$collection_dir"/*.json; do
+    [[ -e "$file" ]] && files+=("$file")
+  done
+
+  if [[ "${#files[@]}" -eq 0 ]]; then
+    echo "No collections yet. Run 'goodreads collections create <id>' to add one."
+    exit 0
+  fi
+
+  lines="$(cat "${files[@]}" | jq -s -r '
+    sort_by(.collection_id)
+    | .[] | [
+        .collection_id,
+        (.title // "(untitled)"),
+        ((.books // []) | length | tostring),
+        ((.books // []) | map(.added) | min // "-"),
+        ((.books // []) | map(.added) | max // "-")
+      ] | @tsv
+  ')"
+
+  {
+    printf 'id\ttitle\tbooks\tfirst added\tlast added\n'
+    echo "$lines"
+  } | column -t -s $'\t' -R 3
+
+}
+
+# :command.function
+goodreads_collections_create_command() {
+
+  # src/collections_create_command.sh
+  : # no-op, keeps the shellcheck directive below line-scoped
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  id="${args[collection_id]}"
+  title="${args[--title]:-}"
+  books_raw="${args[--books]:-}"
+  date_raw="${args[--date]:-}"
+  pref="${args[--pref]:-}"
+
+  if [[ "$id" == */* || -z "$id" ]]; then
+    echo "error: collection id must be non-empty and must not contain '/': $id" >&2
+    exit 1
+  fi
+  if [[ -f "$(gr::collection_file "$id")" ]]; then
+    echo "error: collection $id already exists" >&2
+    exit 1
+  fi
+
+  # Validate everything before creating anything.
+  added=""
+  if [[ -n "$date_raw" ]]; then
+    added="$(date -d "$date_raw" +%Y-%m-%d 2>/dev/null)" || {
+      echo "error: could not parse --date: $date_raw" >&2
+      exit 1
+    }
+  fi
+  if [[ -n "$pref" ]] && ! gr::valid_pref "$pref"; then
+    echo "error: --pref must be a number from -1 to 1: $pref" >&2
+    exit 1
+  fi
+  book_ids="$(gr::parse_book_refs "$books_raw")" || exit 1
+  if [[ -z "$book_ids" && ( -n "$added" || -n "$pref" ) ]]; then
+    echo "warning: ignoring --date/--pref, because no --books were given" >&2
+  fi
+
+  gr::create_collection "$id" "$title"
+  echo "Created collection $id${title:+: $title}"
+
+  for book_id in $book_ids; do
+    outcome="$(gr::add_collection_book "$id" "$book_id" "$added" "$pref")" || exit 1
+    echo "$id -> book $book_id $outcome"
+  done
+
+}
+
+# :command.function
+goodreads_collections_get_command() {
+
+  # src/collections_get_command.sh
+  : # no-op, keeps the shellcheck directive below line-scoped
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  id="${args[collection_id]}"
+  json="${args[--json]:-}"
+
+  file="$(gr::require_collection_file "$id")" || exit 1
+
+  if [[ -n "$json" ]]; then
+    cat "$file"
+    exit 0
+  fi
+
+  jq -r '.title // "(untitled)"' "$file"
+
+  count="$(jq -r '.books | length' "$file")"
+  echo
+  echo "Books ($count):"
+  [[ "$count" -eq 0 ]] && exit 0
+
+  # Titles from the book cache where available (no fetching).
+  book_dir="$(gr::book_dir)"
+  jq -r '.books[] | [.book_id, .added, (.pref // "" | tostring)] | @tsv' "$file" \
+    | while IFS=$'\t' read -r book_id added pref; do
+        book_title="(not cached)"
+        if [[ -f "$book_dir/$book_id.json" ]]; then
+          book_title="$(jq -r '.title // .name // "(untitled)"' "$book_dir/$book_id.json")"
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$book_id" "$added" "${pref:--}" "$book_title"
+      done \
+    | { printf 'book_id\tadded\tpref\ttitle\n'; cat; } \
+    | column -t -s $'\t' -R 1,3 | sed 's/^/  /'
+
+}
+
+# :command.function
+goodreads_collections_edit_command() {
+
+  # src/collections_edit_command.sh
+  : # no-op, keeps the shellcheck directive below line-scoped
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  id="${args[collection_id]}"
+  date_raw="${args[--date]:-}"
+  pref="${args[--pref]:-}"
+
+  # `-v`, not `-n`: an explicit empty --title/--books means "clear it".
+  set_title=0
+  [[ -v args[--title] ]] && set_title=1
+  replace_books=0
+  [[ -v args[--books] ]] && replace_books=1
+
+  # bashly joins repeated values %q-escaped; eval re-splits them.
+  add_specs=()
+  remove_specs=()
+  [[ -n "${args[--add-book]:-}" ]] && eval "add_specs=(${args[--add-book]})"
+  [[ -n "${args[--remove-book]:-}" ]] && eval "remove_specs=(${args[--remove-book]})"
+
+  if [[ "$set_title" -eq 0 && "$replace_books" -eq 0 && "${#add_specs[@]}" -eq 0 && "${#remove_specs[@]}" -eq 0 ]]; then
+    echo "error: give at least one of --title, --books, --add-book, --remove-book" >&2
+    exit 1
+  fi
+
+  if [[ "$replace_books" -eq 1 ]] && [[ "${#add_specs[@]}" -gt 0 || "${#remove_specs[@]}" -gt 0 ]]; then
+    echo "error: --books can't be combined with --add-book/--remove-book" >&2
+    exit 1
+  fi
+
+  file="$(gr::require_collection_file "$id")" || exit 1
+
+  # Validate everything before writing anything.
+  added=""
+  if [[ -n "$date_raw" ]]; then
+    added="$(date -d "$date_raw" +%Y-%m-%d 2>/dev/null)" || {
+      echo "error: could not parse --date: $date_raw" >&2
+      exit 1
+    }
+  fi
+  if [[ -n "$pref" && "$pref" != "-" ]] && ! gr::valid_pref "$pref"; then
+    echo "error: --pref must be a number from -1 to 1, or '-': $pref" >&2
+    exit 1
+  fi
+
+  if [[ "$replace_books" -eq 1 ]]; then
+    add_ids="$(gr::parse_book_refs "${args[--books]}")" || exit 1
+  else
+    add_ids="$(gr::parse_book_refs "${add_specs[*]}")" || exit 1
+  fi
+  remove_ids="$(gr::parse_book_refs "${remove_specs[*]}")" || exit 1
+
+  if [[ -z "$add_ids" && ( -n "$added" || -n "$pref" ) ]]; then
+    echo "warning: ignoring --date/--pref, because no --books/--add-book were given" >&2
+  fi
+
+  if [[ "$set_title" -eq 1 ]]; then
+    gr::update_collection_title "$id" "${args[--title]}" || exit 1
+    echo "$id -> title updated"
+  fi
+
+  if [[ "$replace_books" -eq 1 ]]; then
+    # Keep existing entries' date/pref for books that stay in the collection.
+    keep_json="$(jq -c '.books' "$file")"
+    gr::clear_collection_books "$id" || exit 1
+    echo "$id -> books cleared"
+  fi
+
+  for book_id in $add_ids; do
+    book_added="$added"
+    book_pref="$pref"
+    if [[ "$replace_books" -eq 1 ]]; then
+      [[ -z "$book_added" ]] && book_added="$(jq -r --arg b "$book_id" '.[] | select(.book_id == $b) | .added // empty' <<< "$keep_json")"
+      [[ -z "$book_pref" ]] && book_pref="$(jq -r --arg b "$book_id" '.[] | select(.book_id == $b) | .pref // empty' <<< "$keep_json")"
+    fi
+    outcome="$(gr::add_collection_book "$id" "$book_id" "$book_added" "$book_pref")" || exit 1
+    echo "$id -> book $book_id $outcome"
+  done
+
+  fail=0
+  if [[ -n "$remove_ids" ]]; then
+    ok=0
+    for book_id in $remove_ids; do
+      if gr::remove_collection_book "$id" "$book_id"; then
+        echo "$id -> book $book_id removed"
+        ok=$((ok + 1))
+      else
+        echo "$id -> book $book_id not in this collection" >&2
+        fail=$((fail + 1))
+      fi
+    done
+    echo "Removed $ok book(s)."
+  fi
+
+  [[ "$fail" -gt 0 ]] && exit 1
+  exit 0
+
+}
+
+# :command.function
+goodreads_collections_remove_command() {
+
+  # src/collections_remove_command.sh
+  : # no-op, keeps the shellcheck directive below line-scoped
+  # shellcheck disable=SC2154 # args is bashly's global associative array
+  all="${args[--all]:-}"
+  collection_ids="${args[collection_id]:-}"
+
+  if [[ -n "$all" && -n "$collection_ids" ]]; then
+    echo "error: --all and specific collection ids are mutually exclusive" >&2
+    exit 1
+  fi
+
+  if [[ -z "$all" && -z "$collection_ids" ]]; then
+    echo "error: give one or more collection ids, or --all" >&2
+    exit 1
+  fi
+
+  remove_one() {
+    local id="$1"
+    local file
+    file="$(gr::collection_file "$id")"
+    if [[ ! -f "$file" ]]; then
+      echo "$id -> not found" >&2
+      return 1
+    fi
+    rm -f "$file"
+    echo "$id -> removed"
+  }
+
+  if [[ -n "$all" ]]; then
+    collection_dir="$(gr::collection_dir)"
+    ids=()
+    for file in "$collection_dir"/*.json; do
+      [[ -e "$file" ]] && ids+=("$(basename "$file" .json)")
+    done
+    if [[ "${#ids[@]}" -eq 0 ]]; then
+      echo "No collections to remove."
+      exit 0
+    fi
+    collection_ids="${ids[*]}"
+  fi
+
+  ok=0
+  fail=0
+  # shellcheck disable=SC2086 # intentional word-splitting of the id list
+  for id in $collection_ids; do
+    if remove_one "$id"; then
+      ok=$((ok + 1))
+    else
+      fail=$((fail + 1))
+    fi
+  done
+
+  if [[ "$fail" -gt 0 ]]; then
+    echo "Removed $ok collection(s), $fail not found."
+    exit 1
+  fi
+  echo "Removed $ok collection(s)."
+
+}
+
+# :command.function
 goodreads_config_list_command() {
 
   # src/config_list_command.sh
@@ -6118,6 +7891,20 @@ parse_requirements() {
       action="challenges"
       shift
       goodreads_challenges_parse_requirements "$@"
+      shift $#
+      ;;
+
+    solve)
+      action="solve"
+      shift
+      goodreads_solve_parse_requirements "$@"
+      shift $#
+      ;;
+
+    collections)
+      action="collections"
+      shift
+      goodreads_collections_parse_requirements "$@"
       shift $#
       ;;
 
@@ -7240,7 +9027,12 @@ goodreads_books_fetch_parse_requirements() {
 
         # :flag.case_arg
         if [[ -n ${2+x} ]]; then
-          args['--challenge']="$2"
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--challenge']+x} ]]; then
+            args['--challenge']="$escaped"
+          else
+            args['--challenge']="${args['--challenge']} $escaped"
+          fi
           shift
           shift
         else
@@ -8144,6 +9936,811 @@ goodreads_challenges_remove_parse_requirements() {
 }
 
 # :command.parse_requirements
+goodreads_solve_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_solve_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="solve"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --challenge | -c)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--challenge']+x} ]]; then
+            args['--challenge']="$escaped"
+          else
+            args['--challenge']="${args['--challenge']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--challenge requires an argument: --challenge, -c CHALLENGE_ID" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --blog | -b)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--blog']+x} ]]; then
+            args['--blog']="$escaped"
+          else
+            args['--blog']="${args['--blog']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--blog requires an argument: --blog, -b BLOG_ID" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --read)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--read']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--read requires an argument: --read COLLECTION_ID" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --no-read)
+
+        # :flag.case_no_arg
+        args['--no-read']=1
+        shift
+        ;;
+
+      # :flag.case
+      --prefs)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--prefs']+x} ]]; then
+            args['--prefs']="$escaped"
+          else
+            args['--prefs']="${args['--prefs']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--prefs requires an argument: --prefs COLLECTION_ID" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --no-prefs)
+
+        # :flag.case_no_arg
+        args['--no-prefs']=1
+        shift
+        ;;
+
+      # :flag.case
+      --pref)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--pref']+x} ]]; then
+            args['--pref']="$escaped"
+          else
+            args['--pref']="${args['--pref']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--pref requires an argument: --pref BOOK=P" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --reread-pref)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--reread-pref']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--reread-pref requires an argument: --reread-pref P" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --optimize | -o)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--optimize']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--optimize requires an argument: --optimize, -o CRITERIA" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --max-size | -m)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--max-size']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--max-size requires an argument: --max-size, -m N" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --min-size)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--min-size']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--min-size requires an argument: --min-size N" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --size | -s)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--size']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--size requires an argument: --size, -s N" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --top | -n)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--top']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--top requires an argument: --top, -n N" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --alternatives | -a)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--alternatives']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--alternatives requires an argument: --alternatives, -a N" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --json | -J)
+
+        # :flag.case_no_arg
+        args['--json']=1
+        shift
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        # :argument.case
+        if [[ -z ${args['challenge_id']+x} ]]; then
+          args['challenge_id']=$1
+          shift
+        else
+          printf "invalid argument: %s\n" "$key" >&2
+          exit 1
+        fi
+
+        ;;
+
+    esac
+  done
+
+  # :command.default_assignments
+  [[ -n ${args['--reread-pref']:-} ]] || args['--reread-pref']="-1"
+  [[ -n ${args['--optimize']:-} ]] || args['--optimize']="count"
+  [[ -n ${args['--top']:-} ]] || args['--top']="5"
+
+}
+
+# :command.parse_requirements
+goodreads_collections_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_collections_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action=${1:-}
+
+  case $action in
+
+    list | ls)
+      action="list"
+      shift
+      goodreads_collections_list_parse_requirements "$@"
+      shift $#
+      ;;
+
+    create | new)
+      action="create"
+      shift
+      goodreads_collections_create_parse_requirements "$@"
+      shift $#
+      ;;
+
+    get)
+      action="get"
+      shift
+      goodreads_collections_get_parse_requirements "$@"
+      shift $#
+      ;;
+
+    edit)
+      action="edit"
+      shift
+      goodreads_collections_edit_parse_requirements "$@"
+      shift $#
+      ;;
+
+    remove | rm)
+      action="remove"
+      shift
+      goodreads_collections_remove_parse_requirements "$@"
+      shift $#
+      ;;
+
+    # :command.command_fallback
+    *)
+      action="list"
+      goodreads_collections_list_parse_requirements "$@"
+      shift $#
+      ;;
+
+  esac
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        printf "invalid argument: %s\n" "$key" >&2
+        exit 1
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_collections_list_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_collections_list_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="collections list"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        printf "invalid argument: %s\n" "$key" >&2
+        exit 1
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
+goodreads_collections_create_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_collections_create_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="collections create"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --title)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--title']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--title requires an argument: --title TITLE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --books)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--books']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--books requires an argument: --books BOOK_REFS" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --date)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--date']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--date requires an argument: --date DATE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --pref)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--pref']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--pref requires an argument: --pref P" >&2
+          exit 1
+        fi
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        # :argument.case
+        if [[ -z ${args['collection_id']+x} ]]; then
+          args['collection_id']=$1
+          shift
+        else
+          printf "invalid argument: %s\n" "$key" >&2
+          exit 1
+        fi
+
+        ;;
+
+    esac
+  done
+
+  # :command.required_args_filter
+  if [[ -z ${args['collection_id']+x} ]]; then
+    printf "missing required argument: COLLECTION_ID\nusage: goodreads collections create COLLECTION_ID [OPTIONS]\n" >&2
+
+    exit 1
+  fi
+
+}
+
+# :command.parse_requirements
+goodreads_collections_get_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_collections_get_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="collections get"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --json | -J)
+
+        # :flag.case_no_arg
+        args['--json']=1
+        shift
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        # :argument.case
+        if [[ -z ${args['collection_id']+x} ]]; then
+          args['collection_id']=$1
+          shift
+        else
+          printf "invalid argument: %s\n" "$key" >&2
+          exit 1
+        fi
+
+        ;;
+
+    esac
+  done
+
+  # :command.required_args_filter
+  if [[ -z ${args['collection_id']+x} ]]; then
+    printf "missing required argument: COLLECTION_ID\nusage: goodreads collections get COLLECTION_ID [OPTIONS]\n" >&2
+
+    exit 1
+  fi
+
+}
+
+# :command.parse_requirements
+goodreads_collections_edit_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_collections_edit_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="collections edit"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --title)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--title']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--title requires an argument: --title TITLE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --books)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--books']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--books requires an argument: --books BOOK_REFS" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --add-book)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--add-book']+x} ]]; then
+            args['--add-book']="$escaped"
+          else
+            args['--add-book']="${args['--add-book']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--add-book requires an argument: --add-book BOOK_REFS" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --remove-book)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          escaped="$(printf '%q' "$2")"
+          if [[ -z ${args['--remove-book']+x} ]]; then
+            args['--remove-book']="$escaped"
+          else
+            args['--remove-book']="${args['--remove-book']} $escaped"
+          fi
+          shift
+          shift
+        else
+          printf "%s\n" "--remove-book requires an argument: --remove-book BOOK_REFS" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --date)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--date']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--date requires an argument: --date DATE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --pref)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--pref']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--pref requires an argument: --pref P" >&2
+          exit 1
+        fi
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_simple
+        # :argument.case
+        if [[ -z ${args['collection_id']+x} ]]; then
+          args['collection_id']=$1
+          shift
+        else
+          printf "invalid argument: %s\n" "$key" >&2
+          exit 1
+        fi
+
+        ;;
+
+    esac
+  done
+
+  # :command.required_args_filter
+  if [[ -z ${args['collection_id']+x} ]]; then
+    printf "missing required argument: COLLECTION_ID\nusage: goodreads collections edit COLLECTION_ID [OPTIONS]\n" >&2
+
+    exit 1
+  fi
+
+}
+
+# :command.parse_requirements
+goodreads_collections_remove_parse_requirements() {
+  local key
+
+  # :command.fixed_flags_filter
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      --help | -h)
+        long_usage=yes
+        goodreads_collections_remove_usage
+        exit
+        ;;
+
+      *)
+        break
+        ;;
+
+    esac
+  done
+
+  # :command.command_filter
+  action="collections remove"
+
+  # :command.parse_requirements_while
+  while [[ $# -gt 0 ]]; do
+    key="$1"
+    case "$key" in
+      # :flag.case
+      --all | -a)
+
+        # :flag.case_no_arg
+        args['--all']=1
+        shift
+        ;;
+
+      -?*)
+        printf "invalid option: %s\n" "$key" >&2
+        exit 1
+        ;;
+
+      *)
+        # :command.parse_requirements_case
+        # :command.parse_requirements_case_repeatable
+        # :argument.case_repeatable
+        escaped="$(printf '%q' "$1")"
+        if [[ -z ${args['collection_id']+x} ]]; then
+          args['collection_id']="$escaped"
+        else
+          args['collection_id']="${args['collection_id']} $escaped"
+
+        fi
+        shift
+
+        ;;
+
+    esac
+  done
+
+}
+
+# :command.parse_requirements
 goodreads_config_parse_requirements() {
   local key
 
@@ -8519,6 +11116,13 @@ run() {
     "challenges get") goodreads_challenges_get_command ;;
     "challenges edit") goodreads_challenges_edit_command ;;
     "challenges remove") goodreads_challenges_remove_command ;;
+    "solve") goodreads_solve_command ;;
+    "collections") goodreads_collections_command ;;
+    "collections list") goodreads_collections_list_command ;;
+    "collections create") goodreads_collections_create_command ;;
+    "collections get") goodreads_collections_get_command ;;
+    "collections edit") goodreads_collections_edit_command ;;
+    "collections remove") goodreads_collections_remove_command ;;
     "config") goodreads_config_command ;;
     "config list") goodreads_config_list_command ;;
     "config get") goodreads_config_get_command ;;

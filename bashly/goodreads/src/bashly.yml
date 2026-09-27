@@ -163,7 +163,8 @@ commands:
       - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
     - long: --challenge
       arg: challenge_id
-      help: "Fetch every book referenced by any blog post linked to this challenge (see 'goodreads challenges get'); a book in multiple linked posts is only fetched once"
+      repeatable: true
+      help: "Fetch every book referenced by any blog post linked to this challenge (see 'goodreads challenges get'); repeatable; a book in multiple linked posts (or challenges) is only fetched once"
       completions:
       - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/challenges" 2>/dev/null | sed "s/\.json$//")'
     - long: --batch
@@ -317,6 +318,162 @@ commands:
     - long: --all
       short: -a
       help: Remove every challenge
+- name: solve
+  help: "Find the fewest (or cheapest) books to read so every list has one of them -- by default a challenge's blog posts"
+  args:
+  - name: challenge_id
+    help: "Shorthand for --challenge <challenge_id>"
+  flags:
+  - long: --challenge
+    short: -c
+    arg: challenge_id
+    repeatable: true
+    help: "Use this challenge's blog posts as lists (default without --challenge/--blog: the next one to end, else the latest); repeatable, all challenges' lists form one problem"
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/challenges" 2>/dev/null | sed "s/\.json$//")'
+  - long: --blog
+    short: -b
+    arg: blog_id
+    repeatable: true
+    help: Add this blog post's books as a list (without any challenge, only these lists are used); repeatable
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
+  - long: --read
+    arg: collection_id
+    help: "Collection of books read, dated (default: 'read', if it exists). Read during the challenge: done, its lists are covered. Read before: gets --reread-pref"
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/collections" 2>/dev/null | sed "s/\.json$//")'
+  - long: --no-read
+    help: Ignore any read collection
+  - long: --prefs
+    arg: collection_id
+    repeatable: true
+    help: "Collection whose books' pref values (-1..1) apply (default: 'prefs', if it exists); repeatable, later ones win"
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/collections" 2>/dev/null | sed "s/\.json$//")'
+  - long: --no-prefs
+    help: Ignore any preference collection
+  - long: --pref
+    arg: book=p
+    repeatable: true
+    help: "Preference for one book, '<book id or URL>=<p>', p from -1 (must not) to 1 (must); overrides collections; repeatable"
+  - long: --reread-pref
+    arg: p
+    default: "-1"
+    help: "Preference for books read before the challenge (-1 = never re-read)"
+  - long: --optimize
+    short: -o
+    arg: criteria
+    default: count
+    help: "Comma-separated ranking criteria, compared in order: count (fewest books), pages (fewest pages), rating (best average rating, shrunk toward the median for books with few ratings); the others follow as tie-breakers, in the order count, rating, pages"
+    completions: [count, pages, rating]
+  - long: --max-size
+    short: -m
+    arg: n
+    help: "Consider solutions of at most n more books (default: per challenge, its largest badge minus books read during it, summed, minus pinned books, plus 1, or --min-size if larger; if nothing is that small, the smallest solutions)"
+  - long: --min-size
+    arg: n
+    help: Only show solutions of at least n more books
+  - long: --size
+    short: -s
+    arg: n
+    help: "Only show solutions of exactly n more books: --min-size n --max-size n, except that there's no fallback to the smallest solutions if there are none"
+  - long: --top
+    short: -n
+    arg: n
+    default: "5"
+    help: "Show the n best solutions, or 'all' of them"
+    completions: [all]
+  - long: --alternatives
+    short: -a
+    arg: n
+    help: "Show up to n book options per pick (default: all of them, except for a pick covering a single list -- any book on it will do -- which shows the best 10)"
+  - long: --json
+    short: -J
+    help: Print the ranked solutions as JSON
+  completions:
+  - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/challenges" 2>/dev/null | sed "s/\.json$//")'
+- name: collections
+  help: Manage local collections of books (e.g. books read, solver preferences)
+  commands:
+  - name: list
+    alias: ls
+    help: List all collections
+    default: force
+  - name: create
+    alias: new
+    help: Create a new collection
+    args:
+    - name: collection_id
+      required: true
+      help: "Collection id (any name without '/', e.g. 'read' or 'prefs')"
+    flags:
+    - long: --title
+      arg: title
+      help: Collection title
+    - long: --books
+      arg: book_refs
+      help: "Comma-separated books to add, each a book id or goodreads book URL"
+    - long: --date
+      arg: date
+      help: "Date the given books were added, any format 'date -d' understands (default: today); for a read collection, the date read"
+    - long: --pref
+      arg: p
+      help: "Solver preference for the given books, from -1 (must not) through 0 (neutral) to 1 (must)"
+  - name: get
+    help: Show one collection's books
+    args:
+    - name: collection_id
+      required: true
+      help: Collection id
+    flags:
+    - long: --json
+      short: -J
+      help: Print the raw JSON instead of a pretty listing
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/collections" 2>/dev/null | sed "s/\.json$//")'
+  - name: edit
+    help: "Change a collection's title and/or books"
+    args:
+    - name: collection_id
+      required: true
+      help: Collection id
+    flags:
+    - long: --title
+      arg: title
+      help: New title (an empty string removes it)
+    - long: --books
+      arg: book_refs
+      help: "Replace all books with this comma-separated list, each a book id or goodreads book URL (pass an empty string to remove all). Books already in the collection keep their date and preference unless --date/--pref is given. Can't be combined with --add-book/--remove-book"
+    - long: --add-book
+      arg: book_refs
+      repeatable: true
+      help: "Add (or update) books, each a book id or goodreads book URL, comma-separated; repeatable"
+    - long: --remove-book
+      arg: book_refs
+      repeatable: true
+      help: "Remove books, comma-separated; repeatable"
+    - long: --date
+      arg: date
+      help: "Set this added (for a read collection: read) date on every book given via --books/--add-book (default for new books: today)"
+    - long: --pref
+      arg: p
+      help: "Set this solver preference (-1..1) on every book given via --books/--add-book; '-' removes it"
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/collections" 2>/dev/null | sed "s/\.json$//")'
+  - name: remove
+    alias: rm
+    help: Remove one or more collections
+    args:
+    - name: collection_id
+      repeatable: true
+      help: Collection id(s) to remove
+    flags:
+    - long: --all
+      short: -a
+      help: Remove every collection
+    completions:
+    - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/collections" 2>/dev/null | sed "s/\.json$//")'
 - name: config
   help: View or change goodreads' own config.ini settings (curl_bin, throttling, cache TTLs, ...)
   commands:

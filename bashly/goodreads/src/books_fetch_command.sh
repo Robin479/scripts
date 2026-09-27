@@ -4,7 +4,9 @@ all="${args[--all]:-}"
 update_flag="${args[--update]:-}"
 book_ids="${args[book_id]:-}"
 blog_ids="${args[--blog]:-}"
-challenge_id="${args[--challenge]:-}"
+challenge_ids=()
+# bashly joins repeated values %q-escaped; eval re-splits them.
+[[ -n "${args[--challenge]:-}" ]] && eval "challenge_ids=(${args[--challenge]})"
 # Plain if: $(...) would break gr::fetch_quiet's tty check, `&&` trips set -e.
 quiet=""
 if gr::fetch_quiet "${args[--batch]:-}"; then
@@ -14,24 +16,26 @@ fi
 # Resolve curl before gr::run_fetch's per-item subshells (memoization wouldn't survive them).
 gr::offline || gr::init_curl_cmd || exit 1
 
-if [[ -n "$all" && ( -n "$book_ids" || -n "$blog_ids" || -n "$challenge_id" ) ]]; then
+if [[ -n "$all" && ( -n "$book_ids" || -n "$blog_ids" || "${#challenge_ids[@]}" -gt 0 ) ]]; then
   echo "error: --all and specific book ids (directly, via --blog, or via --challenge) are mutually exclusive" >&2
   exit 1
 fi
 
-if [[ -z "$all" && -z "$book_ids" && -z "$blog_ids" && -z "$challenge_id" ]]; then
+if [[ -z "$all" && -z "$book_ids" && -z "$blog_ids" && "${#challenge_ids[@]}" -eq 0 ]]; then
   echo "error: give one or more book ids, --blog <blog_id>, --challenge <challenge_id>, or --all" >&2
   exit 1
 fi
 
-if [[ -n "$challenge_id" ]]; then
-  challenge_file="$(gr::require_challenge_file "$challenge_id")" || exit 1
-  challenge_blog_ids="$(jq -r '.blogs[]?.blog_id' "$challenge_file")"
-  if [[ -z "$challenge_blog_ids" ]]; then
-    echo "note: challenge $challenge_id has no linked blog posts" >&2
-  fi
-  blog_ids="${blog_ids} ${challenge_blog_ids}"
-  # Dedup: a post may come both via --blog and via --challenge.
+if [[ "${#challenge_ids[@]}" -gt 0 ]]; then
+  for challenge_id in "${challenge_ids[@]}"; do
+    challenge_file="$(gr::require_challenge_file "$challenge_id")" || exit 1
+    challenge_blog_ids="$(jq -r '.blogs[]?.blog_id' "$challenge_file")"
+    if [[ -z "$challenge_blog_ids" ]]; then
+      echo "note: challenge $challenge_id has no linked blog posts" >&2
+    fi
+    blog_ids="${blog_ids} ${challenge_blog_ids}"
+  done
+  # Dedup: a post may come via --blog and/or several --challenge.
   blog_ids="$(tr -s ' ' '\n' <<< "$blog_ids" | grep -v '^$' | sort -n -u | tr '\n' ' ')"
 fi
 

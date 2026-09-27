@@ -18,10 +18,11 @@ management), `books` (book metadata cache: schema.org JSON-LD + our own
 fields; `fetch`/`list`/`get`/`remove`), `blogs` (blog post cache;
 `fetch`/`list`/`get`/`remove`/`challenge`), `challenges` (manually curated;
 `create`/`list`/`get`/`edit`/`remove`, plus `challenges blogs`/`badges
-add`/`remove`) and `config`. Not designed yet: shelves, reading progress,
-and the challenge-*goal* book-selection logic (picking specific books toward
-a badge) — `challenges` only manages a challenge's own metadata (title, time
-window, badge-linked blog posts, book-count badges).
+add`/`remove`), `collections` (local, hand-curated book lists: books read,
+solver preferences; `create`/`list`/`get`/`edit`/`remove`), `solve` (the
+hitting-set solver picking books toward a challenge's badges) and `config`.
+Not designed yet: shelves and reading progress (online shelves are meant to
+replace the `read` collection eventually).
 
 The blog post cache is groundwork for reading-challenge support: challenge
 detail data (which books count toward which badge) is locked behind a
@@ -348,7 +349,8 @@ progress) rather than growing one file.
   its top.
 - `goodreads_auth.sh` (account/session), `goodreads_books.sh` (book cache),
   `goodreads_blogs.sh` (blog post cache), `goodreads_challenges.sh`
-  (challenges).
+  (challenges), `goodreads_collections.sh` (collections),
+  `goodreads_solver.sh` (the `solve` pipeline's jq stages and cover cache).
 - `goodreads_config.sh` — the `config` command group's user-facing registry
   (`GR_CONFIG_KEYS`, `gr::config_describe`, `gr::config_default_display`);
   its own file since it's specific to the `config` commands, not needed by
@@ -414,6 +416,10 @@ $data_dir/
     <id>.json                 # blog post cache -- see "Blog post cache"
   challenges/
     <id>.json                 # challenge definition -- see "challenges"
+  collections/
+    <id>.json                 # local book list -- see "Collections"
+  solver/
+    <sha256>.json             # cached solver covers -- see "Solver"
   research/                   # machine-local research data (e.g. pacing/run-*), not used by the code
 ```
 
@@ -482,10 +488,18 @@ DESIGN-HISTORY.md › Request pacing); none was given a fallback.
   command-level `completions:` block applies to *every* positional argument
   of that command, so it would offer key names as candidate *values* too.
 
+### No star glyphs in output
+
+Ratings are always bare numbers: no `★` (or any other star glyph) anywhere
+in the output or source (user decision: they render badly in the user's
+terminal). This has come back twice (`books list`/`get`, then `solve`) —
+don't reintroduce it.
+
 ### Command-group defaults
 
 Every command group's `list` is its `default: force` command in
-`bashly.yml` — `auth`, `blogs`, `books`, `challenges`, `config` (user
+`bashly.yml` — `auth`, `blogs`, `books`, `challenges`, `collections`,
+`config` (user
 decision: "make list the default in all groups"). `default: force` (not
 `default: true`) is what runs the command when the group is invoked with no
 further tokens at all; plain `default: true` only covers an unrecognized
@@ -795,7 +809,7 @@ result is still valid JSON-LD, just extended with our own fields (a plain
 
 ## `books` commands (implemented)
 
-`books fetch [book_id...] [--blog|-b <blog_id>...] [--challenge <challenge_id>]
+`books fetch [book_id...] [--blog|-b <blog_id>...] [--challenge <challenge_id>...]
 [--all|-A] [--update|-U] [--batch|-B]`, `books list|ls [book_id...] [--limit|-l n]`
 (the group's default command), `books get <book_id> [--json|-J]
 [--update|-U]`, `books remove|rm [book_id...] [--all|-a]`. Source:
@@ -814,8 +828,8 @@ would mean parsing `COMP_WORDS`).
 **No discovery, unlike `blogs fetch`** — no goodreads.com page lists "all
 books"; a book only becomes known through an explicit id. So `fetch` takes
 ids from: explicit `book_id...`, `--blog <blog_id>` (repeatable; every book
-in that post's `book_sections`), `--challenge <challenge_id>` (every book in
-any blog post linked to that challenge), or `--all` (every cached book). The
+in that post's `book_sections`), `--challenge <challenge_id>` (repeatable;
+every book in any blog post linked to that challenge), or `--all` (every cached book). The
 first three combine and are deduped (`sort -n -u`) into one pool — books
 repeat across posts (a challenge's posts share many books), so the dedup
 matters; `--all` is mutually exclusive with them; none of the four is a
@@ -1873,6 +1887,175 @@ over `gr::challenge_dir`/`gr::challenge_file`. No counter state to roll
 back: a removed challenge's id becomes available again to a later `create`
 that derives the same id (see "Challenge ids").
 
+## Collections (implemented — CLI surface: `collections`)
+
+Named, local, hand-curated book lists (user decision: a stopgap until
+online shelves exist — the `read` collection in particular is meant to be
+replaced by the goodreads "read" shelf). Source:
+`src/lib/goodreads_collections.sh`, `src/collections_*_command.sh`.
+
+**Schema** (`collections/<id>.json`, pretty-printed, sorted keys):
+`collection_id`, `title` (`null` when unset, never `""`), `books` (array of
+`{book_id, added, pref?}`, kept sorted by numeric `book_id`).
+- `added` (`YYYY-MM-DD`, default today, `--date` to set) is when the book
+  entered the collection — for a read collection, the date read. **It
+  carries meaning for the solver** (see "Solver" › read books): read during
+  a challenge pins, read before deters. When shelves replace collections,
+  the equivalent date (shelf "date read"/"date added") must be preserved,
+  not just membership.
+- `pref` (−1..1, optional) only matters when the collection is passed as a
+  preference collection.
+
+**Ids are user-chosen** (`create <id>`, positional, required; no `/`, like
+`challenges create --id`). `read` and `prefs` are the ids `solve` picks up
+by default.
+
+**Commands** (mirroring `challenges`): `list|ls` (default: id, title, book
+count, first/last `added`), `create|new <id> [--title] [--books <refs>]
+[--date d] [--pref p]`, `get <id> [--json]` (book table with titles from the
+book cache, never fetching), `edit <id> [--title t] [--books <refs> |
+--add-book <refs>... --remove-book <refs>...] [--date d] [--pref p|-]`,
+`remove|rm <id>... | --all`.
+- Book refs (`gr::parse_book_refs`): comma/space-separated, each a bare id,
+  `<id>-<slug>`, or a `.../book/show/<id>...` URL (pasted from a browser).
+- `--add-book` is an upsert: an existing book keeps its `added`/`pref`
+  unless `--date`/`--pref` is given (`--pref -` removes it). `--books`
+  replaces the list but keeps `added`/`pref` of books that stay.
+- Everything is validated before the first write (like `challenges edit`).
+
+## Solver (implemented — CLI surface: `solve`)
+
+**Problem**: given lists of books (a challenge's blog posts), pick books so
+every list contains at least one — a hitting set. Its origin is a jq
+prototype (`~/src/local/sandbox/goodreads.sh`, outside this repo), whose key
+idea is kept: books on exactly the same lists are interchangeable, so the
+search runs over *signature groups*, not books (2026Q3: 8 lists, 850 books,
+28 groups; all 2619 irredundant covers of ≤ 8 books enumerate in ~0.7s).
+
+**Pipeline** (`src/lib/goodreads_solver.sh`; each stage is one jq program,
+JSON in/out, so they can be tested in isolation):
+1. `solve_command.sh` gathers the input: lists (`gr::blog_json` per blog,
+   `{id, name, url, challenges, books}`; `url` is the list's short link,
+   shown in the report's lists table and on single-list picks, so a future
+   shelf or collection source just supplies its own) from every `--challenge` (repeatable;
+   the positional `challenge_id` is shorthand for one; none and no
+   `--blog` → `gr::next_ending_challenge`, else `gr::latest_challenge`)
+   plus any `--blog`. All challenges' lists form **one** problem (user
+   decision); a post on several challenges is one list belonging to all.
+   Also book metadata (`gr::solve_book_meta`, **cache
+   only** — a warning names how many listed books aren't cached and
+   suggests `books fetch --challenge`), the read collection, merged prefs,
+   and each challenge's window and largest badge.
+2. `gr::solve_prepare` → the reduced problem:
+   - **Works, not editions** (user decision): every book maps to
+     `w<work.legacyId>`, or `b<book_id>` without cached metadata. Editions
+     of one work on different lists then overlap (2026Q3 has 13 such
+     works); the output lists each work's editions with their lists.
+   - Lists are canonicalized (sorted by size, then works; identical lists
+     merged), so input order never changes the groups or the cache key.
+   - **Read books** (`added` vs. each challenge's window): *during* a
+     challenge → done, covering its lists of that challenge (and
+     challenge-less `--blog` lists); *before* some challenge (or no
+     challenge at all) → preference `--reread-pref` (default −1: never
+     re-read); *after* every challenge → ignored. Every during-read counts
+     toward that challenge's badge, on a list or not.
+   - **Preference** p per work: reread default < prefs collections (in
+     order) < `--pref`. p ≥ 1 **pins** (covers its lists like a read book,
+     but is shown and counted as part of each solution); p ≤ −1
+     **excludes**. Only works on some list are pinned/excluded, so a global
+     prefs collection doesn't leak into unrelated `--blog` runs.
+   - List status: `done` / `pinned` / `uncoverable` (every book excluded —
+     reported, then dropped) / `open`. Groups are built over open lists.
+3. `gr::solve_covers` (cached) → every **irredundant** cover (each chosen
+   group covers a list no other chosen group does) of ≤ K groups.
+   `gr::solve_enumerate` branches on the first uncovered list over the
+   groups covering it; each branch forbids the groups its earlier siblings
+   tried (every cover generated exactly once) and prunes as soon as a
+   chosen group becomes redundant. Verified against brute force on random
+   instances. Irredundant covers suffice for any positive additive cost,
+   which is why weights never invalidate the cache.
+   **This does not scale**: the cover count explodes with lists and K.
+   2026Q3 alone gives ≤ 2619 covers in < 1s. Q3+Q4 merged (12 lists, 68
+   groups, nothing read) gives 48k covers at K=6 (33s in jq), ~1M at K=7,
+   4.2M at K=8 (see TODO). Before enumerating (cache misses only),
+   `gr::solve_warn_if_large` runs `gr::solve_estimate`, Knuth's random-probe
+   estimator over the same search tree (200 probes, `$RANDOM` seeds since
+   jq has no rand). It predicted 4.4M covers for the K=8 case above, against
+   4.2M actual. The warning fires above `GR_SOLVE_WARN_NODES` (100k steps,
+   jq manages ~10k/s) or `GR_SOLVE_WARN_COVERS` (50k); the search still runs
+   (user decision: a warning, no abort).
+4. `gr::solve_rank` (never cached): `--optimize` is a comma-separated list
+   of criteria from `count|pages|rating` (user decision: lexicographic),
+   followed by the remaining ones in the order `count, rating, pages` as
+   tie-breakers (default `count` = `count,rating,pages`).
+   - Per work, with pref multiplier m = (1−p)/(1+p), which is continuous
+     in p and meets the pin/exclude endpoints:
+     - count = m
+     - pages = pages·m (unknown or 0 → the problem's median)
+     - rating = (5 − r′)·m
+   - r′ is a **Bayesian average** (user decision):
+     (C·median + n·rating)/(C + n), with n = `ratingCount` and
+     C = `GR_SOLVE_RATING_PRIOR_COUNT` (1000). This keeps a 4.8 from 40
+     ratings from beating a 4.4 from 200k. An unknown rating counts as the
+     median.
+   - Each group is served by its work with the smallest cost vector.
+   - A cover's key is Σcount, Σpages and the *mean* rating cost over its
+     books (picks + pinned). The report shows the raw average rating.
+   - Rating first trades book count for quality (Q3: 6 books at a 4.57
+     average vs. 4 at 4.47).
+   - `--top` (default 5, or `all`) cuts the solutions. `--alternatives` cuts each
+     pick's book options. Without it (user decision), a pick shows all its
+     books, except a pick covering a single list, which shows the best
+     `GR_SOLVE_SINGLE_LIST_ALTERNATIVES` (10), since its blog link stands
+     for the rest. Excluded books are never among the options. An explicit
+     `--alternatives` applies to every pick. A pick cut off by either limit
+     ends with a `(+N more)` row.
+5. `gr::solve_format` → the report (or `--json`). Each solution is one
+   `column -t` table:
+   - Pinned books come first.
+   - Then one block per pick: its lists, then its books (see `--alternatives`)
+     as short id-only links (`https://www.goodreads.com/book/show/<id>`,
+     see "Book URLs").
+   - A work found under several edition ids gets one row per edition, each
+     repeating all of the work's information, with its own link and a
+     `[<lists>]` tag. The tag is right-aligned at the widest title in the
+     table, and the title is cut with `…` to make room.
+     **jq gotcha**: `def f($max)` also defines a *filter* `max` in its body,
+     which shadows the builtin (that's why `table`'s parameter is
+     `$limit`).
+   - A pick covering a single list starts with that blog post's link
+     ("(any book on the list)"), since any book on that list will do.
+   - Blocks are separated by rules. `gr::solve_draw_separators` turns
+     `@@` marker rows into lines after alignment; the marker is printable
+     because `column` drops control characters.
+
+**K** (`--max-size`, default): per challenge, max(largest badge − books
+read during it, 0), summed, − pinned, min 0, **+ 1** (user decision: also
+consider solutions one book longer than necessary); no badges at all → the
+number of open lists. If no cover is that small, the smallest covers are
+shown instead, and the header says so (user decision: solutions beyond the
+badges are only interesting when nothing shorter exists).
+`--min-size n` then drops smaller covers (after the cache, so it never
+changes what's cached). A defaulted K below it is raised to it; an explicit
+`--max-size` below it is an error. `--size n` = `--min-size n --max-size n`,
+but *strict*: no fallback to the smallest covers (`gr::solve_covers`' third
+parameter), so `--size 2` with no 2-book solution says `No solutions with
+exactly 2 more book(s).` It can't be combined with `--min-size`/
+`--max-size`.
+
+**Cache** (`solver/<sha256>.json`): key = sha256 of `{v, n, sigs}` of the
+*reduced* problem (`GR_SOLVE_CACHE_VERSION`, bump on any change to what's
+cached). It holds `{max_size, covers, n, sigs}`; an entry serves any K ≤ its
+`max_size`. Mutations that change the structure (a book read, a new list,
+an exclusion emptying a group) produce a new key; re-weighing, soft prefs
+and `--optimize` reuse it. Nothing ever evicts entries — they're small and
+safe to delete.
+
+**The problem is mutable, by design**: lists get revealed during a season
+(`challenges edit --add-blog`), and books get read. A book read earlier may
+be off-optimal for the grown problem; it still covers its lists, which is
+all the solver needs.
+
 ## Open design questions
 
 - Still unused from `apolloState`'s Book/Work entries: affiliate/purchase
@@ -1892,10 +2075,9 @@ that derives the same id (see "Challenge ids").
   not automatic yet — see "Book metadata cache").
 - Command surface for shelves and reading progress (books, blogs and
   challenges are done).
-- How challenge-*goal* book selection should work — picking specific books
-  toward a badge, given the blog posts/book counts `challenges` records.
-  `challenges` only manages that metadata; it doesn't select or recommend
-  books yet.
+- Whether `solve` should accept collections (or shelves) as input lists,
+  not just blog posts — `gr::solve_prepare` already takes any `{id, name,
+  url?, challenges, books}` lists.
 - Which further settings belong in `config.ini` (the `config`
   `list`/`get`/`set`/`unset` commands exist now, covering `curl_bin`,
   `http_request_interval`, `http_challenge_pause`,
@@ -1904,6 +2086,24 @@ that derives the same id (see "Challenge ids").
 
 ## TODO
 
+- **Revisit how books read during a challenge count toward solution size**
+  (user: "it is confusing"). Today `--min-size`/`--max-size`/`--size` and
+  the `N more book(s)` heading count only the solver's picks; pinned books
+  are shown separately (`+ N pinned`), and read books are counted nowhere
+  but in the default K (largest badge − read during − pinned + 1). Decide
+  whether size selectors should include read (and/or pinned) books, so
+  they line up with the badge counts directly.
+
+- **Solver: best-N branch-and-bound instead of enumerate-then-rank.**
+  Enumerating every irredundant cover ≤ K explodes on merged challenges
+  (numbers under "Solver" › step 3; today only warned about). Instead,
+  search for the best `--top` covers under the chosen criteria directly:
+  prune a branch when its cost plus a lower bound for the uncovered lists
+  (e.g. the cheapest group cost per uncovered list, maximized over them)
+  can't beat the current N-th best. The results then depend on costs, so
+  the cache key must also cover the criteria, the pref-adjusted per-work
+  costs and N (cheap to recompute on a miss). Not urgent (user decision):
+  solving several challenges at once isn't expected soon.
 - Rename the config keys `http_challenge_probe_pct` and
   `http_challenge_max_probes` (the user finds the names not ideal; not
   urgent).
