@@ -1,4 +1,4 @@
-: # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+: # no-op, keeps the shellcheck directive below line-scoped
 # shellcheck disable=SC2154 # args is bashly's global associative array
 all="${args[--all]:-}"
 blog_ids="${args[blog_id]:-}"
@@ -40,7 +40,7 @@ fi
 
 ok=0
 fail=0
-# shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+# shellcheck disable=SC2086 # intentional word-splitting of the id list
 for id in $blog_ids; do
   if remove_one "$id"; then
     ok=$((ok + 1))

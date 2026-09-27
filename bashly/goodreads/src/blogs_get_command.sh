@@ -1,4 +1,4 @@
-: # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+: # no-op, keeps the shellcheck directive below line-scoped
 # shellcheck disable=SC2154 # args is bashly's global associative array
 id="${args[blog_id]}"
 json="${args[--json]:-}"
@@ -18,10 +18,8 @@ if [[ -n "$json" ]]; then
   exit 0
 fi
 
-# One jq call builds a JSON object so book rows can be column-aligned once,
-# globally, in bash below (jq has no column-width equivalent).
-# "$GR_CHALLENGE_JQ_DEFS"'...' concatenates into one jq argument — see
-# GR_CHALLENGE_JQ_DEFS in lib/goodreads_blogs.sh.
+# JSON result, so book rows can be column-aligned across sections below.
+# Prepends jq defs from lib/goodreads_blogs.sh to the program.
 result="$(jq "$GR_CHALLENGE_JQ_DEFS"'
   if .removed_remotely then
     {
@@ -66,8 +64,7 @@ if [[ "$(jq -r '.sections | length' <<< "$result")" -eq 0 ]]; then
   exit 0
 fi
 
-# book_id right-aligned; url built without www. (superfluous for book
-# urls specifically — not true for blog urls, see CLAUDE.md).
+# book_id right-aligned.
 mapfile -t aligned_rows < <(jq -r '.rows[]' <<< "$result" | column -t -s $'\t' -R 1)
 
 idx=0

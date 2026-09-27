@@ -1,4 +1,4 @@
-: # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+: # no-op, keeps the shellcheck directive below line-scoped
 # shellcheck disable=SC2154 # args is bashly's global associative array
 blog_ids="${args[blog_id]:-}"
 yes_flag="${args[--yes]:-}"
@@ -21,9 +21,7 @@ if [[ -z "$blog_ids" ]]; then
   exit 1
 fi
 
-# Merges onto the existing file rather than rebuilding it, so every other
-# field is left untouched. --auto deletes the key (not null) — challenge is
-# a true/false/absent tri-state.
+# Edits only .challenge, a true/false/absent tri-state (--auto deletes it).
 mark_one() {
   local id="$1"
   local file
@@ -55,7 +53,7 @@ mark_one() {
 
 ok=0
 fail=0
-# shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is bashly's own space-separated repeatable-arg string
+# shellcheck disable=SC2086 # intentional word-splitting of bashly's repeatable arg
 for id in $blog_ids; do
   if mark_one "$id"; then
     ok=$((ok + 1))

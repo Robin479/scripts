@@ -7,10 +7,8 @@ gr::cookie_jar_for() {
 }
 
 gr::current_account() {
-  # NB: always returns 0 (an `if`, unlike `&&`, doesn't propagate a false
-  # test's exit status) — bashly runs under `set -e`, so a bare
-  # `x="$(gr::current_account)"` at a call site must not fail just because
-  # there's no current account yet.
+  # Always returns 0 (`if`, not `&&`), so `x="$(gr::current_account)"`
+  # survives set -e when there's no current account.
   local current_file
   current_file="$(gr::data_dir)/current"
   if [[ -f "$current_file" ]]; then
@@ -32,10 +30,8 @@ gr::set_current() {
   echo "$1" > "$(gr::data_dir)/current"
 }
 
-# Given a cookie jar, verifies it's an authenticated goodreads.com session by
-# fetching the homepage and pulling the personal-nav profile link out of it.
-# Prints {"id","username","profile_url"} as JSON on success; returns 1 with
-# nothing printed if the session isn't authenticated.
+# Prints {"id","username","profile_url"} for the session in cookie jar $1
+# (from the homepage's profile link); returns 1 if not logged in.
 gr::identify_account_from_cookiejar() {
   local cookiejar="$1"
   local home_html
@@ -58,11 +54,8 @@ gr::identify_account_from_cookiejar() {
     '{id: $id, username: $username, profile_url: $profile_url}'
 }
 
-# Human-readable session state for an account's stored cookie jar. Always
-# returns 0 (state is encoded in the printed string, not the exit code) so
-# it's safe to call as a bare `x="$(gr::cookies_state ...)"` under set -e.
-# Honors the global --offline flag: skips the live network check and just
-# reports whether a cookie jar file is present.
+# Prints account $1's session state; always returns 0 (safe in $(...)
+# under set -e). With --offline, only checks the jar file exists.
 gr::cookies_state() {
   local id="$1"
   local cookie_jar

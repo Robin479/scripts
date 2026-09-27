@@ -1,11 +1,9 @@
-: # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+: # no-op, keeps the shellcheck directive below line-scoped
 # shellcheck disable=SC2154 # args is bashly's global associative array
 id="${args[challenge_id]:-}"
 json="${args[--json]:-}"
 
-# No id given: default to the next challenge to actually finish (ongoing
-# or still-planned, whichever ends soonest) if one exists; otherwise the
-# most recently ended one; otherwise there's nothing to show at all.
+# No id: the unfinished challenge ending soonest, else the latest ended one.
 if [[ -z "$id" ]]; then
   next="$(gr::next_ending_challenge "$(date +%Y-%m-%d)")"
   if [[ -n "$next" ]]; then
@@ -30,8 +28,7 @@ fi
 
 today="$(date +%Y-%m-%d)"
 
-# "$GR_CHALLENGE_STATUS_JQ_DEF"'...' concatenates into one jq argument —
-# see GR_CHALLENGE_STATUS_JQ_DEF in lib/goodreads_challenges.sh.
+# Prepends jq defs from lib/goodreads_challenges.sh to the program.
 result="$(jq --arg today "$today" "$GR_CHALLENGE_STATUS_JQ_DEF"'
   {
     meta: [

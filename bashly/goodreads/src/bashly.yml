@@ -93,10 +93,7 @@ commands:
       short: -l
       arg: n
       help: "Show n posts instead of 15 (not with --all, or both --since+--until)"
-    # args: has no per-argument completions: (only command:/flag: support
-    # it), so this is attached to the command instead. $GOODREADS_DATA/
-    # ~/.goodreads only -- ignores a --data-path given elsewhere on the
-    # command line (would need parsing COMP_WORDS here).
+    # On the command, since args can't have completions:. Ignores --data-path.
     completions:
     - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
   - name: get
@@ -162,8 +159,6 @@ commands:
       arg: blog_id
       repeatable: true
       help: Fetch every book referenced by this blog post (see 'goodreads blogs list'); repeatable
-      # Same dynamic-candidate convention as blogs list/books list, scoped
-      # to this flag instead of a whole command (see CLAUDE.md).
       completions:
       - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
     - long: --challenge
@@ -285,6 +280,12 @@ commands:
     - long: --end
       arg: date
       help: New end date
+    - long: --blogs
+      arg: blog_ids
+      help: "Replace all badge-linked blog posts with this comma-separated list, each '<id>' or '<id>:<title>' (default title: the post's own; pass an empty string to remove all). Every given post is fetched (cached or remotely) to confirm it exists. Can't be combined with --add-blog/--remove-blog"
+    - long: --badges
+      arg: counts
+      help: "Replace all book-count badges with this comma-separated list, each '<count>' or '<count>:<title>' (pass an empty string to remove all). Can't be combined with --add-badge/--remove-badge"
     - long: --add-blog
       arg: blog_id:name
       repeatable: true
@@ -329,10 +330,9 @@ commands:
     - name: key
       required: true
       help: Setting name (see 'goodreads config list')
-    # Attached to the command, not the arg -- same convention as
-    # blogs/books/challenges list|get (see CLAUDE.md).
+    # On the command, since args can't have completions:.
     completions:
-    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays book_cache_ttl'
+    - 'curl_bin http_request_interval http_challenge_pause http_challenge_probe_pct http_challenge_max_probes fetch_max_consecutive_failures book_cache_ttl'
   - name: set
     help: Set a setting's value
     args:
@@ -342,9 +342,7 @@ commands:
     - name: value
       required: true
       help: New value
-    # No completions here -- a command-level block applies to *every*
-    # positional arg (confirmed: also hit the value slot), which would
-    # wrongly offer key names as values too.
+    # No completions: a command-level block would also offer keys as values.
   - name: unset
     help: Unset one or more settings, reverting them to their default
     args:
@@ -352,7 +350,7 @@ commands:
       repeatable: true
       help: Setting name(s) to unset
     completions:
-    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays book_cache_ttl'
+    - 'curl_bin http_request_interval http_challenge_pause http_challenge_probe_pct http_challenge_max_probes fetch_max_consecutive_failures book_cache_ttl'
     flags:
     - long: --all
       short: -a

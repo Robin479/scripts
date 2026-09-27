@@ -1,4 +1,4 @@
-: # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+: # no-op, keeps the shellcheck directive below line-scoped
 # shellcheck disable=SC2154 # args is bashly's global associative array
 book_ids="${args[book_id]:-}"
 limit_raw="${args[--limit]:-}"
@@ -21,7 +21,7 @@ fi
 
 files=()
 if [[ -n "$book_ids" ]]; then
-  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — book_ids is bashly's own space-separated repeatable-arg string
+  # shellcheck disable=SC2086 # intentional word-splitting of bashly's repeatable arg
   for id in $book_ids; do
     file="$(gr::book_file "$id")"
     if [[ -f "$file" ]]; then

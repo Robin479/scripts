@@ -1,9 +1,3 @@
-# Reading challenges are manually curated, not scraped -- no goodreads.com
-# listing to discover them from (challenge detail is behind a step-up-auth
-# wall, see CLAUDE.md). challenge_id is a purely local string derived from
-# the challenge's own start/end (see gr::generate_challenge_id, below),
-# unlike book_id/blog_id, which are goodreads.com's own ids.
-
 gr::challenge_dir() {
   echo "$(gr::data_dir)/challenges"
 }
@@ -12,8 +6,7 @@ gr::challenge_file() {
   echo "$(gr::challenge_dir)/$1.json"
 }
 
-# Errors (return 1) if the challenge doesn't exist; else prints its file
-# path -- same shape gr::refresh_book uses.
+# Prints challenge $1's file path, or errors (return 1) if it doesn't exist.
 gr::require_challenge_file() {
   local id="$1"
   local file
@@ -25,11 +18,8 @@ gr::require_challenge_file() {
   echo "$file"
 }
 
-# Creates a challenge with empty blogs/count_badges (see
-# gr::add_challenge_blog/count_badge to populate them). Prints the new id.
-# $4, if given, is used as-is instead of calling gr::generate_challenge_id
-# (see challenges_create_command.sh's own --id, which already checked it
-# isn't taken before ever calling this).
+# Creates a challenge with empty blogs/count_badges and prints its id.
+# $4, if given, is used as the id instead of gr::generate_challenge_id.
 gr::create_challenge() {
   local title="$1" start="$2" end="$3" id_override="${4:-}"
   mkdir -p "$(gr::challenge_dir)"
@@ -37,9 +27,7 @@ gr::create_challenge() {
   local id="$id_override"
   [[ -z "$id" ]] && id="$(gr::generate_challenge_id "$start" "$end")"
 
-  # jq's grammar reserves "end" for if/end and can't parse $end as a
-  # variable -- confirmed directly. Bind it as end_date instead; the
-  # bash-side name stays plain "end" throughout.
+  # jq can't parse $end (reserved keyword), hence $end_date.
   jq -n -S \
     --arg id "$id" \
     --arg title "$title" \
@@ -51,8 +39,7 @@ gr::create_challenge() {
   echo "$id"
 }
 
-# Merges whichever of title/start/end are non-empty onto the existing file;
-# blogs/count_badges are always left untouched.
+# Sets whichever of title/start/end are non-empty.
 gr::update_challenge() {
   local id="$1" title="$2" start="$3" end="$4"
   local file
@@ -76,8 +63,7 @@ gr::update_challenge() {
   mv "$tmp_file" "$file"
 }
 
-# Upserts by blog_id: an existing entry only has its name replaced (order
-# preserved), a new one is appended. Empty name stores as null, never "".
+# Upserts by blog_id (existing entry keeps its position); empty name -> null.
 gr::add_challenge_blog() {
   local id="$1" blog_id="$2" name="${3:-}"
   local file
@@ -120,8 +106,7 @@ gr::remove_challenge_blog() {
   mv "$tmp_file" "$file"
 }
 
-# Same upsert shape as gr::add_challenge_blog, keyed by count; kept sorted
-# by count afterward so display order is always ascending.
+# Upserts by count, like gr::add_challenge_blog; kept sorted by count.
 gr::add_challenge_count_badge() {
   local id="$1" count="$2" name="${3:-}"
   local file
@@ -147,6 +132,7 @@ gr::add_challenge_count_badge() {
   mv "$tmp_file" "$file"
 }
 
+# Returns 1 (nothing written) if count isn't on the challenge.
 gr::remove_challenge_count_badge() {
   local id="$1" count="$2"
   local file
@@ -164,12 +150,31 @@ gr::remove_challenge_count_badge() {
   mv "$tmp_file" "$file"
 }
 
-# Challenge status (planned/ongoing/finished) from start/end vs $today,
-# computed once per invocation. Shared by list/get. Unrelated to
-# GR_CHALLENGE_JQ_DEFS (goodreads_blogs.sh) despite the name -- that one's
-# about a blog post's own candidate flag, this is a challenge's lifecycle.
-# shellcheck disable=SC2034 # used cross-file by challenges_list_command.sh/challenges_get_command.sh's jq programs
-# shellcheck disable=SC2016 # single-quoted deliberately — this is jq syntax, not bash, and must not expand here
+# Empty .blogs / .count_badges.
+gr::clear_challenge_blogs() {
+  gr::clear_challenge_array "$1" blogs
+}
+
+gr::clear_challenge_count_badges() {
+  gr::clear_challenge_array "$1" count_badges
+}
+
+gr::clear_challenge_array() {
+  local id="$1" field="$2"
+  local file
+  file="$(gr::require_challenge_file "$id")" || return 1
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  jq -S --arg field "$field" '.[$field] = []' "$file" > "$tmp_file" || return 1
+  mv "$tmp_file" "$file"
+}
+
+# jq def: planned/ongoing/finished from start/end vs $today (YYYY-MM-DD).
+# shellcheck disable=SC2034 # used by challenges_list/challenges_get command jq programs
+# shellcheck disable=SC2016 # jq syntax, must not expand
 readonly GR_CHALLENGE_STATUS_JQ_DEF='
 def challenge_status($today):
   if $today < .start then "planned"
@@ -177,23 +182,16 @@ def challenge_status($today):
   else "ongoing" end;
 '
 
-# --- Defaults for `challenges create`. Seasons: Winter/Spring/Summer/Fall
-# = Jan-Mar/Apr-Jun/Jul-Sep/Oct-Dec (explicit direction, not the
-# Northern-Hemisphere calendar seasons). The two arrays are parallel,
-# indexed 0-3.
+# --- Defaults for `challenges create`. Parallel arrays, indexed by quarter 0-3.
 readonly GR_QUARTER_END_MONTHDAY=(03-31 06-30 09-30 12-31)
 readonly GR_QUARTER_SEASON=(Winter Spring Summer Fall)
 readonly GR_CHALLENGE_MIN_DAYS=42 # 6 weeks
 
-# --blogs default window: starts this many days before the challenge's
-# start, ends this many days before its end (or today if earlier) --
-# deliberately asymmetric per explicit direction.
+# --blogs default window: [start - 7 days, min(end - 14 days, today)].
 readonly GR_CHALLENGE_BLOG_WINDOW_BEFORE_START_DAYS=7
 readonly GR_CHALLENGE_BLOG_WINDOW_BEFORE_END_DAYS=14
 
-# --blogs default likeliness threshold -- higher than goodreads_blogs.sh's
-# own GR_CHALLENGE_POTENTIAL_THRESHOLD (0.5), which answers a different
-# question (is this a listing at all vs. auto-link it to a new challenge).
+# --blogs default minimum challenge_potential.
 readonly GR_CHALLENGE_BLOG_DEFAULT_MIN_POTENTIAL=0.7
 
 # Index (0-3) of the quarter $1 (YYYY-MM-DD) falls in.
@@ -231,9 +229,7 @@ gr::quarter_start_of() {
   printf '%04d-%02d-01\n' "$year" "$month"
 }
 
-# Days between two dates ($2 - $1), pinned to UTC -- a local-time
-# epoch/86400 diff is off by a day across a DST transition (confirmed
-# directly: 2024-03-25 to 2024-04-01 in Europe/Berlin gives 6, not 7).
+# Days from $1 to $2. UTC, since a local-time diff is off by one across DST.
 gr::days_between() {
   local start_epoch end_epoch
   start_epoch="$(date -u -d "$1" +%s)"
@@ -241,17 +237,14 @@ gr::days_between() {
   echo $(( (end_epoch - start_epoch) / 86400 ))
 }
 
-# The last day of the month right before $1's own month, e.g.
-# 2024-03-31 -> 2024-02-29. $1 need not itself be a month-end.
+# Last day of the month before $1's, e.g. 2024-03-31 -> 2024-02-29.
 gr::last_day_of_prev_month() {
   date -d "$(date -d "$1" +%Y-%m-01) -1 day" +%Y-%m-%d
 }
 
-# The last day of the month right after $1's own month, e.g.
-# 2024-03-31 -> 2024-04-30. Three materialized date -d calls, not one
-# chained relative string -- confirmed directly GNU date doesn't apply
-# chained terms left-to-right ("$1 +1 day +1 month -1 day" gives
-# 2024-05-01 for 2024-03-31, not 2024-04-30).
+# Last day of the month after $1's, e.g. 2024-03-31 -> 2024-04-30.
+# Separate date -d steps: GNU date doesn't apply chained relative terms in
+# order ("+1 day +1 month -1 day" gives 2024-05-01 here).
 gr::last_day_of_next_month() {
   local next_day plus_month
   next_day="$(date -d "$1 +1 day" +%Y-%m-%d)"
@@ -259,9 +252,7 @@ gr::last_day_of_next_month() {
   date -d "$plus_month -1 day" +%Y-%m-%d
 }
 
-# Default --end for a challenge starting on $1: the next quarter-end at or
-# after $1, unless under GR_CHALLENGE_MIN_DAYS away, in which case the one
-# after that -- e.g. start=2024-09-15 selects 2024-12-31, not 2024-09-30.
+# Default --end: the first quarter-end at least GR_CHALLENGE_MIN_DAYS after $1.
 gr::default_challenge_end() {
   local start="$1" candidate
   candidate="$(gr::quarter_end_on_or_after "$start")"
@@ -271,8 +262,7 @@ gr::default_challenge_end() {
   echo "$candidate"
 }
 
-# Every existing challenge's file path, one per line, or nothing -- shared
-# by gr::latest_challenge and gr::challenges_overlapping below.
+# Every challenge file path, one per line.
 gr::all_challenge_files() {
   local dir file
   dir="$(gr::challenge_dir)"
@@ -282,8 +272,7 @@ gr::all_challenge_files() {
   done
 }
 
-# "<id>\t<start>\t<end>" of the existing challenge with the largest .end,
-# or empty if there are none -- "latest" by .end, not necessarily .start.
+# "<id>\t<start>\t<end>" of the challenge with the largest .end, or nothing.
 gr::latest_challenge() {
   local files=()
   mapfile -t files < <(gr::all_challenge_files)
@@ -291,13 +280,8 @@ gr::latest_challenge() {
   cat "${files[@]}" | jq -s -r 'max_by(.end) | [.challenge_id, .start, .end] | @tsv'
 }
 
-# "<id>\t<start>\t<end>" of the existing challenge with the smallest .end
-# that's still today or later -- the next one to actually finish, whether
-# it's currently ongoing or still merely planned -- or empty if every
-# existing challenge has already ended (or there are none at all). Used
-# by `challenges get` to pick a sensible default when no id is given; see
-# gr::latest_challenge, above, for the "everything's already over"
-# fallback that pairs with this.
+# "<id>\t<start>\t<end>" of the challenge with the smallest .end >= $1
+# (today), or nothing.
 gr::next_ending_challenge() {
   local today="$1" files=()
   mapfile -t files < <(gr::all_challenge_files)
@@ -309,9 +293,7 @@ gr::next_ending_challenge() {
   '
 }
 
-# "<id>\t<start>\t<end>" for every existing challenge overlapping [$1, $2],
-# one per line. Used to refuse an *auto-selected* --start that would
-# silently collide -- see challenges_create_command.sh.
+# "<id>\t<start>\t<end>" of every challenge overlapping [$1, $2].
 gr::challenges_overlapping() {
   local start="$1" end="$2" files=()
   mapfile -t files < <(gr::all_challenge_files)
@@ -323,20 +305,9 @@ gr::challenges_overlapping() {
   '
 }
 
-# Default --start: the day after the latest challenge's own end, if a
-# hypothetical same-rules successor starting there would still be ongoing
-# right now (one test covering both "still ongoing" and "recently ended").
-# Otherwise the start of the current quarter -- no prior challenge, or the
-# trail went cold long enough ago that continuing from it doesn't make
-# sense.
-#
-# Fails outright instead of either, if the latest challenge hasn't started
-# yet ("planned"): chaining off it doesn't make sense, and falling back to
-# the quarter start could land back on an *earlier* challenge instead
-# (confirmed directly: three successive no-arg `create` calls -- #3's
-# latest, #2, is still merely planned, and falling back would silently
-# collide with #1). Naming the actual planned challenge here beats letting
-# that surface later as a generic overlap error.
+# Default --start as of $1 (today): the day after the latest challenge's
+# end if a default-length successor from there hasn't ended yet, else the
+# current quarter's start. Fails if the latest challenge is still planned.
 gr::default_challenge_start() {
   local today="$1" latest latest_id latest_start latest_end
   local candidate_start candidate_end
@@ -361,13 +332,8 @@ gr::default_challenge_start() {
   gr::quarter_start_of "$today"
 }
 
-# "<year>\t<idx>" (idx 0-3, matching GR_QUARTER_SEASON/
-# GR_QUARTER_END_MONTHDAY) for the quarter-end within one calendar month
-# of $1, else nothing. <year> is the matched quarter-end's own year, not
-# necessarily $1's -- 2025-01-15 matches 2024-12-31 (Fall), so this
-# reports 2024. Shared by gr::season_title_near and gr::challenge_season,
-# so "is this near a quarter-end, and which one" is answered in exactly
-# one place.
+# "<year>\t<idx>" of the quarter-end within one calendar month of $1, else
+# nothing. <year> is the quarter-end's (2025-01-15 -> 2024, idx 3).
 gr::quarter_near() {
   local d="$1" base_year check_year idx q_end window_start window_end
   base_year="$(date -d "$d" +%Y)"
@@ -394,13 +360,9 @@ gr::season_title_near() {
   echo "${GR_QUARTER_SEASON[idx]} Challenge ${year}"
 }
 
-# "<year>\t<quarter>" (quarter 1-4, i.e. idx+1) if the challenge $1 to $2
-# is "seasonal" -- the same rule gr::default_challenge_title uses to pick
-# a season name for it (at least GR_CHALLENGE_MIN_DAYS long, end within a
-# month of a quarter-end) -- else nothing. Shared by
-# gr::default_challenge_title and gr::generate_challenge_id, so
-# "seasonal or not" can never quietly disagree between a challenge's title
-# and its id.
+# "<year>\t<quarter 1-4>" if the challenge $1..$2 is seasonal (at least
+# GR_CHALLENGE_MIN_DAYS long, end near a quarter-end), else nothing.
+# Shared by the default title and the id so they always agree.
 gr::challenge_season() {
   local start="$1" end="$2" match year idx
   [[ "$(gr::days_between "$start" "$end")" -ge "$GR_CHALLENGE_MIN_DAYS" ]] || return
@@ -410,8 +372,7 @@ gr::challenge_season() {
   printf '%s\t%s\n' "$year" "$((idx + 1))"
 }
 
-# Default --title: "<Season> Challenge <year>" for a seasonal challenge
-# (gr::challenge_season); else "Unnamed Challenge".
+# Default --title: "<Season> Challenge <year>" if seasonal, else "Unnamed Challenge".
 gr::default_challenge_title() {
   local start="$1" end="$2" season year quarter
   season="$(gr::challenge_season "$start" "$end")"
@@ -423,16 +384,8 @@ gr::default_challenge_title() {
   echo "Unnamed Challenge"
 }
 
-# Chooses a new challenge id, without creating anything (see
-# gr::create_challenge) -- "<year>Q<quarter>" for a seasonal challenge
-# (gr::challenge_season; e.g. "2026Q3"), falling back to
-# "<base>-<counter>" (counter starting at 2) if that id is already taken;
-# "<year>-<counter>" (counter starting at 1, straight away -- no bare
-# "<year>" attempt first) for a non-seasonal one, keyed off $1's own year
-# since there's no quarter-end to anchor to. Existence is checked directly
-# against the real challenge files on disk, not any separate counter
-# state -- unlike the purely-sequential-integer scheme this replaced, an
-# id CAN be reused once its challenge is deleted (see CLAUDE.md).
+# First free id: "<year>Q<quarter>" (then "-2", "-3", ...) if seasonal,
+# else "<start year>-<n>" from n=1. Checks existing files only.
 gr::generate_challenge_id() {
   local start="$1" end="$2" season year quarter base counter
 
@@ -460,17 +413,10 @@ gr::generate_challenge_id() {
   echo "${year}-${counter}"
 }
 
-# Default --blogs for a challenge running $1 to $2, as of today ($3):
-# every *cached* post (can't discover ones never fetched) published in
-# [$1 - GR_CHALLENGE_BLOG_WINDOW_BEFORE_START_DAYS days, min($2 -
-# GR_CHALLENGE_BLOG_WINDOW_BEFORE_END_DAYS days, $3)] with
-# challenge_potential >= GR_CHALLENGE_BLOG_DEFAULT_MIN_POTENTIAL -- the
-# raw likelihood, not gr_challenge_status's derived/overridable boolean.
-# One blog_id per line, sorted by .published; nothing if none match.
-#
-# Capped at today (never past it) because real challenges reveal their
-# badges/posts gradually over their own run, not all at once at creation
-# -- a post for a badge revealed later genuinely can't exist yet.
+# Default --blogs for a challenge $1..$2 as of $3 (today): cached posts
+# published in the window (see constants above) with raw
+# challenge_potential >= GR_CHALLENGE_BLOG_DEFAULT_MIN_POTENTIAL, one
+# blog_id per line, oldest first.
 gr::default_challenge_blogs() {
   local start="$1" end="$2" today="$3" window_start window_end
   window_start="$(date -d "$start -${GR_CHALLENGE_BLOG_WINDOW_BEFORE_START_DAYS} days" +%Y-%m-%d)"

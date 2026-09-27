@@ -930,6 +930,16 @@ goodreads_challenges_edit_usage() {
     echo
 
     # :flag.usage
+    printf "  %s\n" "--blogs BLOG_IDS"
+    printf "    Replace all badge-linked blog posts with this comma-separated list, each\n    '<id>' or '<id>:<title>' (default title: the post's own; pass an empty\n    string to remove all). Every given post is fetched (cached or remotely) to\n    confirm it exists. Can't be combined with --add-blog/--remove-blog\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--badges COUNTS"
+    printf "    Replace all book-count badges with this comma-separated list, each '<count>'\n    or '<count>:<title>' (pass an empty string to remove all). Can't be combined\n    with --add-badge/--remove-badge\n"
+    echo
+
+    # :flag.usage
     printf "  %s\n" "--add-blog BLOG_ID:NAME (repeatable)"
     printf "    Add (or rename) a badge-linked blog post, as '<blog_id>' or\n    '<blog_id>:<name>'; repeatable\n"
     echo
@@ -1297,9 +1307,8 @@ gr::config_file() {
   echo "$(gr::data_dir)/config.ini"
 }
 
-# Wrap bashly's own config_get/config_set/etc. (from `bashly add config`)
-# to point CONFIG_FILE at our resolved data dir first. Per-call, not via a
-# hook: initialize() runs before --data-path is parsed.
+# bashly's config_* with CONFIG_FILE set per call (initialize() runs
+# before --data-path is parsed).
 gr::config_get() {
   # shellcheck disable=SC2034 # CONFIG_FILE is config.sh's global, used there
   CONFIG_FILE="$(gr::config_file)"
@@ -1324,18 +1333,8 @@ gr::config_keys() {
   config_keys "$@"
 }
 
-# Whether a `fetch` command's live status line should be suppressed: an
-# explicit --batch, or stdout not being a terminal (a \r-based live line
-# would corrupt a redirected/piped log).
-#
-# Communicates via exit status, not stdout -- **must** be called as a
-# plain statement (`if gr::fetch_quiet "$x"; then quiet=1; fi`), never
-# `x="$(gr::fetch_quiet ...)"`. A command substitution's subshell has its
-# own stdout redirected to the capture pipe, so `[[ -t 1 ]]` inside would
-# check *that pipe*, never the real terminal -- confirmed directly (real
-# pty) this used to force quiet mode on unconditionally for everyone,
-# undetected because every manual test called this function directly
-# rather than through that exact wrapping.
+# Succeeds if the status line should be suppressed (--batch $1 or stdout
+# not a terminal). Never call inside $(...): [[ -t 1 ]] would test the pipe.
 gr::fetch_quiet() {
   local batch_flag="$1"
   [[ -n "$batch_flag" ]] && return 0
@@ -1343,45 +1342,26 @@ gr::fetch_quiet() {
   return 0
 }
 
-# Prints $1 as a self-updating status line -- \r plus clear-to-end-of-line
-# so a shorter message never leaves a stray tail of the previous, longer
-# one -- never a real newline, so the caller must print one of its own
-# (see gr::run_fetch) once done overwriting it. Does nothing at all if $2
-# (see gr::fetch_quiet) is non-empty.
+# Overwrites the status line with $1 (no newline); no-op if $2 (quiet) is set.
 gr::status_line() {
   local message="$1" quiet="$2"
   [[ -n "$quiet" ]] && return
   printf '\r\033[K%s' "$message"
 }
 
-# Clears whatever's currently on the status line, without printing a
-# replacement -- used right before a genuine failure message that must
-# survive as a normal, persisted line rather than get silently overwritten
-# by (or garble together with) the next status update. No-op if $1 is
-# non-empty, same as gr::status_line.
+# Clears the status line, e.g. before a persisted error; no-op if $1 (quiet) is set.
 gr::status_line_clear() {
   local quiet="$1"
   [[ -n "$quiet" ]] || printf '\r\033[K'
 }
 
-# Like gr::status_line_clear, but for stderr and independent of any
-# command's own --batch/quiet state (checks `[[ -t 2 ]]` itself) -- for
-# generic code (gr::http_get, gr::refresh_book/gr::refresh_blog) with no
-# way to reach a particular `fetch` command's $quiet, whose own
-# conclusive failure messages are worth showing even under --batch.
+# gr::status_line_clear for stderr, if it's a terminal, regardless of --batch.
 gr::term_clear_line() {
   [[ -t 2 ]] && printf '\r\033[K' >&2
 }
 
-# Like gr::status_line but for stderr, independent of --batch/quiet (same
-# reasoning as gr::term_clear_line) -- for gr::http_get's own retry
-# warning. Falls back to an ordinary persisted line when stderr isn't a
-# terminal (no "in place" to overwrite in a log, and a log benefits from
-# seeing every retry). Exists because that warning used to always persist,
-# which under a sustained bot-challenge block (retrying per attempt *and*
-# per affected item) piled up a wall of near-identical lines overwhelming
-# the status line it was meant to explain -- this keeps only the latest
-# notice visible, in place.
+# gr::status_line for stderr regardless of --batch; a plain line if stderr
+# isn't a terminal.
 gr::term_status() {
   if [[ -t 2 ]]; then
     printf '\r\033[K%s' "$1" >&2
@@ -1390,31 +1370,33 @@ gr::term_status() {
   fi
 }
 
-# Runs $2 (a function name) over each remaining positional id, showing
-# progress via a self-updating status line -- shared by `books
-# fetch`/`blogs fetch`. Calls `fetch_fn <id> <force> <quiet>`, which must:
-# on success (0) or skip (2, already cached), print outcome text to
-# stdout; on failure, print nothing to stdout, having already printed the
-# failure to stderr itself (via gr::status_line_clear first) -- see
-# fetch_one in books_fetch_command.sh/blogs_fetch_command.sh. Leaves
-# totals in $GR_FETCH_OK/$GR_FETCH_SKIPPED/$GR_FETCH_FAIL for the
-# caller's own summary line. **Clears the status line before returning**
-# rather than ending it with a newline, so the summary that every call
-# site prints right after *replaces* the last status update instead of
-# leaving it behind as a stray line.
+readonly GR_FETCH_MAX_CONSECUTIVE_FAILURES_DEFAULT=3
+
+# gr::run_fetch <quiet> <fetch_fn> <force> <id>...: calls
+# `fetch_fn <id> <force> <quiet>` per id (0 = ok, 2 = skipped, else failed;
+# outcome text on stdout, errors on stderr). Sets GR_FETCH_OK/_SKIPPED/_FAIL
+# and GR_FETCH_ABORTED (ids not attempted, empty if none). Stops early on
+# gr::blocked_marker_file or fetch_max_consecutive_failures failures in a row.
+# Ends with the status line cleared, not newline-terminated.
 gr::run_fetch() {
   local quiet="$1" fetch_fn="$2" force="$3"
   shift 3
   GR_FETCH_OK=0
   GR_FETCH_SKIPPED=0
   GR_FETCH_FAIL=0
+  GR_FETCH_ABORTED=""
 
-  local total="$#" processed=0 id status outcome
+  local max_streak blocked_marker
+  max_streak="$(gr::config_get fetch_max_consecutive_failures "$GR_FETCH_MAX_CONSECUTIVE_FAILURES_DEFAULT")"
+  blocked_marker="$(gr::blocked_marker_file)"
+  # A marker left over from an earlier run says nothing about this one.
+  rm -f "$blocked_marker"
+
+  local total="$#" processed=0 streak=0 id status outcome
   for id in "$@"; do
     processed=$((processed + 1))
     gr::status_line "[$processed/$total] $id..." "$quiet"
-    # set -e would abort the whole script on $fetch_fn's first non-zero
-    # return (2/"skipped" is routine, not a failure) if called bare.
+    # Inside `if` so set -e doesn't abort on a non-zero (e.g. 2 = skipped) return.
     if outcome="$("$fetch_fn" "$id" "$force" "$quiet")"; then
       status=0
     else
@@ -1426,6 +1408,23 @@ gr::run_fetch() {
       2) GR_FETCH_SKIPPED=$((GR_FETCH_SKIPPED + 1)) ;;
       *) GR_FETCH_FAIL=$((GR_FETCH_FAIL + 1)) ;;
     esac
+
+    [[ "$status" -eq 0 ]] && streak=0
+    if [[ "$status" -ne 0 && "$status" -ne 2 ]]; then
+      streak=$((streak + 1))
+      local reason=""
+      if [[ -f "$blocked_marker" ]]; then
+        reason="the site is still sending bot challenges after every retry"
+      elif (( max_streak > 0 && streak >= max_streak )); then
+        reason="$streak failures in a row (fetch_max_consecutive_failures)"
+      fi
+      if [[ -n "$reason" ]]; then
+        GR_FETCH_ABORTED=$((total - processed))
+        gr::status_line_clear "$quiet"
+        echo "error: stopping early -- $reason; $GR_FETCH_ABORTED item(s) not attempted. Re-run later to resume (cached items are skipped)." >&2
+        break
+      fi
+    fi
   done
   gr::status_line_clear "$quiet"
 }
@@ -1440,10 +1439,8 @@ gr::cookie_jar_for() {
 }
 
 gr::current_account() {
-  # NB: always returns 0 (an `if`, unlike `&&`, doesn't propagate a false
-  # test's exit status) — bashly runs under `set -e`, so a bare
-  # `x="$(gr::current_account)"` at a call site must not fail just because
-  # there's no current account yet.
+  # Always returns 0 (`if`, not `&&`), so `x="$(gr::current_account)"`
+  # survives set -e when there's no current account.
   local current_file
   current_file="$(gr::data_dir)/current"
   if [[ -f "$current_file" ]]; then
@@ -1465,10 +1462,8 @@ gr::set_current() {
   echo "$1" > "$(gr::data_dir)/current"
 }
 
-# Given a cookie jar, verifies it's an authenticated goodreads.com session by
-# fetching the homepage and pulling the personal-nav profile link out of it.
-# Prints {"id","username","profile_url"} as JSON on success; returns 1 with
-# nothing printed if the session isn't authenticated.
+# Prints {"id","username","profile_url"} for the session in cookie jar $1
+# (from the homepage's profile link); returns 1 if not logged in.
 gr::identify_account_from_cookiejar() {
   local cookiejar="$1"
   local home_html
@@ -1491,11 +1486,8 @@ gr::identify_account_from_cookiejar() {
     '{id: $id, username: $username, profile_url: $profile_url}'
 }
 
-# Human-readable session state for an account's stored cookie jar. Always
-# returns 0 (state is encoded in the printed string, not the exit code) so
-# it's safe to call as a bare `x="$(gr::cookies_state ...)"` under set -e.
-# Honors the global --offline flag: skips the live network check and just
-# reports whether a cookie jar file is present.
+# Prints account $1's session state; always returns 0 (safe in $(...)
+# under set -e). With --offline, only checks the jar file exists.
 gr::cookies_state() {
   local id="$1"
   local cookie_jar
@@ -1532,29 +1524,21 @@ gr::cookies_state() {
 }
 
 # src/lib/goodreads_blogs.sh
-# Safety cap for gr::discover_blog_ids's pagination loop — see there.
+# Safety cap for gr::discover_blog_ids's pagination (real count ~18).
 readonly GR_NEWS_DISCOVER_MAX_PAGES=50
 
-# Minimum book count for gr::refresh_blog's challenge_potential check.
+# Minimum book count for challenge_potential.
 readonly GR_CHALLENGE_LISTING_MIN_BOOKS=40
 
-# Moot today (challenge_potential is only ever 0 or 1) but named for when it
-# becomes a real fractional score.
 readonly GR_CHALLENGE_POTENTIAL_THRESHOLD=0.5
 
-# Single source of truth for "is this post effectively a challenge listing"
-# and its display marker (°/*/?/space). Prepend to a jq program via
-# `"$GR_CHALLENGE_JQ_DEFS"'...'` instead of duplicating the logic.
-# shellcheck disable=SC2034 # used cross-file by blogs_list_command.sh/blogs_get_command.sh's jq programs
+# jq defs: effective challenge status (manual .challenge wins over
+# challenge_potential) and its marker (°/*/?/space). Prepend to jq programs.
+# shellcheck disable=SC2034 # used by blogs_list/blogs_get command jq programs
 readonly GR_CHALLENGE_JQ_DEFS="def gr_challenge_status: if .challenge != null then .challenge else (.challenge_potential >= ${GR_CHALLENGE_POTENTIAL_THRESHOLD}) end; def gr_challenge_marker: if .challenge == false then \"°\" elif .challenge == true then \"*\" elif gr_challenge_status then \"?\" else \" \" end;"
 
-# xidel >=0.9.9 disabled JSONiq bare-object literals ({"a": 1}) under
-# --extract-kind=xquery3 by default, needing --json-mode=jsoniq to allow them
-# (confirmed: without it, gr::refresh_blog's book_sections query below
-# silently returns an "_error" blob, breaking jq --argjson downstream). 0.9.8
-# has no --json-mode flag (errors "Unknown option" but exits 0, same
-# downstream failure for a different reason) and doesn't need one. Detected
-# via `xidel --help` rather than a hardcoded version check.
+# xidel >=0.9.9 needs --json-mode=jsoniq for the {...} object literals in
+# gr::refresh_blog's xquery3; 0.9.8 lacks (and doesn't need) the flag.
 if xidel --help 2>/dev/null | grep -q -- '--json-mode'; then
   readonly GR_XIDEL_JSONIQ_FLAG="--json-mode=jsoniq"
 else
@@ -1569,8 +1553,7 @@ gr::blog_file() {
   echo "$(gr::blog_dir)/$1.json"
 }
 
-# Id-only urls resolve fine (301 to the slug form); a nonexistent id gets a
-# real 404, not book pages' WAF fake-200 — no special-casing needed here.
+# Id-only urls 301 to the slug form; a nonexistent id gets a real 404.
 gr::blog_url() {
   echo "https://www.goodreads.com/blog/show/$1"
 }
@@ -1584,9 +1567,7 @@ gr::news_url() {
   fi
 }
 
-# Newest post id seen on page 1 as of gr::discover_blog_ids's last successful
-# run (its short-circuit criterion for later scans). Plain-text state file,
-# same convention as gr::throttle's .last_request_at.
+# Holds the newest post id seen by the last successful discovery.
 gr::blogs_discovery_marker_file() {
   echo "$(gr::data_dir)/.blogs_discovery_marker"
 }
@@ -1603,20 +1584,10 @@ gr::blogs_discovery_marker_set() {
   echo "$1" > "$(gr::blogs_discovery_marker_file)"
 }
 
-# Blog post ids currently on the /news listing. $1 is "" (short-circuited
-# scan) or "--full" (complete walk, what --all needs).
-# content_type=articles excludes /interviews/show/ (a separate content type).
-#
-# Terminates when either the discovery marker turns up on a page (only ids
-# before it in document order are new; --full skips this) or a page
-# contributes no new ids at all (the fallback for --full, a marker-less first
-# run, or a since-deleted marker post). GR_NEWS_DISCOVER_MAX_PAGES is a
-# safety net above the real page count (~17-18).
-#
-# A short-circuited result isn't guaranteed complete and doesn't filter out
-# already-cached ids — diffing against the cache is the caller's job (see
-# blogs_update_command.sh). The marker is only updated on success, so a
-# failed run leaves it untouched.
+# Prints blog post ids from the /news listing, one per line (not filtered
+# against the cache). Stops at the discovery marker (ids before it are new),
+# or with $1 == "--full" only when a page adds no new ids. Updates the
+# marker only on success.
 gr::discover_blog_ids() {
   local full="${1:-}"
   local marker=""
@@ -1627,8 +1598,7 @@ gr::discover_blog_ids() {
   local page=1
   local all_ids=""
   local newest_id=""
-  # Not a function-level `trap ... RETURN` — that would only clean up the
-  # last page's temp file. Cleaned up directly after each page instead.
+  # Per-page temp file, removed directly (a RETURN trap would only catch the last).
   local html
 
   while (( page <= GR_NEWS_DISCOVER_MAX_PAGES )); do
@@ -1640,9 +1610,8 @@ gr::discover_blog_ids() {
       return 1
     fi
 
-    # Scoped to editorialCard__image--fullHeight (the real listing card's
-    # cover image), not any /blog/show/ link — a page-wide match also picks
-    # up an unrelated promo banner link, breaking newest-id detection.
+    # Only real listing cards; the header has an unrelated promo /blog/show/ link.
+    # awk: order-preserving dedup (position relative to the marker matters).
     local raw_ids ordered_ids
     raw_ids="$(grep -E '/blog/show/[0-9]+.*editorialCard__image--fullHeight' "$html" | grep -oE '/blog/show/[0-9]+' | grep -oE '[0-9]+')"
     rm -f "$html"
@@ -1672,17 +1641,14 @@ gr::discover_blog_ids() {
     gr::blogs_discovery_marker_set "$newest_id"
   fi
 
-  # Captured into a variable and echoed rather than ending on a bare
-  # `... | grep -v '^$'` — grep exits 1 when there's legitimately nothing to
-  # print (e.g. "nothing new"), which callers' `|| exit 1` misread as failure.
+  # Not a bare trailing grep: it exits 1 on empty output, which isn't a failure.
   local result
   result="$(sort -n -u <<< "$all_ids" | grep -v '^$')"
   echo "$result"
 }
 
-# Records a post as confirmed permanently gone (real 404) without touching
-# any previously cached content. removed_remotely_detected_at is set once
-# and never re-stamped.
+# Flags post $1 as removed_remotely (after a 404), keeping cached content or
+# writing a stub. The detection timestamp is set only once.
 gr::mark_blog_removed() {
   local id="$1"
   local blog_file
@@ -1716,18 +1682,13 @@ gr::mark_blog_removed() {
   mv "$tmp_blog" "$blog_file"
 }
 
-# Fetches and caches one blog post. Two successful outcomes: still exists
-# (fields extracted, cache written) or permanently gone (real 404, recorded
-# via gr::mark_blog_removed). TTL/force-refresh is gr::blog_json's concern —
-# this always fetches unconditionally.
+# Fetches blog post $1 and rebuilds blogs/<id>.json; a 404 instead marks it
+# removed_remotely (also success). Prints the file path on success.
 gr::refresh_blog() {
   local id="$1"
   mkdir -p "$(gr::blog_dir)"
 
-  # .challenge is a manual override (see `blogs challenge`) that this
-  # function only preserves, never sets — read before the cache gets
-  # rebuilt below. "null" when there's nothing to preserve;
-  # with_entries(select(.value != null)) drops it at the end.
+  # Carry the manual .challenge override across the rebuild.
   local existing_challenge="null"
   local existing_blog_file
   existing_blog_file="$(gr::blog_file "$id")"
@@ -1739,10 +1700,10 @@ gr::refresh_blog() {
   html="$(mktemp)"
   tmp_blog="$(mktemp)"
   body_html_file="$(mktemp)"
-  # See gr::mark_blog_removed for why the trap clears itself.
+  # Self-clearing: a RETURN trap is global, not scoped to this call.
   trap 'rm -f "$html" "$tmp_blog" "$body_html_file"; trap - RETURN' RETURN
 
-  if ! gr::http_get "$(gr::blog_url "$id")" > "$html"; then
+  if ! GR_HTTP_EXPECT="$GR_HTTP_EXPECT_CANONICAL" gr::http_get "$(gr::blog_url "$id")" > "$html"; then
     local status
     status="$(gr::http_status "$(gr::blog_url "$id")")"
     if [[ "$status" == "404" ]]; then
@@ -1759,10 +1720,10 @@ gr::refresh_blog() {
   if [[ -z "$canonical_url" ]]; then
     gr::term_clear_line
     echo "error: no canonical link found for blog post $id — page may not be a valid blog post page" >&2
+    gr::save_bad_response "$html"
     return 1
   fi
 
-  # Sanity check, same spirit as gr::refresh_book's __NEXT_DATA__ check.
   local canonical_id
   canonical_id="$(sed -E 's#.*/blog/show/([0-9]+).*#\1#' <<< "$canonical_url")"
   if [[ "$canonical_id" != "$id" ]]; then
@@ -1775,9 +1736,8 @@ gr::refresh_blog() {
   title="$(xidel -s "$html" -e '(//h1[@class="gr-h1 gr-h1--serif"])[1]' 2>/dev/null)"
   author_and_date="$(xidel -s "$html" -e '(//span[contains(@class,"secondaryTextBottomPadding")])[1]' 2>/dev/null)"
   like_text="$(xidel -s "$html" -e '(//a[contains(@href,"/rating/voters/")])[1]' 2>/dev/null)"
-  # Internal only, never persisted — used for the validity check below and
-  # the challenge_potential grid-widget grep (needs real HTML, not text).
-  # Written to a file, not a variable — can run well past 500KB.
+  # Body HTML (not persisted) for the challenge_potential class grep; a file,
+  # not a variable, since it can exceed 500KB.
   xidel -s "$html" -e '(//div[@class="newsShowColumn"])[1]' --output-format=html 2>/dev/null > "$body_html_file"
 
   if [[ -z "$title" || ! -s "$body_html_file" ]]; then
@@ -1798,17 +1758,13 @@ gr::refresh_blog() {
   local like_count
   like_count="$(grep -oE '^[0-9]+' <<< "$like_text")" || true
 
-  # Every book, grouped into its <h1 style="text-align:center"> section (one
-  # null-section group when there isn't any). Title comes from the
-  # cover-grid <img alt> (contains(@class,"AcrossImage")), not just the
-  # first <img> — a book's cover is preceded by an often-empty amazonBadge
-  # sibling that can itself contain an <img>, once causing bogus "Kindle
-  # Unlimited"-titled books. Inline-only mentions (no cover) are dropped.
-  # xquery3 needed for `let` and `preceding::` (nearest heading in document
-  # order — headings and books aren't in an ancestor/descendant relation).
+  # Books grouped by the nearest preceding <h1 style="text-align:center">
+  # (null section if none), in post order, deduped by id. Title is the cover's
+  # AcrossImage <img alt> (an amazonBadge <img> may come first); books with
+  # no cover title are dropped. xquery3 is needed for `let`.
   local book_sections
-  # shellcheck disable=SC2016 # $a/$section below are xidel's own XQuery variables, not bash expansions — single quotes are deliberate
-  # shellcheck disable=SC2086 # GR_XIDEL_JSONIQ_FLAG is a single flag or empty — word-splitting is exactly what's wanted so an empty value contributes no argument
+  # shellcheck disable=SC2016 # $a/$section are XQuery variables
+  # shellcheck disable=SC2086 # GR_XIDEL_JSONIQ_FLAG is one flag or empty
   book_sections="$(xidel -s "$html" --extract-kind=xquery3 ${GR_XIDEL_JSONIQ_FLAG} -e '
     [for $a in (//div[@class="newsShowColumn"])[1]//a[contains(@href,"/book/show/")]
      let $section := ($a/preceding::h1[contains(@style,"text-align:center")])[last()]
@@ -1847,12 +1803,8 @@ gr::refresh_blog() {
   local total_books
   total_books="$(jq '[.[].books | length] | add // 0' <<< "$book_sections")"
 
-  # 1 if the post uses Goodreads' cover-grid embed (fourAcrossImage/
-  # threeAcrossImage exact class — excludes all-audiobook posts, which use
-  # the --audiobook modifier) and has >= GR_CHALLENGE_LISTING_MIN_BOOKS
-  # books; else 0. Not proof of a real challenge tie-in, just a
-  # "book-listing-shaped candidate" flag for human review (see CLAUDE.md).
-  # Plain 0/1 for now; room for a real fractional score later.
+  # 1 if >= GR_CHALLENGE_LISTING_MIN_BOOKS books and at least one plain
+  # (non-"--audiobook") cover-grid image, else 0.
   local challenge_potential
   if [[ "$total_books" -ge "$GR_CHALLENGE_LISTING_MIN_BOOKS" ]] \
     && grep -qE 'class="fourAcrossImage"|class="threeAcrossImage"' "$body_html_file"; then
@@ -1893,21 +1845,13 @@ gr::refresh_blog() {
   gr::blog_file "$id"
 }
 
-# True (0) if blog post $1 is cached at all -- there's no actual TTL to
-# check (see below), so "cached" and "fresh" are simply the same
-# question here. Exists purely for symmetry with gr::book_fresh, so
-# blogs_fetch_command.sh's "ttl" force policy can ask the same shape of
-# question `books fetch --all` does, per explicit direction to keep the
-# two commands consistent even though the answer here is always
-# trivially "yes, if cached at all".
+# Counterpart of gr::book_fresh; blog posts have no TTL, so cached == fresh.
 gr::blog_fresh() {
   [[ -f "$(gr::blog_file "$1")" ]]
 }
 
-# Cached blog post JSON, backed by blogs/<id>.json. No TTL — blog content
-# never changes once published, so "cached" == "fresh"; --force (2nd arg)
-# re-fetches anyway. A removed_remotely stub is served like any other
-# cached post — callers check that field themselves.
+# Prints blog post $1 as one-line JSON, fetching it if uncached or with
+# --force ($2). A removed_remotely stub is returned like any other post.
 gr::blog_json() {
   local id="$1"
   local force="${2:-}"
@@ -1928,7 +1872,7 @@ gr::blog_json() {
 }
 
 # src/lib/goodreads_books.sh
-# Default for the book_cache_ttl config key (seconds), used when unset.
+# Default for the book_cache_ttl config key (seconds).
 readonly GR_BOOK_CACHE_TTL_DEFAULT=$((100 * 24 * 3600))
 
 gr::book_dir() {
@@ -1939,19 +1883,12 @@ gr::book_file() {
   echo "$(gr::book_dir)/$1.json"
 }
 
-# Book URLs resolve by id alone — the trailing title-slug is decorative
-# (confirmed: id-only and id+slug URLs both 200, identical canonical link).
-# Always build URLs from the id alone here; gr::refresh_book appends its own
-# fake slug (gr::random_book_slug) right before fetching — see there for why.
+# The title slug is decorative; book URLs resolve by id alone.
 gr::book_url() {
   echo "https://www.goodreads.com/book/show/$1"
 }
 
-# A grammatically-plausible but meaningless three-word "title"
-# (".../show/<id>-a-blue-box") for gr::refresh_book to append right before
-# fetching, so the request looks like normal browser traffic rather than a
-# bare id. Kept out of gr::book_url itself since not every caller wants a
-# fake slug. Article/number + adjective + noun, agreeing in number/article.
+# Random grammatical fake slug, e.g. "a-blue-box" or "three-old-lamps".
 gr::random_book_slug() {
   local -a number_words=(one two three four five six seven eight nine ten eleven twelve)
   local -a adjectives=(
@@ -1982,39 +1919,14 @@ gr::random_book_slug() {
   echo "$first-$adjective-$noun"
 }
 
-# Book pages need no login, so this fetches account-less (COOKIE_JAR already
-# points at gr::generic_cookie_jar by the time this runs — see
-# src/before.sh). gr::http_get itself refuses to run under --offline, so no
-# separate check is needed here.
-#
-# Output is our own scraped fields (book_id, legacyId, url, canonical_url)
-# flat-merged with the page's schema.org/Book JSON-LD — @context/@type kept
-# so the result stays valid JSON-LD. JSON-LD strings are whitespace-squeezed
-# and HTML-entity-decoded first (Goodreads' template leaves junk like "Liz
-# Moore" double-spaced, or literal "&amp;" inside the <script> block).
-#
-# canonical_url is the *work's* preferred edition and can point at a
-# *different* book id than requested (confirmed: id 25098993's canonical_url
-# embeds id 1744452). `url` is this specific edition's own self URL
-# (webUrl, from the embedded Next.js data below) — always matching the
-# requested id. Don't conflate the two.
-#
-# Goodreads is Next.js: every page embeds <script id="__NEXT_DATA__">, whose
-# `.query.book_id` is the literal route parameter — used to confirm the
-# fetched page really is for the requested id before caching anything.
-# `.props.pageProps.apolloState` holds a GraphQL-normalized cache with one
-# "Book:<ref>" entry per book referenced on the page (e.g. "other editions"
-# widgets); the one whose `.legacyId` matches is where `.webUrl` (-> `url`)
-# comes from.
-#
-# All temp files share one trap (traps replace, not stack) so every stage's
-# leftovers get cleaned up regardless of which fails. Every failable stage
-# is checked explicitly and returns 1 before the final `mv`, never left to
-# `set -e` — a caller using this in an && / || / if-condition list disables
-# errexit, and jq treats an empty file as valid empty output (exit 0), so an
-# implicit-only check could silently blank a good cache. Prints the
-# resulting books/<id>.json path on success (gr::book_json discards it, but
-# it makes this self-describing for manual use).
+# Fetches book $1 and writes books/<id>.json: our fields (book_id,
+# canonical_url) * the page's JSON-LD * fields from __NEXT_DATA__'s
+# apolloState (right side wins). Prints the file path on success.
+# canonical_url is the work's preferred edition and may be a different id;
+# `url` is always this edition's own.
+# Every stage is checked explicitly before the final mv, not left to set -e
+# (errexit is off when called inside && / || / if, and jq exits 0 on empty
+# input), so a failure never blanks a good cache.
 gr::refresh_book() {
   local id="$1"
   mkdir -p "$(gr::book_dir)"
@@ -2025,12 +1937,11 @@ gr::refresh_book() {
   next_data="$(mktemp)"
   apollo_json="$(mktemp)"
   tmp_book="$(mktemp)"
+  # One trap for all temp files: traps replace each other, they don't stack.
   trap 'rm -f "$html" "$ld_json" "$next_data" "$apollo_json" "$tmp_book"' EXIT
 
-  # Fake slug appended here, not in gr::book_url (see there) — goodreads.com
-  # ignores it either way. Means `.query.book_id` below is "<id>-<slug>",
-  # not just $id.
-  if ! gr::http_get "$(gr::book_url "$id")-$(gr::random_book_slug)" > "$html"; then
+  # Fake slug so the request looks like normal browser traffic.
+  if ! GR_HTTP_EXPECT="$GR_HTTP_EXPECT_CANONICAL" gr::http_get "$(gr::book_url "$id")-$(gr::random_book_slug)" > "$html"; then
     gr::term_clear_line
     echo "error: could not fetch book $id from goodreads.com" >&2
     return 1
@@ -2041,6 +1952,7 @@ gr::refresh_book() {
   if [[ -z "$canonical_url" ]]; then
     gr::term_clear_line
     echo "error: no canonical link found for book $id — page may not be a valid book page" >&2
+    gr::save_bad_response "$html"
     return 1
   fi
 
@@ -2051,8 +1963,7 @@ gr::refresh_book() {
     return 1
   fi
 
-  # .query.book_id is the whole "<id>-<slug>" route segment, so only its
-  # numeric prefix is meaningful here, not an exact match against $id.
+  # .query.book_id is the route segment "<id>-<slug>"; compare its id prefix.
   local requested_book_id
   requested_book_id="$(jq -r '.query.book_id // empty' "$next_data")"
   if [[ "${requested_book_id%%-*}" != "$id" ]]; then
@@ -2061,12 +1972,8 @@ gr::refresh_book() {
     return 1
   fi
 
-  # clean_or_null runs on every apolloState string in the output (titles,
-  # description, contributor/series names) — apolloState has the same
-  # whitespace junk as the JSON-LD, but since apollo wins the final merge
-  # (`$ld[0] * $apollo[0]`), cleaning only the JSON-LD side wouldn't reach
-  # these fields. Also maps "" to null (Goodreads' originalTitle is "" not
-  # missing when there's none — confirmed) so drop_nulls actually drops it.
+  # apolloState strings need their own clean_or_null (whitespace squeeze,
+  # "" -> null): they win the final merge over the cleaned JSON-LD.
   jq -c --arg id "$id" '
     def epoch_to_date: if . then (./1000 | gmtime | strftime("%Y-%m-%d")) else null end;
     def epoch_to_year: if . then (./1000 | gmtime | strftime("%Y")) else null end;
@@ -2158,15 +2065,7 @@ gr::refresh_book() {
   gr::book_file "$id"
 }
 
-# True (0, prints nothing) if book $1's cache file exists and is still
-# within its `book_cache_ttl` config seconds (GR_BOOK_CACHE_TTL_DEFAULT if
-# unset) -- false (1) if missing or stale. `find -newermt` handles
-# "missing" and "stale" as one check: it prints the path only if the file
-# exists AND is newer, so empty output means "needs a refresh" either
-# way. Factored out of gr::book_json so `books fetch --all` (below) can
-# ask the same question itself, without forcing a call into
-# gr::book_json, to tell "still fresh, left alone" apart from "was stale,
-# refreshed" for its own reporting.
+# True if book $1 is cached and younger than book_cache_ttl seconds.
 gr::book_fresh() {
   local id="$1" book_file ttl threshold fresh
   book_file="$(gr::book_file "$id")"
@@ -2178,12 +2077,8 @@ gr::book_fresh() {
   [[ -n "$fresh" ]]
 }
 
-# One-line JSON for the given book id, cached at books/<id>.json, fresh
-# per gr::book_fresh. "--force" bypasses the TTL (same shape as
-# gr::blog_json, used by `books fetch`). A failed refresh fails this
-# outright rather than falling back to stale/missing data. Never holds the
-# JSON in a variable — the file is read back via jq, doubling as a validity
-# check.
+# Prints book $1 as one-line JSON, refreshing the cache if stale or with
+# --force ($2). A failed refresh fails, never falls back to stale data.
 gr::book_json() {
   local id="$1"
   local force="${2:-}"
@@ -2204,12 +2099,6 @@ gr::book_json() {
 }
 
 # src/lib/goodreads_challenges.sh
-# Reading challenges are manually curated, not scraped -- no goodreads.com
-# listing to discover them from (challenge detail is behind a step-up-auth
-# wall, see CLAUDE.md). challenge_id is a purely local string derived from
-# the challenge's own start/end (see gr::generate_challenge_id, below),
-# unlike book_id/blog_id, which are goodreads.com's own ids.
-
 gr::challenge_dir() {
   echo "$(gr::data_dir)/challenges"
 }
@@ -2218,8 +2107,7 @@ gr::challenge_file() {
   echo "$(gr::challenge_dir)/$1.json"
 }
 
-# Errors (return 1) if the challenge doesn't exist; else prints its file
-# path -- same shape gr::refresh_book uses.
+# Prints challenge $1's file path, or errors (return 1) if it doesn't exist.
 gr::require_challenge_file() {
   local id="$1"
   local file
@@ -2231,11 +2119,8 @@ gr::require_challenge_file() {
   echo "$file"
 }
 
-# Creates a challenge with empty blogs/count_badges (see
-# gr::add_challenge_blog/count_badge to populate them). Prints the new id.
-# $4, if given, is used as-is instead of calling gr::generate_challenge_id
-# (see challenges_create_command.sh's own --id, which already checked it
-# isn't taken before ever calling this).
+# Creates a challenge with empty blogs/count_badges and prints its id.
+# $4, if given, is used as the id instead of gr::generate_challenge_id.
 gr::create_challenge() {
   local title="$1" start="$2" end="$3" id_override="${4:-}"
   mkdir -p "$(gr::challenge_dir)"
@@ -2243,9 +2128,7 @@ gr::create_challenge() {
   local id="$id_override"
   [[ -z "$id" ]] && id="$(gr::generate_challenge_id "$start" "$end")"
 
-  # jq's grammar reserves "end" for if/end and can't parse $end as a
-  # variable -- confirmed directly. Bind it as end_date instead; the
-  # bash-side name stays plain "end" throughout.
+  # jq can't parse $end (reserved keyword), hence $end_date.
   jq -n -S \
     --arg id "$id" \
     --arg title "$title" \
@@ -2257,8 +2140,7 @@ gr::create_challenge() {
   echo "$id"
 }
 
-# Merges whichever of title/start/end are non-empty onto the existing file;
-# blogs/count_badges are always left untouched.
+# Sets whichever of title/start/end are non-empty.
 gr::update_challenge() {
   local id="$1" title="$2" start="$3" end="$4"
   local file
@@ -2282,8 +2164,7 @@ gr::update_challenge() {
   mv "$tmp_file" "$file"
 }
 
-# Upserts by blog_id: an existing entry only has its name replaced (order
-# preserved), a new one is appended. Empty name stores as null, never "".
+# Upserts by blog_id (existing entry keeps its position); empty name -> null.
 gr::add_challenge_blog() {
   local id="$1" blog_id="$2" name="${3:-}"
   local file
@@ -2326,8 +2207,7 @@ gr::remove_challenge_blog() {
   mv "$tmp_file" "$file"
 }
 
-# Same upsert shape as gr::add_challenge_blog, keyed by count; kept sorted
-# by count afterward so display order is always ascending.
+# Upserts by count, like gr::add_challenge_blog; kept sorted by count.
 gr::add_challenge_count_badge() {
   local id="$1" count="$2" name="${3:-}"
   local file
@@ -2353,6 +2233,7 @@ gr::add_challenge_count_badge() {
   mv "$tmp_file" "$file"
 }
 
+# Returns 1 (nothing written) if count isn't on the challenge.
 gr::remove_challenge_count_badge() {
   local id="$1" count="$2"
   local file
@@ -2370,12 +2251,31 @@ gr::remove_challenge_count_badge() {
   mv "$tmp_file" "$file"
 }
 
-# Challenge status (planned/ongoing/finished) from start/end vs $today,
-# computed once per invocation. Shared by list/get. Unrelated to
-# GR_CHALLENGE_JQ_DEFS (goodreads_blogs.sh) despite the name -- that one's
-# about a blog post's own candidate flag, this is a challenge's lifecycle.
-# shellcheck disable=SC2034 # used cross-file by challenges_list_command.sh/challenges_get_command.sh's jq programs
-# shellcheck disable=SC2016 # single-quoted deliberately — this is jq syntax, not bash, and must not expand here
+# Empty .blogs / .count_badges.
+gr::clear_challenge_blogs() {
+  gr::clear_challenge_array "$1" blogs
+}
+
+gr::clear_challenge_count_badges() {
+  gr::clear_challenge_array "$1" count_badges
+}
+
+gr::clear_challenge_array() {
+  local id="$1" field="$2"
+  local file
+  file="$(gr::require_challenge_file "$id")" || return 1
+
+  local tmp_file
+  tmp_file="$(mktemp)"
+  trap 'rm -f "$tmp_file"; trap - RETURN' RETURN
+
+  jq -S --arg field "$field" '.[$field] = []' "$file" > "$tmp_file" || return 1
+  mv "$tmp_file" "$file"
+}
+
+# jq def: planned/ongoing/finished from start/end vs $today (YYYY-MM-DD).
+# shellcheck disable=SC2034 # used by challenges_list/challenges_get command jq programs
+# shellcheck disable=SC2016 # jq syntax, must not expand
 readonly GR_CHALLENGE_STATUS_JQ_DEF='
 def challenge_status($today):
   if $today < .start then "planned"
@@ -2383,23 +2283,16 @@ def challenge_status($today):
   else "ongoing" end;
 '
 
-# --- Defaults for `challenges create`. Seasons: Winter/Spring/Summer/Fall
-# = Jan-Mar/Apr-Jun/Jul-Sep/Oct-Dec (explicit direction, not the
-# Northern-Hemisphere calendar seasons). The two arrays are parallel,
-# indexed 0-3.
+# --- Defaults for `challenges create`. Parallel arrays, indexed by quarter 0-3.
 readonly GR_QUARTER_END_MONTHDAY=(03-31 06-30 09-30 12-31)
 readonly GR_QUARTER_SEASON=(Winter Spring Summer Fall)
 readonly GR_CHALLENGE_MIN_DAYS=42 # 6 weeks
 
-# --blogs default window: starts this many days before the challenge's
-# start, ends this many days before its end (or today if earlier) --
-# deliberately asymmetric per explicit direction.
+# --blogs default window: [start - 7 days, min(end - 14 days, today)].
 readonly GR_CHALLENGE_BLOG_WINDOW_BEFORE_START_DAYS=7
 readonly GR_CHALLENGE_BLOG_WINDOW_BEFORE_END_DAYS=14
 
-# --blogs default likeliness threshold -- higher than goodreads_blogs.sh's
-# own GR_CHALLENGE_POTENTIAL_THRESHOLD (0.5), which answers a different
-# question (is this a listing at all vs. auto-link it to a new challenge).
+# --blogs default minimum challenge_potential.
 readonly GR_CHALLENGE_BLOG_DEFAULT_MIN_POTENTIAL=0.7
 
 # Index (0-3) of the quarter $1 (YYYY-MM-DD) falls in.
@@ -2437,9 +2330,7 @@ gr::quarter_start_of() {
   printf '%04d-%02d-01\n' "$year" "$month"
 }
 
-# Days between two dates ($2 - $1), pinned to UTC -- a local-time
-# epoch/86400 diff is off by a day across a DST transition (confirmed
-# directly: 2024-03-25 to 2024-04-01 in Europe/Berlin gives 6, not 7).
+# Days from $1 to $2. UTC, since a local-time diff is off by one across DST.
 gr::days_between() {
   local start_epoch end_epoch
   start_epoch="$(date -u -d "$1" +%s)"
@@ -2447,17 +2338,14 @@ gr::days_between() {
   echo $(( (end_epoch - start_epoch) / 86400 ))
 }
 
-# The last day of the month right before $1's own month, e.g.
-# 2024-03-31 -> 2024-02-29. $1 need not itself be a month-end.
+# Last day of the month before $1's, e.g. 2024-03-31 -> 2024-02-29.
 gr::last_day_of_prev_month() {
   date -d "$(date -d "$1" +%Y-%m-01) -1 day" +%Y-%m-%d
 }
 
-# The last day of the month right after $1's own month, e.g.
-# 2024-03-31 -> 2024-04-30. Three materialized date -d calls, not one
-# chained relative string -- confirmed directly GNU date doesn't apply
-# chained terms left-to-right ("$1 +1 day +1 month -1 day" gives
-# 2024-05-01 for 2024-03-31, not 2024-04-30).
+# Last day of the month after $1's, e.g. 2024-03-31 -> 2024-04-30.
+# Separate date -d steps: GNU date doesn't apply chained relative terms in
+# order ("+1 day +1 month -1 day" gives 2024-05-01 here).
 gr::last_day_of_next_month() {
   local next_day plus_month
   next_day="$(date -d "$1 +1 day" +%Y-%m-%d)"
@@ -2465,9 +2353,7 @@ gr::last_day_of_next_month() {
   date -d "$plus_month -1 day" +%Y-%m-%d
 }
 
-# Default --end for a challenge starting on $1: the next quarter-end at or
-# after $1, unless under GR_CHALLENGE_MIN_DAYS away, in which case the one
-# after that -- e.g. start=2024-09-15 selects 2024-12-31, not 2024-09-30.
+# Default --end: the first quarter-end at least GR_CHALLENGE_MIN_DAYS after $1.
 gr::default_challenge_end() {
   local start="$1" candidate
   candidate="$(gr::quarter_end_on_or_after "$start")"
@@ -2477,8 +2363,7 @@ gr::default_challenge_end() {
   echo "$candidate"
 }
 
-# Every existing challenge's file path, one per line, or nothing -- shared
-# by gr::latest_challenge and gr::challenges_overlapping below.
+# Every challenge file path, one per line.
 gr::all_challenge_files() {
   local dir file
   dir="$(gr::challenge_dir)"
@@ -2488,8 +2373,7 @@ gr::all_challenge_files() {
   done
 }
 
-# "<id>\t<start>\t<end>" of the existing challenge with the largest .end,
-# or empty if there are none -- "latest" by .end, not necessarily .start.
+# "<id>\t<start>\t<end>" of the challenge with the largest .end, or nothing.
 gr::latest_challenge() {
   local files=()
   mapfile -t files < <(gr::all_challenge_files)
@@ -2497,13 +2381,8 @@ gr::latest_challenge() {
   cat "${files[@]}" | jq -s -r 'max_by(.end) | [.challenge_id, .start, .end] | @tsv'
 }
 
-# "<id>\t<start>\t<end>" of the existing challenge with the smallest .end
-# that's still today or later -- the next one to actually finish, whether
-# it's currently ongoing or still merely planned -- or empty if every
-# existing challenge has already ended (or there are none at all). Used
-# by `challenges get` to pick a sensible default when no id is given; see
-# gr::latest_challenge, above, for the "everything's already over"
-# fallback that pairs with this.
+# "<id>\t<start>\t<end>" of the challenge with the smallest .end >= $1
+# (today), or nothing.
 gr::next_ending_challenge() {
   local today="$1" files=()
   mapfile -t files < <(gr::all_challenge_files)
@@ -2515,9 +2394,7 @@ gr::next_ending_challenge() {
   '
 }
 
-# "<id>\t<start>\t<end>" for every existing challenge overlapping [$1, $2],
-# one per line. Used to refuse an *auto-selected* --start that would
-# silently collide -- see challenges_create_command.sh.
+# "<id>\t<start>\t<end>" of every challenge overlapping [$1, $2].
 gr::challenges_overlapping() {
   local start="$1" end="$2" files=()
   mapfile -t files < <(gr::all_challenge_files)
@@ -2529,20 +2406,9 @@ gr::challenges_overlapping() {
   '
 }
 
-# Default --start: the day after the latest challenge's own end, if a
-# hypothetical same-rules successor starting there would still be ongoing
-# right now (one test covering both "still ongoing" and "recently ended").
-# Otherwise the start of the current quarter -- no prior challenge, or the
-# trail went cold long enough ago that continuing from it doesn't make
-# sense.
-#
-# Fails outright instead of either, if the latest challenge hasn't started
-# yet ("planned"): chaining off it doesn't make sense, and falling back to
-# the quarter start could land back on an *earlier* challenge instead
-# (confirmed directly: three successive no-arg `create` calls -- #3's
-# latest, #2, is still merely planned, and falling back would silently
-# collide with #1). Naming the actual planned challenge here beats letting
-# that surface later as a generic overlap error.
+# Default --start as of $1 (today): the day after the latest challenge's
+# end if a default-length successor from there hasn't ended yet, else the
+# current quarter's start. Fails if the latest challenge is still planned.
 gr::default_challenge_start() {
   local today="$1" latest latest_id latest_start latest_end
   local candidate_start candidate_end
@@ -2567,13 +2433,8 @@ gr::default_challenge_start() {
   gr::quarter_start_of "$today"
 }
 
-# "<year>\t<idx>" (idx 0-3, matching GR_QUARTER_SEASON/
-# GR_QUARTER_END_MONTHDAY) for the quarter-end within one calendar month
-# of $1, else nothing. <year> is the matched quarter-end's own year, not
-# necessarily $1's -- 2025-01-15 matches 2024-12-31 (Fall), so this
-# reports 2024. Shared by gr::season_title_near and gr::challenge_season,
-# so "is this near a quarter-end, and which one" is answered in exactly
-# one place.
+# "<year>\t<idx>" of the quarter-end within one calendar month of $1, else
+# nothing. <year> is the quarter-end's (2025-01-15 -> 2024, idx 3).
 gr::quarter_near() {
   local d="$1" base_year check_year idx q_end window_start window_end
   base_year="$(date -d "$d" +%Y)"
@@ -2600,13 +2461,9 @@ gr::season_title_near() {
   echo "${GR_QUARTER_SEASON[idx]} Challenge ${year}"
 }
 
-# "<year>\t<quarter>" (quarter 1-4, i.e. idx+1) if the challenge $1 to $2
-# is "seasonal" -- the same rule gr::default_challenge_title uses to pick
-# a season name for it (at least GR_CHALLENGE_MIN_DAYS long, end within a
-# month of a quarter-end) -- else nothing. Shared by
-# gr::default_challenge_title and gr::generate_challenge_id, so
-# "seasonal or not" can never quietly disagree between a challenge's title
-# and its id.
+# "<year>\t<quarter 1-4>" if the challenge $1..$2 is seasonal (at least
+# GR_CHALLENGE_MIN_DAYS long, end near a quarter-end), else nothing.
+# Shared by the default title and the id so they always agree.
 gr::challenge_season() {
   local start="$1" end="$2" match year idx
   [[ "$(gr::days_between "$start" "$end")" -ge "$GR_CHALLENGE_MIN_DAYS" ]] || return
@@ -2616,8 +2473,7 @@ gr::challenge_season() {
   printf '%s\t%s\n' "$year" "$((idx + 1))"
 }
 
-# Default --title: "<Season> Challenge <year>" for a seasonal challenge
-# (gr::challenge_season); else "Unnamed Challenge".
+# Default --title: "<Season> Challenge <year>" if seasonal, else "Unnamed Challenge".
 gr::default_challenge_title() {
   local start="$1" end="$2" season year quarter
   season="$(gr::challenge_season "$start" "$end")"
@@ -2629,16 +2485,8 @@ gr::default_challenge_title() {
   echo "Unnamed Challenge"
 }
 
-# Chooses a new challenge id, without creating anything (see
-# gr::create_challenge) -- "<year>Q<quarter>" for a seasonal challenge
-# (gr::challenge_season; e.g. "2026Q3"), falling back to
-# "<base>-<counter>" (counter starting at 2) if that id is already taken;
-# "<year>-<counter>" (counter starting at 1, straight away -- no bare
-# "<year>" attempt first) for a non-seasonal one, keyed off $1's own year
-# since there's no quarter-end to anchor to. Existence is checked directly
-# against the real challenge files on disk, not any separate counter
-# state -- unlike the purely-sequential-integer scheme this replaced, an
-# id CAN be reused once its challenge is deleted (see CLAUDE.md).
+# First free id: "<year>Q<quarter>" (then "-2", "-3", ...) if seasonal,
+# else "<start year>-<n>" from n=1. Checks existing files only.
 gr::generate_challenge_id() {
   local start="$1" end="$2" season year quarter base counter
 
@@ -2666,17 +2514,10 @@ gr::generate_challenge_id() {
   echo "${year}-${counter}"
 }
 
-# Default --blogs for a challenge running $1 to $2, as of today ($3):
-# every *cached* post (can't discover ones never fetched) published in
-# [$1 - GR_CHALLENGE_BLOG_WINDOW_BEFORE_START_DAYS days, min($2 -
-# GR_CHALLENGE_BLOG_WINDOW_BEFORE_END_DAYS days, $3)] with
-# challenge_potential >= GR_CHALLENGE_BLOG_DEFAULT_MIN_POTENTIAL -- the
-# raw likelihood, not gr_challenge_status's derived/overridable boolean.
-# One blog_id per line, sorted by .published; nothing if none match.
-#
-# Capped at today (never past it) because real challenges reveal their
-# badges/posts gradually over their own run, not all at once at creation
-# -- a post for a badge revealed later genuinely can't exist yet.
+# Default --blogs for a challenge $1..$2 as of $3 (today): cached posts
+# published in the window (see constants above) with raw
+# challenge_potential >= GR_CHALLENGE_BLOG_DEFAULT_MIN_POTENTIAL, one
+# blog_id per line, oldest first.
 gr::default_challenge_blogs() {
   local start="$1" end="$2" today="$3" window_start window_end
   window_start="$(date -d "$start -${GR_CHALLENGE_BLOG_WINDOW_BEFORE_START_DAYS} days" +%Y-%m-%d)"
@@ -2705,15 +2546,15 @@ gr::default_challenge_blogs() {
 }
 
 # src/lib/goodreads_config.sh
-# Every config.ini key goodreads itself reads -- the registry `config
-# list`/`get`/`set` key off. Just the user-facing catalog; the real
-# default for each one is still asserted at its own gr::config_get call
-# site (http.sh, goodreads_books.sh, ...) -- keep in sync with those.
+# Every config.ini key goodreads reads, for `config list/get/set`. Defaults
+# live at each gr::config_get call site; keep in sync.
 readonly GR_CONFIG_KEYS=(
   curl_bin
-  http_request_delay_min
-  http_request_delay_max
-  http_retry_delays
+  http_request_interval
+  http_challenge_pause
+  http_challenge_probe_pct
+  http_challenge_max_probes
+  fetch_max_consecutive_failures
   book_cache_ttl
 )
 
@@ -2725,29 +2566,29 @@ gr::config_is_known_key() {
   return 1
 }
 
-# One-line description for `config list` -- a case statement, not a
-# second array parallel to GR_CONFIG_KEYS, so a key missing from one
-# fails loudly (empty default) instead of silently misaligning indices.
+# One-line description for `config list`.
 gr::config_describe() {
   case "$1" in
     curl_bin) echo "curl command to run for HTTP requests (see CLAUDE.md's auto-detection cascade for what's used when unset)" ;;
-    http_request_delay_min) echo "minimum delay, in seconds, enforced between requests" ;;
-    http_request_delay_max) echo "maximum delay, in seconds, enforced between requests" ;;
-    http_retry_delays) echo "comma-separated retry backoff delays, in seconds, for empty-body WAF-challenge responses" ;;
+    http_request_interval) echo "minimum time, in seconds, between the starts of any two requests (all goodreads processes), plus up to 50% random extra -- keeps clear of the site's burst detection" ;;
+    http_challenge_pause) echo "pause, in seconds, after an incident's first bot challenge -- sits out the site's ~5 min clock-based block" ;;
+    http_challenge_probe_pct) echo "each further challenge in an incident (a failed probe) pauses for this % of the time waited in the incident so far" ;;
+    http_challenge_max_probes) echo "give up on a request after this many failed probes in one incident" ;;
+    fetch_max_consecutive_failures) echo "a 'fetch' run stops after this many failures in a row (0 disables)" ;;
     book_cache_ttl) echo "how long, in seconds, a cached book is considered fresh before 'fetch --all' refetches it" ;;
     *) echo "" ;;
   esac
 }
 
-# What each key falls back to when unset -- shown by `config list`/`get`.
-# curl_bin has no single default value (its fallback is the whole
-# priority cascade), so it gets a description instead.
+# Default shown by `config list`/`get`.
 gr::config_default_display() {
   case "$1" in
     curl_bin) echo "auto-detected -- see CLAUDE.md" ;;
-    http_request_delay_min) echo "$GR_HTTP_REQUEST_DELAY_MIN_DEFAULT" ;;
-    http_request_delay_max) echo "$GR_HTTP_REQUEST_DELAY_MAX_DEFAULT" ;;
-    http_retry_delays) echo "$GR_HTTP_RETRY_DELAYS_DEFAULT" ;;
+    http_request_interval) echo "$GR_HTTP_REQUEST_INTERVAL_DEFAULT" ;;
+    http_challenge_pause) echo "$GR_HTTP_CHALLENGE_PAUSE_DEFAULT" ;;
+    http_challenge_probe_pct) echo "$GR_HTTP_CHALLENGE_PROBE_PCT_DEFAULT" ;;
+    http_challenge_max_probes) echo "$GR_HTTP_CHALLENGE_MAX_PROBES_DEFAULT" ;;
+    fetch_max_consecutive_failures) echo "$GR_FETCH_MAX_CONSECUTIVE_FAILURES_DEFAULT" ;;
     book_cache_ttl) echo "$GR_BOOK_CACHE_TTL_DEFAULT" ;;
     *) echo "" ;;
   esac
@@ -2756,13 +2597,9 @@ gr::config_default_display() {
 # src/lib/http.sh
 readonly GR_USER_AGENT='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
-# Fallback curl binary when nothing else is configured/found -- see
-# gr::init_curl_cmd.
 readonly GR_CURL_BIN_DEFAULT="curl"
 
-# curl-impersonate's wrapper script names (see CLAUDE.md), checked in
-# this order against $PATH: Chrome/Edge (BoringSSL) before Firefox (NSS)
-# before Safari (not a real port, just Chrome + Safari-shaped flags).
+# curl-impersonate wrapper names, tried in this order on $PATH.
 readonly GR_CURL_IMPERSONATE_CANDIDATES=(
   curl_chrome116 curl_chrome110 curl_chrome107 curl_chrome104
   curl_chrome101 curl_chrome100 curl_chrome99 curl_chrome99_android
@@ -2771,31 +2608,20 @@ readonly GR_CURL_IMPERSONATE_CANDIDATES=(
   curl_safari15_5 curl_safari15_3
 )
 
-# The image+wrapper gr::init_curl_cmd's Docker fallback crafts a `docker
-# run` around. `:latest` on this image is *Firefox*, not Chrome (confirmed
-# directly, see CLAUDE.md) -- hence the explicit version+flavor tag.
+# Docker fallback; `:latest` of this image is Firefox, hence the explicit tag.
 readonly GR_CURL_IMPERSONATE_DOCKER_IMAGE="lwthiker/curl-impersonate:0.6.1-chrome"
 readonly GR_CURL_IMPERSONATE_DOCKER_WRAPPER="curl_chrome116"
 
-# Default for the http_retry_delays config key (comma-separated seconds) —
-# see gr::http_get.
-readonly GR_HTTP_RETRY_DELAYS_DEFAULT="20,100,480"
+# GR_HTTP_EXPECT for book/blog-post pages, whose parsers start from the canonical link.
+# shellcheck disable=SC2034 # used by goodreads_books.sh/goodreads_blogs.sh
+readonly GR_HTTP_EXPECT_CANONICAL='<link[^>]*rel=["'"'"']?canonical'
 
-# Defaults for the http_request_delay_min / http_request_delay_max config
-# keys (seconds) — see gr::throttle.
-readonly GR_HTTP_REQUEST_DELAY_MIN_DEFAULT=3
-readonly GR_HTTP_REQUEST_DELAY_MAX_DEFAULT=10
-
-# Sets the global COOKIE_JAR to gr::generic_cookie_jar unless already set.
-# Called once from before_hook() (src/before.sh) — see gr::http_get for
-# why the default lives here rather than in it.
+# Defaults COOKIE_JAR to gr::generic_cookie_jar; called from before_hook().
 gr::init_cookie_jar() {
   : "${COOKIE_JAR:=$(gr::generic_cookie_jar)}"
 }
 
-# Cookie jar for account-less (login-not-needed) requests — root of the
-# data dir, alongside (not inside) accounts/<id>/. Auto-created empty on
-# first use, same idea as bashly's own config_load/CONFIG_FILE.
+# Cookie jar for account-less requests; created empty on first use.
 gr::generic_cookie_jar() {
   local jar
   jar="$(gr::data_dir)/cookies.txt"
@@ -2803,58 +2629,10 @@ gr::generic_cookie_jar() {
   echo "$jar"
 }
 
-# Sleeps if needed so this call returns no sooner than a random point
-# between http_request_delay_min/max seconds after its own previous
-# return. $1 (URL) unused for now — a hook for possible per-host pacing.
-#
-# Deliberately silent: unlike gr::http_get's rare WAF-retry warning, this
-# fires on nearly every request, and used to print one — during a
-# `fetch` command's status line that became a wall of text, one line per
-# item, drowning out the display it was meant to replace.
-#
-# State lives on disk (each invocation is its own process, spans must
-# survive across them), no locking (single-user CLI).
-gr::throttle() {
-  local url="$1"
-  local state_file; state_file="$(gr::data_dir)/.last_request_at"
-
-  local min_delay max_delay
-  min_delay="$(gr::config_get http_request_delay_min "$GR_HTTP_REQUEST_DELAY_MIN_DEFAULT")"
-  max_delay="$(gr::config_get http_request_delay_max "$GR_HTTP_REQUEST_DELAY_MAX_DEFAULT")"
-
-  if [[ -f "$state_file" ]]; then
-    local last; last="$(<"$state_file")"
-    local delay=$(( min_delay + RANDOM % (max_delay - min_delay + 1) ))
-    local wait=$(( last + delay - $(date +%s) ))
-    (( wait > 0 )) && sleep "$wait"
-  fi
-
-  date +%s > "$state_file"
-}
-
-# Resolves which curl command to run into $GR_CURL_CMD (array) and
-# $GR_CURL_UA_OPTS -- shared by gr::http_get/gr::http_status. Memoized via
-# $GR_CURL_CMD_RESOLVED for the process lifetime: resolved lazily (many
-# commands never touch the network) then reused for every later call, so
-# a batch fetch doesn't re-probe $PATH/Docker per request.
-#
-# Priority order, per explicit direction:
-#   1. The `curl_bin` config key, if set -- explicit always wins.
-#   2. First of GR_CURL_IMPERSONATE_CANDIDATES found on $PATH.
-#   3. A `docker run` command built around GR_CURL_IMPERSONATE_DOCKER_IMAGE/
-#      _WRAPPER, if `docker info` actually answers (not just the binary
-#      existing). Built fresh every process (not a static config string) so
-#      its `-u <uid>:<gid>` / `-v <data_dir>:<data_dir>` bind mount are
-#      always correct for this run's user/data dir -- getting either wrong
-#      silently breaks cookie persistence or leaves root-owned files behind
-#      (see CLAUDE.md).
-#   4. Plain "curl" (GR_CURL_BIN_DEFAULT), if on $PATH.
-#   5. A hard error.
-#
-# $GR_CURL_UA_OPTS is `-A "$GR_USER_AGENT"` only for the plain-curl case —
-# an impersonate target already bakes in its own matching UA/headers, and
-# layering a different one on top would create the exact UA/TLS mismatch
-# bot detection looks for.
+# Sets GR_CURL_CMD (array) and GR_CURL_UA_OPTS, once per process. Order:
+# curl_bin config key, curl-impersonate on $PATH, curl-impersonate via
+# Docker (if `docker info` answers), plain curl, else error. Only plain
+# curl gets our own -A; impersonate targets bring a matching UA.
 gr::init_curl_cmd() {
   if [[ -n "${GR_CURL_CMD_RESOLVED:-}" ]]; then
     return 0
@@ -2894,25 +2672,34 @@ gr::init_curl_cmd() {
   GR_CURL_CMD_RESOLVED=1
 }
 
-# shellcheck disable=SC2154 # COOKIE_JAR is meant to be set by the caller, e.g. `COOKIE_JAR=... gr::http_get "$url"`
-# curl wrapper for a single GET: prints the response body to stdout,
-# nothing else. Fails like curl's own --fail. Fails immediately under
-# --offline — enforced here so every caller gets it for free.
-#
-# Cookie jar comes from the COOKIE_JAR env var, not a parameter (prefix
-# form, e.g. `COOKIE_JAR=path gr::http_get "$url"`); empty means no jar.
-# Callers wanting the shared account-less jar set it via gr::init_cookie_jar.
-#
-# A 2xx response with a completely empty body is treated as *retryable*
-# failure, not success — AWS WAF's bot-challenge signature on
-# goodreads.com (HTTP 202 + empty body, invisible to --fail; confirmed
-# directly: bulk fetches hit it after 2-3 requests, a burst allowance
-# then a block outlasting any reasonable retry window). Retried with
-# backoff from `http_retry_delays` (config key, comma-separated seconds);
-# still empty after exhausting it fails loudly rather than caching a
-# challenge page as real content.
+# Headers (all redirect hops) of the latest gr::http_get attempt. In the
+# data dir, not /tmp: the Docker curl only bind-mounts the data dir.
+gr::last_response_headers_file() {
+  echo "$(gr::data_dir)/.last_response_headers"
+}
+
+# Present while the latest gr::http_get gave up on bot challenges; a file,
+# not a variable, because gr::run_fetch's fetch_fn runs in a subshell.
+gr::blocked_marker_file() {
+  echo "$(gr::data_dir)/.last_request_blocked"
+}
+
+# Just the final response's header block (after the last "HTTP/" status
+# line), CRs stripped -- earlier blocks are redirect hops.
+gr::final_response_headers() {
+  tr -d '\r' < "$1" | awk '/^HTTP\//{h=""} {h=h $0 "\n"} END{printf "%s", h}'
+}
+
+# GET $1, printing only the body; non-2xx, transport error or --offline
+# returns 1 with no body. Env (prefix form): COOKIE_JAR (empty = no jar),
+# GR_HTTP_EXPECT (ERE a 2xx body must match). A bot challenge (WAF header,
+# 202/429/503, empty or unexpected 2xx body) is retried, paced by
+# http_pacing.sh, until GR_PACE_GIVE_UP; then sets gr::blocked_marker_file
+# and fails. max_attempts is only a safety net.
+# shellcheck disable=SC2154 # COOKIE_JAR is set by the caller
 gr::http_get() {
   local url="$1"
+  local expect="${GR_HTTP_EXPECT:-}"
 
   if gr::offline; then
     echo "error: cannot fetch $url — --offline was given" >&2
@@ -2924,43 +2711,75 @@ gr::http_get() {
   local cookie_opts=()
   [[ -n "${COOKIE_JAR:-}" ]] && cookie_opts=(-c "$COOKIE_JAR" -b "$COOKIE_JAR")
 
-  local delays_csv
-  delays_csv="$(gr::config_get http_retry_delays "$GR_HTTP_RETRY_DELAYS_DEFAULT")"
-  local -a delays
-  IFS=',' read -r -a delays <<< "$delays_csv"
+  local max_probes
+  max_probes="$(gr::config_get http_challenge_max_probes "$GR_HTTP_CHALLENGE_MAX_PROBES_DEFAULT")"
 
-  local body attempt max_attempts=$((${#delays[@]} + 1))
+  local headers_file blocked_marker
+  headers_file="$(gr::last_response_headers_file)"
+  blocked_marker="$(gr::blocked_marker_file)"
+
+  local body headers status challenge attempt max_attempts=$((2 * (max_probes + 1)))
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     body="$(mktemp)"
 
     gr::throttle "$url"
-    if ! "${GR_CURL_CMD[@]}" -sLf "${GR_CURL_UA_OPTS[@]}" "${cookie_opts[@]}" "$url" > "$body"; then
+    if ! "${GR_CURL_CMD[@]}" -sL -D "$headers_file" "${GR_CURL_UA_OPTS[@]}" "${cookie_opts[@]}" "$url" > "$body"; then
       rm -f "$body"
       return 1
     fi
 
-    if [[ -s "$body" ]]; then
+    headers="$(gr::final_response_headers "$headers_file")"
+    status="$(awk 'NR==1{print $2}' <<< "$headers")"
+
+    challenge=""
+    if grep -qi '^x-amzn-waf-action:' <<< "$headers"; then
+      challenge="HTTP $status, $(grep -i -m1 '^x-amzn-waf-action:' <<< "$headers")"
+    elif [[ "$status" == "202" || "$status" == "429" || "$status" == "503" ]]; then
+      challenge="HTTP $status"
+    elif [[ "$status" == 2* && ! -s "$body" ]]; then
+      challenge="HTTP $status, empty body"
+    elif [[ "$status" == 2* && -n "$expect" ]] && ! grep -qE -- "$expect" "$body"; then
+      challenge="HTTP $status, unexpected page"
+    fi
+
+    if [[ -z "$challenge" ]]; then
+      rm -f "$blocked_marker"
+      gr::pace_report ok
+      if [[ "$status" != 2* ]]; then
+        rm -f "$body"
+        return 1
+      fi
       cat "$body"
       rm -f "$body"
       return 0
     fi
 
+    gr::pace_report challenge "$challenge"
+    gr::save_bad_response "$body" quiet
     rm -f "$body"
-    if (( attempt < max_attempts )); then
-      local delay="${delays[$((attempt - 1))]}"
-      gr::term_status "warning: empty response for $url (looks like a bot challenge) — retrying in ${delay}s"
-      sleep "$delay"
+    if (( GR_PACE_GIVE_UP == 1 )); then
+      break
     fi
   done
 
+  touch "$blocked_marker"
   gr::term_clear_line
-  echo "error: $url kept returning an empty response after retries — likely rate-limited/challenged by the site" >&2
+  echo "error: $url kept returning a bot challenge ($challenge) after $attempt attempts ($max_probes failed probes in this incident) — likely rate-limited/challenged by the site; last response saved as $(gr::data_dir)/.last_bad_response.{html,headers}" >&2
   return 1
 }
 
-# shellcheck disable=SC2154 # COOKIE_JAR is meant to be set by the caller, same convention as gr::http_get
-# Prints just the final HTTP status code — e.g. to confirm a 404 is real
-# before treating a post as permanently gone (see gr::refresh_blog).
+# Copies body $1 plus the last response headers to
+# <data_dir>/.last_bad_response.{html,headers}; $2 = "quiet" skips the note.
+gr::save_bad_response() {
+  local body_file="$1" quiet="${2:-}"
+  local base; base="$(gr::data_dir)/.last_bad_response"
+  cp "$body_file" "$base.html"
+  cp "$(gr::last_response_headers_file)" "$base.headers" 2>/dev/null || true
+  [[ -n "$quiet" ]] || echo "note: response saved as $base.{html,headers}" >&2
+}
+
+# Prints just the final HTTP status code.
+# shellcheck disable=SC2154 # COOKIE_JAR is set by the caller
 gr::http_status() {
   local url="$1"
 
@@ -2976,6 +2795,355 @@ gr::http_status() {
 
   gr::throttle "$url"
   "${GR_CURL_CMD[@]}" -sL -o /dev/null -w '%{http_code}' "${GR_CURL_UA_OPTS[@]}" "${cookie_opts[@]}" "$url"
+}
+
+# src/lib/http_pacing.sh
+# Request pacing shared by all goodreads processes via one flock'd state
+# file (see CLAUDE.md): a minimum interval between request starts, and a
+# shared pause after a bot challenge, followed by spaced-out probes.
+# Entry points: gr::throttle before each request, gr::pace_report after.
+
+# Defaults for the pacing config keys (seconds, except _probe_pct and
+# _max_probes).
+readonly GR_HTTP_REQUEST_INTERVAL_DEFAULT=5
+readonly GR_HTTP_CHALLENGE_PAUSE_DEFAULT=300
+readonly GR_HTTP_CHALLENGE_PROBE_PCT_DEFAULT=10
+readonly GR_HTTP_CHALLENGE_MAX_PROBES_DEFAULT=30
+
+# Fixed tuning, not config keys.
+readonly GR_HTTP_PACE_JITTER_PCT=50                # random extra per gap, % of the interval
+readonly GR_HTTP_PACE_INCIDENT_END_SUCCESSES=3     # successes in a row that end an incident...
+readonly GR_HTTP_PACE_INCIDENT_END_MS=120000       # ...spanning at least this long
+readonly GR_HTTP_PACE_INCIDENT_FORGET_MS=1800000   # idle incident is forgotten after this
+readonly GR_HTTP_PACE_PROBE_MIN_MS=1000            # shortest probe pause
+
+# Numeric fields of the state file, all integers, times in epoch ms:
+#   next_ms             earliest start of the next request, any process
+#   cooldown_ms         no request before this either (set by a challenge)
+#   challenges          challenges in the current incident, across processes (0 = none open)
+#   incident_started_ms start of the incident's first challenged request
+#   incident_successes  successes since the incident's last challenge
+#   incident_ok_since_ms  start of the first of those successes
+#   challenge_at        when the last challenge was recorded
+#   last_request_ms     start of the most recent request, any process
+#   streak_*, prev_streak_*  diagnostics only: current/previous run of same-kind responses
+# Text fields: note (last challenge, shown while pausing), *_kind (ok/challenge),
+# instances (recent PIDs, for the log's `first` column).
+readonly GR_PACE_FIELDS=(
+  next_ms cooldown_ms challenges incident_started_ms incident_successes
+  incident_ok_since_ms challenge_at last_request_ms
+  streak_started_ms streak_last_ms streak_requests streak_gaps
+  streak_gap_min_ms streak_gap_max_ms streak_gap_sum_ms
+  prev_streak_started_ms prev_streak_ended_ms prev_streak_requests
+  prev_streak_gap_min_ms prev_streak_gap_avg_ms prev_streak_gap_max_ms
+)
+readonly GR_PACE_TEXT_FIELDS=(note streak_kind prev_streak_kind instances)
+readonly GR_PACE_MAX_INSTANCES=16
+# gr::pace_log_file is rotated to <file>.1 at this size.
+readonly GR_PACE_LOG_MAX_BYTES=$((10 * 1024 * 1024))
+declare -A GR_PACE=()
+
+# Set by gr::pace_claim, read by gr::pace_record (same subshell): start of
+# this process's latest request, gap since the previous request start (any
+# process; empty if none), and whether it's this process's first (1/0).
+GR_PACE_CLAIMED_MS=0
+GR_PACE_GAP_MS=""
+GR_PACE_FIRST=0
+
+gr::pace_file() {
+  echo "$(gr::data_dir)/.pacing"
+}
+
+# TSV history, one line per classified response (see gr::pace_log).
+gr::pace_log_file() {
+  echo "$(gr::data_dir)/.pacing.log"
+}
+
+gr::now_ms() {
+  date +%s%3N
+}
+
+# 1500 -> 1.500, for sleep(1) and messages.
+gr::ms_to_s() {
+  printf '%d.%03d' "$(($1 / 1000))" "$(($1 % 1000))"
+}
+
+# Runs "$@" under an exclusive flock(1) on the state (unlocked if flock
+# isn't installed). Never hold it across a sleep.
+gr::pace_locked() {
+  local lock fd rc=0
+  lock="$(gr::pace_file).lock"
+  exec {fd}>>"$lock"
+  if command -v flock > /dev/null 2>&1; then
+    flock "$fd"
+  fi
+  "$@" || rc=$?
+  exec {fd}>&-
+  return "$rc"
+}
+
+# Reads the config keys into GR_PACE_INTERVAL_MS/GR_PACE_PAUSE_MS/
+# GR_PACE_PROBE_PCT/GR_PACE_MAX_PROBES.
+gr::pace_settings() {
+  GR_PACE_INTERVAL_MS=$(( $(gr::config_get http_request_interval "$GR_HTTP_REQUEST_INTERVAL_DEFAULT") * 1000 ))
+  GR_PACE_PAUSE_MS=$(( $(gr::config_get http_challenge_pause "$GR_HTTP_CHALLENGE_PAUSE_DEFAULT") * 1000 ))
+  GR_PACE_PROBE_PCT="$(gr::config_get http_challenge_probe_pct "$GR_HTTP_CHALLENGE_PROBE_PCT_DEFAULT")"
+  GR_PACE_MAX_PROBES="$(gr::config_get http_challenge_max_probes "$GR_HTTP_CHALLENGE_MAX_PROBES_DEFAULT")"
+}
+
+gr::pace_is_text_field() {
+  local f
+  for f in "${GR_PACE_TEXT_FIELDS[@]}"; do
+    [[ "$f" == "$1" ]] && return 0
+  done
+  return 1
+}
+
+# Loads the state file into GR_PACE; missing/garbled values default to
+# 0/empty, unknown fields are dropped on the next save.
+gr::pace_load() {
+  GR_PACE=()
+  local file k v
+  file="$(gr::pace_file)"
+  if [[ -f "$file" ]]; then
+    while IFS='=' read -r k v; do
+      if gr::pace_is_text_field "$k"; then
+        GR_PACE[$k]="$v"
+      elif [[ "$v" =~ ^[0-9]+$ ]]; then
+        GR_PACE[$k]="$v"
+      fi
+    done < "$file"
+  fi
+  for k in "${GR_PACE_FIELDS[@]}"; do
+    : "${GR_PACE[$k]:=0}"
+  done
+  for k in "${GR_PACE_TEXT_FIELDS[@]}"; do
+    : "${GR_PACE[$k]:=}"
+  done
+}
+
+# Writes GR_PACE back atomically (temp file + mv).
+gr::pace_save() {
+  local file tmp k
+  file="$(gr::pace_file)"
+  tmp="$(mktemp "$file.XXXXXX")"
+  {
+    for k in "${GR_PACE_FIELDS[@]}" "${GR_PACE_TEXT_FIELDS[@]}"; do
+      printf '%s=%s\n' "$k" "${GR_PACE[$k]}"
+    done
+  } > "$tmp"
+  mv "$tmp" "$file"
+}
+
+# Forgets an open incident idle (since last request or pause end) for
+# GR_HTTP_PACE_INCIDENT_FORGET_MS.
+gr::pace_forget_stale_incident() {
+  local now="$1" since
+  (( GR_PACE[challenges] > 0 )) || return 0
+  since=${GR_PACE[last_request_ms]}
+  if (( GR_PACE[cooldown_ms] > since )); then
+    since=${GR_PACE[cooldown_ms]}
+  fi
+  if (( now - since >= GR_HTTP_PACE_INCIDENT_FORGET_MS )); then
+    GR_PACE[challenges]=0
+    GR_PACE[incident_successes]=0
+  fi
+}
+
+# Under the lock: claims the next request slot if it's due, else leaves
+# how long to wait in GR_PACE_WAIT_MS (0 = claimed) and whether that wait
+# is a challenge pause in GR_PACE_WAIT_COOLDOWN (1/0).
+gr::pace_claim() {
+  gr::pace_settings
+  gr::pace_load
+  local now ready
+  now="$(gr::now_ms)"
+  gr::pace_forget_stale_incident "$now"
+
+  ready=${GR_PACE[next_ms]}
+  GR_PACE_WAIT_COOLDOWN=0
+  if (( GR_PACE[cooldown_ms] >= ready )); then
+    ready=${GR_PACE[cooldown_ms]}
+    GR_PACE_WAIT_COOLDOWN=1
+  fi
+
+  if (( ready > now )); then
+    GR_PACE_WAIT_MS=$((ready - now))
+  else
+    local jitter_max=$((GR_PACE_INTERVAL_MS * GR_HTTP_PACE_JITTER_PCT / 100))
+    local jitter=$(( ((RANDOM << 15) | RANDOM) % (jitter_max + 1) ))
+    GR_PACE[next_ms]=$((now + GR_PACE_INTERVAL_MS + jitter))
+    GR_PACE_CLAIMED_MS=$now
+    GR_PACE_WAIT_MS=0
+
+    GR_PACE_GAP_MS=""
+    if (( GR_PACE[last_request_ms] > 0 )); then
+      GR_PACE_GAP_MS=$((now - GR_PACE[last_request_ms]))
+    fi
+    GR_PACE[last_request_ms]=$now
+    # $$ is the main PID even in gr::run_fetch's per-item subshells.
+    GR_PACE_FIRST=0
+    if [[ ",${GR_PACE[instances]}," != *",$$,"* ]]; then
+      GR_PACE_FIRST=1
+      local -a pids
+      IFS=',' read -r -a pids <<< "$$${GR_PACE[instances]:+,${GR_PACE[instances]}}"
+      GR_PACE[instances]="$(IFS=','; echo "${pids[*]:0:GR_PACE_MAX_INSTANCES}")"
+    fi
+  fi
+  gr::pace_save
+}
+
+# Diagnostics only: counts this response into the streak stats, archiving
+# the old streak as prev_streak_* when the kind changes.
+gr::pace_track_streak() {
+  local kind="$1"
+  if [[ "${GR_PACE[streak_kind]}" != "$kind" ]]; then
+    if (( GR_PACE[streak_requests] > 0 )); then
+      GR_PACE[prev_streak_kind]=${GR_PACE[streak_kind]}
+      GR_PACE[prev_streak_started_ms]=${GR_PACE[streak_started_ms]}
+      GR_PACE[prev_streak_ended_ms]=${GR_PACE[streak_last_ms]}
+      GR_PACE[prev_streak_requests]=${GR_PACE[streak_requests]}
+      GR_PACE[prev_streak_gap_min_ms]=${GR_PACE[streak_gap_min_ms]}
+      GR_PACE[prev_streak_gap_max_ms]=${GR_PACE[streak_gap_max_ms]}
+      GR_PACE[prev_streak_gap_avg_ms]=0
+      if (( GR_PACE[streak_gaps] > 0 )); then
+        GR_PACE[prev_streak_gap_avg_ms]=$((GR_PACE[streak_gap_sum_ms] / GR_PACE[streak_gaps]))
+      fi
+    fi
+    GR_PACE[streak_kind]=$kind
+    GR_PACE[streak_started_ms]=$GR_PACE_CLAIMED_MS
+    GR_PACE[streak_requests]=0
+    GR_PACE[streak_gaps]=0
+    GR_PACE[streak_gap_min_ms]=0
+    GR_PACE[streak_gap_max_ms]=0
+    GR_PACE[streak_gap_sum_ms]=0
+  fi
+  GR_PACE[streak_requests]=$((GR_PACE[streak_requests] + 1))
+  GR_PACE[streak_last_ms]=$GR_PACE_CLAIMED_MS
+  if [[ -n "$GR_PACE_GAP_MS" ]]; then
+    local gap=$GR_PACE_GAP_MS
+    if (( GR_PACE[streak_gaps] == 0 || gap < GR_PACE[streak_gap_min_ms] )); then
+      GR_PACE[streak_gap_min_ms]=$gap
+    fi
+    if (( gap > GR_PACE[streak_gap_max_ms] )); then
+      GR_PACE[streak_gap_max_ms]=$gap
+    fi
+    GR_PACE[streak_gaps]=$((GR_PACE[streak_gaps] + 1))
+    GR_PACE[streak_gap_sum_ms]=$((GR_PACE[streak_gap_sum_ms] + gap))
+  fi
+}
+
+# Diagnostics only: appends the just-recorded response to gr::pace_log_file
+# (columns: see CLAUDE.md). Must run under the pacing lock.
+gr::pace_log() {
+  local outcome="$1" cooldown_s="$2" note="${3:-}"
+  local log; log="$(gr::pace_log_file)"
+  if [[ -f "$log" ]] && (( $(stat -c %s "$log") >= GR_PACE_LOG_MAX_BYTES )); then
+    mv -f "$log" "$log.1"
+  fi
+  if [[ ! -f "$log" ]]; then
+    printf 'time\trequest_ms\tpid\tfirst\toutcome\tgap_ms\tinterval_ms\tcooldown_s\tstreak\tnote\n' > "$log"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$GR_PACE_CLAIMED_MS" "$$" "$GR_PACE_FIRST" \
+    "$outcome" "${GR_PACE_GAP_MS:--}" "$GR_PACE_INTERVAL_MS" "$cooldown_s" \
+    "${GR_PACE[streak_kind]}:${GR_PACE[streak_requests]}" "$note" >> "$log"
+}
+
+# Under the lock: records response $1 (ok|challenge, $2 = description).
+# A response to a request started before the last challenge is stale and
+# changes nothing. Sets GR_PACE_GIVE_UP=1 after max failed probes.
+gr::pace_record() {
+  local outcome="$1" note="${2:-}"
+  gr::pace_settings
+  gr::pace_load
+  local now stale=0 cooldown_ms=0
+  now="$(gr::now_ms)"
+  GR_PACE_GIVE_UP=0
+  if (( GR_PACE_CLAIMED_MS < GR_PACE[challenge_at] )); then
+    stale=1
+  fi
+
+  if (( stale == 0 )); then
+    case "$outcome" in
+      ok)
+        if (( GR_PACE[challenges] > 0 )); then
+          if (( GR_PACE[incident_successes] == 0 )); then
+            GR_PACE[incident_ok_since_ms]=$GR_PACE_CLAIMED_MS
+          fi
+          GR_PACE[incident_successes]=$((GR_PACE[incident_successes] + 1))
+          if (( GR_PACE[incident_successes] >= GR_HTTP_PACE_INCIDENT_END_SUCCESSES
+                && GR_PACE_CLAIMED_MS - GR_PACE[incident_ok_since_ms] >= GR_HTTP_PACE_INCIDENT_END_MS )); then
+            local blocked=$((GR_PACE[incident_ok_since_ms] - GR_PACE[incident_started_ms]))
+            if (( blocked < 0 )); then
+              blocked=0
+            fi
+            note="incident ended: blocked $(gr::ms_to_s "$blocked")s, $((GR_PACE[challenges] - 1)) failed probe(s)"
+            GR_PACE[challenges]=0
+            GR_PACE[incident_successes]=0
+          fi
+        fi
+        gr::pace_track_streak ok
+        ;;
+      challenge)
+        if (( GR_PACE[challenges] == 0 )); then
+          GR_PACE[incident_started_ms]=$GR_PACE_CLAIMED_MS
+          cooldown_ms=$GR_PACE_PAUSE_MS
+        else
+          cooldown_ms=$(( (now - GR_PACE[incident_started_ms]) * GR_PACE_PROBE_PCT / 100 ))
+          if (( cooldown_ms < GR_HTTP_PACE_PROBE_MIN_MS )); then
+            cooldown_ms=$GR_HTTP_PACE_PROBE_MIN_MS
+          fi
+          # Failed probe no. GR_PACE[challenges]; the first challenge isn't one.
+          if (( GR_PACE[challenges] >= GR_PACE_MAX_PROBES )); then
+            # shellcheck disable=SC2034 # read by gr::http_get (http.sh)
+            GR_PACE_GIVE_UP=1
+          fi
+        fi
+        GR_PACE[incident_successes]=0
+        GR_PACE[challenges]=$((GR_PACE[challenges] + 1))
+        GR_PACE[challenge_at]=$now
+        GR_PACE[note]="$note at $(date +%H:%M:%S)"
+        if (( now + cooldown_ms > GR_PACE[cooldown_ms] )); then
+          GR_PACE[cooldown_ms]=$((now + cooldown_ms))
+        fi
+        gr::pace_track_streak challenge
+        ;;
+    esac
+  fi
+  gr::pace_save
+  if (( stale == 1 )); then
+    outcome="stale-$outcome"
+  fi
+  gr::pace_log "$outcome" "$(gr::ms_to_s "$cooldown_ms")" "$note"
+}
+
+gr::pace_report() {
+  gr::pace_locked gr::pace_record "$@"
+}
+
+# Blocks until the next request slot is due and claims it; re-checks the
+# state after each sleep. Only challenge pauses are shown. $1 (URL) unused.
+gr::throttle() {
+  local shown=0
+  while :; do
+    gr::pace_locked gr::pace_claim
+    (( GR_PACE_WAIT_MS > 0 )) || break
+    if (( GR_PACE_WAIT_COOLDOWN == 1 )); then
+      local what="bot-challenge pause"
+      if (( GR_PACE[challenges] > 1 )); then
+        what="bot-challenge probe $((GR_PACE[challenges] - 1))/$GR_PACE_MAX_PROBES failed"
+      fi
+      gr::term_status "waiting $(( (GR_PACE_WAIT_MS + 999) / 1000 ))s -- $what (${GR_PACE[note]:-challenge})"
+      shown=1
+    fi
+    sleep "$(gr::ms_to_s "$GR_PACE_WAIT_MS")"
+  done
+  if (( shown == 1 )); then
+    gr::term_clear_line
+  fi
+  # gr::term_clear_line fails off a terminal; don't leak that under set -e.
+  return 0
 }
 
 # src/lib/ini.sh
@@ -3180,6 +3348,8 @@ send_completions() {
   echo $'    23:--title) return 2 ;;'
   echo $'    23:--start) return 2 ;;'
   echo $'    23:--end) return 2 ;;'
+  echo $'    23:--blogs) return 2 ;;'
+  echo $'    23:--badges) return 2 ;;'
   echo $'    23:--add-blog) return 2 ;;'
   echo $'    23:--remove-blog) return 2 ;;'
   echo $'    23:--add-badge) return 2 ;;'
@@ -3579,6 +3749,12 @@ send_completions() {
   echo $'    23:--end)'
   echo $'      return'
   echo $'      ;;'
+  echo $'    23:--blogs)'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    23:--badges)'
+  echo $'      return'
+  echo $'      ;;'
   echo $'    23:--add-blog)'
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${GOODREADS_DATA:-$HOME/.goodreads}/blogs\" 2>/dev/null | sed \"s/\\.json$//\")" -- "$cur")'
   echo $'      return'
@@ -3877,6 +4053,8 @@ send_completions() {
   echo $'        _goodreads_completions_option_seen "--title" || words+=("--title")'
   echo $'        _goodreads_completions_option_seen "--start" || words+=("--start")'
   echo $'        _goodreads_completions_option_seen "--end" || words+=("--end")'
+  echo $'        _goodreads_completions_option_seen "--blogs" || words+=("--blogs")'
+  echo $'        _goodreads_completions_option_seen "--badges" || words+=("--badges")'
   echo $'        words+=("--add-blog")'
   echo $'        words+=("--remove-blog")'
   echo $'        words+=("--add-badge")'
@@ -3982,7 +4160,7 @@ send_completions() {
   echo $'  fi'
   echo $''
   echo $'  if [[ "$node_id" == "29" ]] && (( positional_index >= 0 )); then'
-  echo $'    while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_delay_min http_request_delay_max http_retry_delays book_cache_ttl" -- "$cur")'
+  echo $'    while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_interval http_challenge_pause http_challenge_probe_pct http_challenge_max_probes fetch_max_consecutive_failures book_cache_ttl" -- "$cur")'
   echo $'    return'
   echo $'  fi'
   echo $''
@@ -4020,7 +4198,7 @@ send_completions() {
   echo $'      return'
   echo $'      ;;'
   echo $'    27:0)'
-  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_delay_min http_request_delay_max http_retry_delays book_cache_ttl" -- "$cur")'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_interval http_challenge_pause http_challenge_probe_pct http_challenge_max_probes fetch_max_consecutive_failures book_cache_ttl" -- "$cur")'
   echo $'      return'
   echo $'      ;;'
   echo $'    28:0)'
@@ -4043,48 +4221,13 @@ goodreads_completions_command() {
   # src/completions_command.sh
   send_completions
 
-  # send_completions (lib/send_completions.sh) is bashly-generated/vendored,
-  # never hand-edited -- this file isn't, so it's the place for a small
-  # override: bashly's own candidate lists include both a command's long
-  # form and its short alias (e.g. "list"/"ls") as equal words, so a bare
-  # TAB lists both -- per explicit direction, only the long form should
-  # show there; the short form should only appear once it's actually needed
-  # to disambiguate. Re-registers completion with a wrapper that runs the
-  # real `_goodreads_completions` first, then drops a short form from
-  # COMPREPLY whenever its long form also made that same result.
-  cat <<'EOF'
-
-_goodreads_alias_pairs=("list:ls" "create:new" "remove:rm")
-
-_goodreads_completions_filtered() {
-  _goodreads_completions
-  local pair long short w keep filtered
-  for pair in "${_goodreads_alias_pairs[@]}"; do
-    long="${pair%%:*}"
-    short="${pair#*:}"
-    keep=1
-    for w in "${COMPREPLY[@]}"; do
-      [[ "$w" == "$long" ]] && { keep=0; break; }
-    done
-    if [[ "$keep" -eq 0 ]]; then
-      filtered=()
-      for w in "${COMPREPLY[@]}"; do
-        [[ "$w" == "$short" ]] || filtered+=("$w")
-      done
-      COMPREPLY=("${filtered[@]}")
-    fi
-  done
-}
-complete -F _goodreads_completions_filtered goodreads
-EOF
-
 }
 
 # :command.function
 goodreads_auth_import_command() {
 
   # src/auth_import_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   cookie_file="${args[cookie_file]}"
 
@@ -4132,7 +4275,7 @@ goodreads_auth_import_command() {
 goodreads_auth_status_command() {
 
   # src/auth_status_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   id="${args[account]:-$(gr::current_account)}"
 
@@ -4193,7 +4336,7 @@ goodreads_auth_list_command() {
 goodreads_auth_switch_command() {
 
   # src/auth_switch_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   id="${args[account]}"
   account_dir="$(gr::account_dir "$id")"
@@ -4212,7 +4355,7 @@ goodreads_auth_switch_command() {
 goodreads_auth_logout_command() {
 
   # src/auth_logout_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   id="${args[account]:-$(gr::current_account)}"
 
@@ -4244,22 +4387,18 @@ goodreads_auth_logout_command() {
 goodreads_blogs_fetch_command() {
 
   # src/blogs_fetch_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   all="${args[--all]:-}"
   update_flag="${args[--update]:-}"
   blog_ids="${args[blog_id]:-}"
-  # Must be a plain if (see gr::fetch_quiet's doc comment, lib/goodreads.sh)
-  # -- a command substitution silently breaks its terminal check, and a
-  # bare `&&` would trip set -e whenever it's *not* quiet.
+  # Plain if: $(...) would break gr::fetch_quiet's tty check, `&&` trips set -e.
   quiet=""
   if gr::fetch_quiet "${args[--batch]:-}"; then
     quiet=1
   fi
 
-  # Pre-resolve the curl command here, before gr::run_fetch spawns a
-  # subshell per item -- see books_fetch_command.sh's own copy of this
-  # comment for why. Skipped under --offline, since nothing here calls curl.
+  # Resolve curl before gr::run_fetch's per-item subshells (memoization wouldn't survive them).
   gr::offline || gr::init_curl_cmd || exit 1
 
   if [[ -n "$all" && -n "$blog_ids" ]]; then
@@ -4267,10 +4406,7 @@ goodreads_blogs_fetch_command() {
     exit 1
   fi
 
-  # gr::blog_json succeeds both when it fetches real content and when it
-  # just confirms/marks a post permanently removed — distinguish for the
-  # outcome message. $2 is the wording for a genuine success ("fetched" for
-  # a post that wasn't cached at all, "refreshed" for one that was).
+  # gr::blog_json also succeeds for a post confirmed removed; $2 is the wording otherwise.
   outcome_text() {
     local post_id="$1" verb="$2"
     if [[ "$(jq -r '.removed_remotely // false' "$(gr::blog_file "$post_id")" 2>/dev/null)" == "true" ]]; then
@@ -4280,24 +4416,9 @@ goodreads_blogs_fetch_command() {
     fi
   }
 
-  # Fetches or updates one post -- see gr::run_fetch (lib/goodreads.sh) for
-  # the calling convention this follows: outcome text on stdout for
-  # success/skip, nothing on failure (a failure is printed straight to
-  # stderr instead, right here, after clearing the status line so it can't
-  # garble together with it). $2 (force) is one of three policies -- the
-  # same shape books_fetch_command.sh uses for a real TTL, kept consistent
-  # here even though the blog cache's own TTL is infinite (see "Blog post
-  # cache" in CLAUDE.md), per explicit direction:
-  #   ""      -- skipped (return 2) if already cached, unconditionally.
-  #   "ttl"   -- --all's own default: gr::blog_fresh is just "is this
-  #              cached at all" (nothing ever goes stale here), so every
-  #              already-cached post is reported as a skip ("already cached
-  #              (fresh)") without ever touching the network -- this mode
-  #              can never actually re-verify an existing post is still
-  #              there. Run with --update for that.
-  #   "force" -- always gr::blog_json --force, bypassing gr::blog_fresh
-  #              entirely -- the only mode that can still detect a post has
-  #              since been removed remotely.
+  # gr::run_fetch callback: outcome on stdout, return 0/1/2 = ok/failed/skipped.
+  # $2 (force): "" skip if cached; "ttl" skip if fresh (always, blog TTL is
+  # infinite); "force" always refetch (only way to detect remote removal).
   fetch_one() {
     local id="$1" force="$2" quiet="$3"
     local blog_file was_cached=0
@@ -4310,23 +4431,13 @@ goodreads_blogs_fetch_command() {
       return 2
     fi
 
-    # gr::blog_json's own stderr (in particular gr::throttle/gr::http_get's
-    # "waiting"/"retrying" warnings, which can genuinely take minutes under
-    # a real AWS WAF challenge, see CLAUDE.md) is deliberately left flowing
-    # straight through here, live, rather than captured and only replayed
-    # on failure -- an earlier version captured it, and a slow-but-eventually
-    # -successful fetch would silently discard the exact warnings that
-    # would have explained the delay, leaving the status line looking
-    # frozen with zero indication anything was happening at all. Those
-    # warnings clear the status line themselves first (gr::term_clear_line),
-    # so they don't garble together with it.
+    # stderr is deliberately not captured, so wait/retry warnings show live.
     if [[ "$force" == "ttl" ]]; then
       if gr::blog_fresh "$id"; then
         echo "$id -> already cached (fresh)"
         return 2
       fi
-      # Unreachable today -- gr::blog_fresh is trivially true for any
-      # cached post -- kept for symmetry/safety should that ever change.
+      # Currently unreachable (gr::blog_fresh is true for any cached post).
       if gr::blog_json "$id" > /dev/null; then
         outcome_text "$id" "refreshed"
         return 0
@@ -4352,21 +4463,18 @@ goodreads_blogs_fetch_command() {
   if [[ -n "$blog_ids" ]]; then
     explicit_force=""
     [[ -n "$update_flag" ]] && explicit_force="force"
-    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is bashly's own space-separated repeatable-arg string
+    # shellcheck disable=SC2086 # intentional word-splitting of bashly's repeatable arg
     gr::run_fetch "$quiet" fetch_one "$explicit_force" $blog_ids
-    echo "Fetched/refreshed $GR_FETCH_OK blog post(s), $GR_FETCH_SKIPPED already cached, $GR_FETCH_FAIL failed."
+    echo "Fetched/refreshed $GR_FETCH_OK blog post(s), $GR_FETCH_SKIPPED already cached, $GR_FETCH_FAIL failed${GR_FETCH_ABORTED:+, $GR_FETCH_ABORTED not attempted}."
+    [[ -z "$GR_FETCH_ABORTED" ]] || exit 1
     exit 0
   fi
 
-  # No specific ids: plain `fetch` discovers only; `--all` also checks
-  # everything already cached (see fetch_one's "ttl"/"force" split above).
+  # No ids: discover new posts; --all also re-checks everything cached.
   blog_dir="$(gr::blog_dir)"
   mkdir -p "$blog_dir"
 
-  # Real on-disk cached ids, to diff discovery's result against (it no longer
-  # filters against the cache itself). One line per append — a literal split
-  # across two source lines gets corrupted by bashly's embedding step (see
-  # CLAUDE.md).
+  # Cached ids, to diff discovery against. $'\n' join, not a literal newline (bashly re-indents).
   cached_ids=""
   for file in "$blog_dir"/*.json; do
     if [[ -e "$file" ]]; then
@@ -4379,13 +4487,12 @@ goodreads_blogs_fetch_command() {
   echo "Scanning the goodreads.com blog listing..."
 
   if [[ -n "$all" ]]; then
-    # --full: a genuine complete scan, needed for the "missing" report below.
+    # --full: complete scan, needed for the "missing" report below.
     catalog_ids="$(gr::discover_blog_ids --full)" || exit 1
     new_ids="$(comm -23 <(echo "$catalog_ids") <(echo "$cached_ids"))"
     missing_ids="$(comm -23 <(echo "$cached_ids") <(echo "$catalog_ids"))"
   else
-    # Short-circuits at the discovery marker (see lib/goodreads_blogs.sh) —
-    # not guaranteed complete, so no missing_ids report on this path.
+    # Stops at the discovery marker, so incomplete: no missing report.
     scanned_ids="$(gr::discover_blog_ids)" || exit 1
     new_ids="$(comm -23 <(sort -n -u <<< "$scanned_ids") <(echo "$cached_ids"))"
     missing_ids=""
@@ -4394,9 +4501,11 @@ goodreads_blogs_fetch_command() {
   if [[ -z "$new_ids" ]]; then
     echo "No new blog posts found — already have everything currently listed."
   else
-    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — new_ids is a newline-separated id list; force="" since these are guaranteed not cached yet
+    # shellcheck disable=SC2086 # intentional word-splitting of the id list
     gr::run_fetch "$quiet" fetch_one "" $new_ids
-    echo "Fetched $GR_FETCH_OK new blog post(s), $GR_FETCH_FAIL failed."
+    echo "Fetched $GR_FETCH_OK new blog post(s), $GR_FETCH_FAIL failed${GR_FETCH_ABORTED:+, $GR_FETCH_ABORTED not attempted}."
+    # Stopped early: re-checking cached posts (--all) would hit the same problem.
+    [[ -z "$GR_FETCH_ABORTED" ]] || exit 1
   fi
 
   if [[ -n "$all" ]]; then
@@ -4407,9 +4516,10 @@ goodreads_blogs_fetch_command() {
       echo "Checking already-cached posts..."
       refresh_force="ttl"
       [[ -n "$update_flag" ]] && refresh_force="force"
-      # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — cached_ids is the newline-separated id list built above
+      # shellcheck disable=SC2086 # intentional word-splitting of the id list
       gr::run_fetch "$quiet" fetch_one "$refresh_force" $cached_ids
-      echo "Fetched/refreshed $GR_FETCH_OK blog post(s), $GR_FETCH_SKIPPED already cached, $GR_FETCH_FAIL failed."
+      echo "Fetched/refreshed $GR_FETCH_OK blog post(s), $GR_FETCH_SKIPPED already cached, $GR_FETCH_FAIL failed${GR_FETCH_ABORTED:+, $GR_FETCH_ABORTED not attempted}."
+      [[ -z "$GR_FETCH_ABORTED" ]] || exit 1
     fi
   fi
 
@@ -4422,7 +4532,7 @@ goodreads_blogs_fetch_command() {
     echo "without being gone. Run 'goodreads blogs fetch <blog_id> --update' on"
     echo "one to actually confirm (a real 404 gets recorded as removed_remotely;"
     echo "still being there just refreshes it normally):"
-    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted, one id per printf call
+    # shellcheck disable=SC2086 # intentional word-splitting, one id per line
     printf '  %s\n' $missing_ids
   fi
 
@@ -4432,7 +4542,7 @@ goodreads_blogs_fetch_command() {
 goodreads_blogs_list_command() {
 
   # src/blogs_list_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   blog_ids="${args[blog_id]:-}"
   all="${args[--all]:-}"
@@ -4491,7 +4601,7 @@ goodreads_blogs_list_command() {
 
   files=()
   if [[ -n "$blog_ids" ]]; then
-    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is bashly's own space-separated repeatable-arg string
+    # shellcheck disable=SC2086 # intentional word-splitting of bashly's repeatable arg
     for id in $blog_ids; do
       file="$(gr::blog_file "$id")"
       if [[ -f "$file" ]]; then
@@ -4518,8 +4628,7 @@ goodreads_blogs_list_command() {
   reverse_flag=false
   [[ -n "$reverse" ]] && reverse_flag=true
 
-  # "$GR_CHALLENGE_JQ_DEFS"'...' concatenates into one jq argument — see
-  # GR_CHALLENGE_JQ_DEFS in lib/goodreads_blogs.sh.
+  # Prepends jq defs from lib/goodreads_blogs.sh to the program.
   result="$(cat "${files[@]}" | jq -s \
     --arg since "$since" \
     --arg until "$until_date" \
@@ -4592,7 +4701,7 @@ goodreads_blogs_list_command() {
 goodreads_blogs_get_command() {
 
   # src/blogs_get_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   id="${args[blog_id]}"
   json="${args[--json]:-}"
@@ -4612,10 +4721,8 @@ goodreads_blogs_get_command() {
     exit 0
   fi
 
-  # One jq call builds a JSON object so book rows can be column-aligned once,
-  # globally, in bash below (jq has no column-width equivalent).
-  # "$GR_CHALLENGE_JQ_DEFS"'...' concatenates into one jq argument — see
-  # GR_CHALLENGE_JQ_DEFS in lib/goodreads_blogs.sh.
+  # JSON result, so book rows can be column-aligned across sections below.
+  # Prepends jq defs from lib/goodreads_blogs.sh to the program.
   result="$(jq "$GR_CHALLENGE_JQ_DEFS"'
     if .removed_remotely then
       {
@@ -4660,8 +4767,7 @@ goodreads_blogs_get_command() {
     exit 0
   fi
 
-  # book_id right-aligned; url built without www. (superfluous for book
-  # urls specifically — not true for blog urls, see CLAUDE.md).
+  # book_id right-aligned.
   mapfile -t aligned_rows < <(jq -r '.rows[]' <<< "$result" | column -t -s $'\t' -R 1)
 
   idx=0
@@ -4680,7 +4786,7 @@ goodreads_blogs_get_command() {
 goodreads_blogs_challenge_command() {
 
   # src/blogs_challenge_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   blog_ids="${args[blog_id]:-}"
   yes_flag="${args[--yes]:-}"
@@ -4703,9 +4809,7 @@ goodreads_blogs_challenge_command() {
     exit 1
   fi
 
-  # Merges onto the existing file rather than rebuilding it, so every other
-  # field is left untouched. --auto deletes the key (not null) — challenge is
-  # a true/false/absent tri-state.
+  # Edits only .challenge, a true/false/absent tri-state (--auto deletes it).
   mark_one() {
     local id="$1"
     local file
@@ -4737,7 +4841,7 @@ goodreads_blogs_challenge_command() {
 
   ok=0
   fail=0
-  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is bashly's own space-separated repeatable-arg string
+  # shellcheck disable=SC2086 # intentional word-splitting of bashly's repeatable arg
   for id in $blog_ids; do
     if mark_one "$id"; then
       ok=$((ok + 1))
@@ -4758,7 +4862,7 @@ goodreads_blogs_challenge_command() {
 goodreads_blogs_remove_command() {
 
   # src/blogs_remove_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   all="${args[--all]:-}"
   blog_ids="${args[blog_id]:-}"
@@ -4800,7 +4904,7 @@ goodreads_blogs_remove_command() {
 
   ok=0
   fail=0
-  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+  # shellcheck disable=SC2086 # intentional word-splitting of the id list
   for id in $blog_ids; do
     if remove_one "$id"; then
       ok=$((ok + 1))
@@ -4821,26 +4925,20 @@ goodreads_blogs_remove_command() {
 goodreads_books_fetch_command() {
 
   # src/books_fetch_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   all="${args[--all]:-}"
   update_flag="${args[--update]:-}"
   book_ids="${args[book_id]:-}"
   blog_ids="${args[--blog]:-}"
   challenge_id="${args[--challenge]:-}"
-  # Must be a plain if (see gr::fetch_quiet's doc comment, lib/goodreads.sh)
-  # -- a command substitution silently breaks its terminal check, and a
-  # bare `&&` would trip set -e whenever it's *not* quiet.
+  # Plain if: $(...) would break gr::fetch_quiet's tty check, `&&` trips set -e.
   quiet=""
   if gr::fetch_quiet "${args[--batch]:-}"; then
     quiet=1
   fi
 
-  # Pre-resolve the curl command here, before gr::run_fetch spawns a
-  # subshell per item -- gr::init_curl_cmd's memoization flag, set *inside*
-  # one of those subshells, never survives back to this parent process
-  # (confirmed: without this, a 3-book fetch re-probed PATH/Docker three
-  # times over). Skipped under --offline, since nothing here calls curl.
+  # Resolve curl before gr::run_fetch's per-item subshells (memoization wouldn't survive them).
   gr::offline || gr::init_curl_cmd || exit 1
 
   if [[ -n "$all" && ( -n "$book_ids" || -n "$blog_ids" || -n "$challenge_id" ) ]]; then
@@ -4860,14 +4958,12 @@ goodreads_books_fetch_command() {
       echo "note: challenge $challenge_id has no linked blog posts" >&2
     fi
     blog_ids="${blog_ids} ${challenge_blog_ids}"
-    # A blog id could legitimately be given both directly (--blog) and via
-    # --challenge — dedup so gr::blog_json isn't asked for the same post
-    # twice in this run (same reasoning as book_ids' own dedup below).
+    # Dedup: a post may come both via --blog and via --challenge.
     blog_ids="$(tr -s ' ' '\n' <<< "$blog_ids" | grep -v '^$' | sort -n -u | tr '\n' ' ')"
   fi
 
   if [[ -n "$blog_ids" ]]; then
-    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is bashly's own space-separated repeatable-flag string, or the merged/deduped result of that plus --challenge's own blogs
+    # shellcheck disable=SC2086 # intentional word-splitting of the id list
     for blog_id in $blog_ids; do
       blog_json="$(gr::blog_json "$blog_id")" || {
         echo "error: could not fetch blog post $blog_id" >&2
@@ -4880,10 +4976,7 @@ goodreads_books_fetch_command() {
       book_ids="${book_ids} ${blog_book_ids}"
     done
 
-    # Books can legitimately repeat across --blog posts (a --challenge's own
-    # linked posts very much included — the whole reason this note calls it
-    # out explicitly), or overlap with an explicitly given book_id — dedup
-    # so the same id isn't looked at more than once in this run.
+    # Dedup: books repeat across posts and may overlap explicit ids.
     book_ids="$(tr -s ' ' '\n' <<< "$book_ids" | grep -v '^$' | sort -n -u | tr '\n' ' ')"
   fi
 
@@ -4900,13 +4993,6 @@ goodreads_books_fetch_command() {
     book_ids="${ids[*]}"
   fi
 
-  # Force policy for fetch_one, below -- --update always means "force",
-  # regardless of --all; --all *without* --update means "ttl" (still ask
-  # about every cached book, but let its own cache TTL decide whether that
-  # actually turns into a real refetch -- "sync only what's actually gone
-  # stale", not "force-refresh everything unconditionally", which is what
-  # this used to do); neither means "" (skip anything already cached, at
-  # any freshness -- explicit ids' own default).
   if [[ -n "$update_flag" ]]; then
     force_policy="force"
   elif [[ -n "$all" ]]; then
@@ -4915,23 +5001,9 @@ goodreads_books_fetch_command() {
     force_policy=""
   fi
 
-  # Fetches or updates one book -- see gr::run_fetch (lib/goodreads.sh) for
-  # the calling convention this follows: outcome text on stdout for
-  # success/skip, nothing on failure (a failure is printed straight to
-  # stderr instead, right here, after clearing the status line so it can't
-  # garble together with it). $2 (force) is one of the three policies
-  # above:
-  #   ""      -- skipped (return 2) if already cached, at any freshness.
-  #   "ttl"   -- never skipped outright, but gr::book_json is called
-  #              plainly (no --force), so *it* decides based on
-  #              gr::book_fresh whether a real refetch happens; reported as
-  #              a skip ("already cached (fresh)") when it doesn't, "the
-  #              real thing" ("refreshed") when it does.
-  #   "force" -- always gr::book_json --force. "refreshed" if it was
-  #              already cached going in, "fetched" if this is a genuinely
-  #              new id (only reachable here via explicit ids + --update,
-  #              never via --all, which only ever operates on ids that are
-  #              already cached to begin with).
+  # gr::run_fetch callback: outcome on stdout, return 0/1/2 = ok/failed/skipped.
+  # $2 (force): "" skip if cached; "ttl" let gr::book_json's TTL decide;
+  # "force" always refetch.
   fetch_one() {
     local id="$1" force="$2" quiet="$3"
     local book_file was_cached=0 was_fresh=1
@@ -4944,16 +5016,7 @@ goodreads_books_fetch_command() {
       return 2
     fi
 
-    # gr::book_json's own stderr (in particular gr::throttle/gr::http_get's
-    # "waiting"/"retrying" warnings, which can genuinely take minutes under
-    # a real AWS WAF challenge, see CLAUDE.md) is deliberately left flowing
-    # straight through here, live, rather than captured and only replayed
-    # on failure -- an earlier version captured it, and a slow-but-eventually
-    # -successful fetch would silently discard the exact warnings that
-    # would have explained the delay, leaving the status line looking
-    # frozen with zero indication anything was happening at all. Those
-    # warnings clear the status line themselves first (gr::term_clear_line),
-    # so they don't garble together with it.
+    # stderr is deliberately not captured, so wait/retry warnings show live.
     if [[ "$force" == "ttl" ]]; then
       gr::book_fresh "$id" && was_fresh=0
       if gr::book_json "$id" > /dev/null; then
@@ -4982,9 +5045,10 @@ goodreads_books_fetch_command() {
     return 1
   }
 
-  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — book_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+  # shellcheck disable=SC2086 # intentional word-splitting of the id list
   gr::run_fetch "$quiet" fetch_one "$force_policy" $book_ids
-  echo "Fetched/refreshed $GR_FETCH_OK book(s), $GR_FETCH_SKIPPED already cached, $GR_FETCH_FAIL failed."
+  echo "Fetched/refreshed $GR_FETCH_OK book(s), $GR_FETCH_SKIPPED already cached, $GR_FETCH_FAIL failed${GR_FETCH_ABORTED:+, $GR_FETCH_ABORTED not attempted}."
+  [[ -z "$GR_FETCH_ABORTED" ]] || exit 1
 
 }
 
@@ -4992,7 +5056,7 @@ goodreads_books_fetch_command() {
 goodreads_books_list_command() {
 
   # src/books_list_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   book_ids="${args[book_id]:-}"
   limit_raw="${args[--limit]:-}"
@@ -5015,7 +5079,7 @@ goodreads_books_list_command() {
 
   files=()
   if [[ -n "$book_ids" ]]; then
-    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — book_ids is bashly's own space-separated repeatable-arg string
+    # shellcheck disable=SC2086 # intentional word-splitting of bashly's repeatable arg
     for id in $book_ids; do
       file="$(gr::book_file "$id")"
       if [[ -f "$file" ]]; then
@@ -5108,7 +5172,7 @@ goodreads_books_list_command() {
 goodreads_books_get_command() {
 
   # src/books_get_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   id="${args[book_id]}"
   json="${args[--json]:-}"
@@ -5179,7 +5243,7 @@ goodreads_books_get_command() {
 goodreads_books_remove_command() {
 
   # src/books_remove_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   all="${args[--all]:-}"
   book_ids="${args[book_id]:-}"
@@ -5221,7 +5285,7 @@ goodreads_books_remove_command() {
 
   ok=0
   fail=0
-  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — book_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+  # shellcheck disable=SC2086 # intentional word-splitting of the id list
   for id in $book_ids; do
     if remove_one "$id"; then
       ok=$((ok + 1))
@@ -5242,7 +5306,7 @@ goodreads_books_remove_command() {
 goodreads_challenges_create_command() {
 
   # src/challenges_create_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   id_raw="${args[--id]:-}"
   title_raw="${args[--title]:-}"
@@ -5262,10 +5326,7 @@ goodreads_challenges_create_command() {
     fi
   fi
 
-  # --no-goals is shorthand for --no-badges --no-blogs together -- folded
-  # into both flags' own state up front so every check/branch below just
-  # looks at $no_badges/$no_blogs, with no separate --no-goals case needed
-  # anywhere else.
+  # --no-goals = --no-badges --no-blogs.
   no_badges="${args[--no-badges]:-}"
   no_blogs="${args[--no-blogs]:-}"
   if [[ -n "${args[--no-goals]:-}" ]]; then
@@ -5273,12 +5334,9 @@ goodreads_challenges_create_command() {
     no_blogs=1
   fi
 
-  # No `default:` in bashly.yml for --badges/--blogs: bashly applies it
-  # whenever the value is *empty*, not just absent -- would silently defeat
-  # an explicit `--badges ""`/`--blogs ""` opt-out. `[[ -v args[...] ]]`
-  # tells "never passed" apart from "passed empty". Names exactly which
-  # "no" flag(s) ($1/$2) and explicit-value flag ($3/$4) are in conflict,
-  # rather than a generic message -- shared by the --badges/--blogs cases.
+  # `[[ -v args[...] ]]` tells "not given" from "given empty" (so no bashly
+  # `default:`, which would also replace an explicit `--badges ""`).
+  # Warns that no-flags $1/$2 are overridden by explicit $3/$4.
   warn_superfluous_no_flag() {
     local no_flag="$1" no_goals_flag="$2" given_flag_a="$3" given_flag_b="$4"
     local ignored=()
@@ -5300,22 +5358,12 @@ goodreads_challenges_create_command() {
     warn_superfluous_no_flag --no-badges --no-goals --badges --badge
   fi
 
-  # Real Goodreads-style badge names -- note the space in "Book Boss".
   default_badges="2:Page-Turner,3:Speed Reader,5:Book Boss"
 
-  # Each spec is '<count>' or '<count>:<title>'. --badge/--badges are
-  # checked before $no_badges -- explicitly given badges just win outright
-  # (with the warning above), rather than --no-badges/--no-goals still
-  # managing to suppress them.
+  # Each spec is '<count>' or '<count>:<title>'; explicit badges beat $no_badges.
   badge_specs=()
   if [[ -v args[--badge] ]]; then
-    # bashly escapes each repeated --badge value with printf %q before
-    # space-joining them into args[--badge] (see the generated script's own
-    # flag-parsing case), specifically so a title containing a space
-    # survives -- eval is what actually un-escapes and re-splits that,
-    # unlike the plain `for x in $y` word-split every other repeatable
-    # flag/arg in this project uses, none of which have ever needed to
-    # carry a literal space before.
+    # bashly joins repeated values %q-escaped; eval re-splits them, keeping spaces.
     eval "badge_specs=(${args[--badge]})"
   elif [[ -v args[--badges] ]]; then
     badges_raw="${args[--badges]}"
@@ -5326,9 +5374,7 @@ goodreads_challenges_create_command() {
     IFS=',' read -r -a badge_specs <<<"$default_badges"
   fi
 
-  # Split each spec into count/title up front, validating the count is a
-  # positive integer -- before creating anything, so a bad value can't
-  # leave a half-set-up challenge.
+  # Validate counts before creating anything, so no half-set-up challenge.
   badge_counts=()
   badge_titles=()
   for spec in "${badge_specs[@]}"; do
@@ -5400,27 +5446,20 @@ goodreads_challenges_create_command() {
     title="$(gr::default_challenge_title "$start" "$end")"
   fi
 
-  # --blogs needs start/end already resolved (its default window is
-  # relative to both), so this can't be decided any earlier than here.
-  # --blogs/--blog are checked before $no_blogs, same "explicit wins
-  # outright, with the warning above" precedence --badges/--badge get.
+  # Needs start/end resolved (default blog window); explicit blogs beat $no_blogs.
   blog_ids=()
   blog_titles=()
   if [[ "$blogs_given" -eq 1 ]]; then
     blog_specs=()
     if [[ -v args[--blog] ]]; then
-      # Same %q/eval round-trip --badge needs -- a blog title can just as
-      # easily carry a space as a badge title can.
+      # Same %q/eval round-trip as --badge.
       eval "blog_specs=(${args[--blog]})"
     else
       blogs_raw="${args[--blogs]}"
       [[ -n "$blogs_raw" ]] && IFS=',' read -r -a blog_specs <<<"$blogs_raw"
     fi
 
-    # Every explicitly given post is fetched -- from cache if already there
-    # (the blog cache has no TTL, see CLAUDE.md, so this is cheap for
-    # anything not brand new), remotely otherwise -- both to validate it
-    # actually exists and, when no title was given, to default to its own.
+    # Fetch each post (cached or remote) to validate it and default its title.
     for spec in "${blog_specs[@]}"; do
       blog_id="${spec%%:*}"
       if [[ "$spec" == *:* ]]; then
@@ -5442,7 +5481,13 @@ goodreads_challenges_create_command() {
     : # blog_ids/blog_titles stay empty
   else
     mapfile -t blog_ids < <(gr::default_challenge_blogs "$start" "$end" "$today")
-    for _ in "${blog_ids[@]}"; do blog_titles+=(""); done
+    for blog_id in "${blog_ids[@]}"; do
+      blog_json="$(gr::blog_json "$blog_id")" || {
+        echo "error: could not fetch blog post $blog_id" >&2
+        exit 1
+      }
+      blog_titles+=("$(jq -r '.title // empty' <<<"$blog_json")")
+    done
   fi
 
   id="$(gr::create_challenge "$title" "$start" "$end" "$id_raw")"
@@ -5487,7 +5532,7 @@ goodreads_challenges_create_command() {
 goodreads_challenges_list_command() {
 
   # src/challenges_list_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op
   challenge_dir="$(gr::challenge_dir)"
 
   if [[ ! -d "$challenge_dir" ]] || [[ -z "$(ls -A "$challenge_dir" 2>/dev/null)" ]]; then
@@ -5502,8 +5547,7 @@ goodreads_challenges_list_command() {
 
   today="$(date +%Y-%m-%d)"
 
-  # "$GR_CHALLENGE_STATUS_JQ_DEF"'...' concatenates into one jq argument —
-  # see GR_CHALLENGE_STATUS_JQ_DEF in lib/goodreads_challenges.sh.
+  # Prepends jq defs from lib/goodreads_challenges.sh to the program.
   lines="$(cat "${files[@]}" | jq -s -r --arg today "$today" "$GR_CHALLENGE_STATUS_JQ_DEF"'
     sort_by(.start)
     | .[] | [
@@ -5528,14 +5572,12 @@ goodreads_challenges_list_command() {
 goodreads_challenges_get_command() {
 
   # src/challenges_get_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   id="${args[challenge_id]:-}"
   json="${args[--json]:-}"
 
-  # No id given: default to the next challenge to actually finish (ongoing
-  # or still-planned, whichever ends soonest) if one exists; otherwise the
-  # most recently ended one; otherwise there's nothing to show at all.
+  # No id: the unfinished challenge ending soonest, else the latest ended one.
   if [[ -z "$id" ]]; then
     next="$(gr::next_ending_challenge "$(date +%Y-%m-%d)")"
     if [[ -n "$next" ]]; then
@@ -5560,8 +5602,7 @@ goodreads_challenges_get_command() {
 
   today="$(date +%Y-%m-%d)"
 
-  # "$GR_CHALLENGE_STATUS_JQ_DEF"'...' concatenates into one jq argument —
-  # see GR_CHALLENGE_STATUS_JQ_DEF in lib/goodreads_challenges.sh.
+  # Prepends jq defs from lib/goodreads_challenges.sh to the program.
   result="$(jq --arg today "$today" "$GR_CHALLENGE_STATUS_JQ_DEF"'
     {
       meta: [
@@ -5602,7 +5643,7 @@ goodreads_challenges_get_command() {
 goodreads_challenges_edit_command() {
 
   # src/challenges_edit_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   id="${args[challenge_id]}"
   title="${args[--title]:-}"
@@ -5613,10 +5654,26 @@ goodreads_challenges_edit_command() {
   add_badge_raw="${args[--add-badge]:-}"
   remove_badge_raw="${args[--remove-badge]:-}"
 
+  # `-v`, not `-n`: an explicit empty --blogs/--badges means "clear the list".
+  replace_blogs=0
+  [[ -v args[--blogs] ]] && replace_blogs=1
+  replace_badges=0
+  [[ -v args[--badges] ]] && replace_badges=1
+
   if [[ -z "$title" && -z "$start_raw" && -z "$end_raw" \
-        && -z "$add_blog_raw" && -z "$remove_blog_ids" \
-        && -z "$add_badge_raw" && -z "$remove_badge_raw" ]]; then
-    echo "error: give at least one of --title, --start, --end, --add-blog, --remove-blog, --add-badge, --remove-badge" >&2
+        && "$replace_blogs" -eq 0 && -z "$add_blog_raw" && -z "$remove_blog_ids" \
+        && "$replace_badges" -eq 0 && -z "$add_badge_raw" && -z "$remove_badge_raw" ]]; then
+    echo "error: give at least one of --title, --start, --end, --blogs, --add-blog, --remove-blog, --badges, --add-badge, --remove-badge" >&2
+    exit 1
+  fi
+
+  # Replace plus incremental change of the same list is ambiguous -- refuse.
+  if [[ "$replace_blogs" -eq 1 ]] && [[ -n "$add_blog_raw" || -n "$remove_blog_ids" ]]; then
+    echo "error: --blogs can't be combined with --add-blog/--remove-blog" >&2
+    exit 1
+  fi
+  if [[ "$replace_badges" -eq 1 ]] && [[ -n "$add_badge_raw" || -n "$remove_badge_raw" ]]; then
+    echo "error: --badges can't be combined with --add-badge/--remove-badge" >&2
     exit 1
   fi
 
@@ -5638,8 +5695,7 @@ goodreads_challenges_edit_command() {
 
   file="$(gr::require_challenge_file "$id")" || exit 1
 
-  # Validate the resulting window (whichever of the existing/updated
-  # start+end apply) before writing anything.
+  # Validate the resulting start/end window before writing anything.
   effective_start="${start:-$(jq -r '.start' "$file")}"
   effective_end="${end:-$(jq -r '.end' "$file")}"
   if [[ "$effective_end" < "$effective_start" ]]; then
@@ -5652,8 +5708,7 @@ goodreads_challenges_edit_command() {
   add_blog_names=()
   add_blog_specs=()
   if [[ -n "$add_blog_raw" ]]; then
-    # Same %q/eval round-trip `challenges create`'s own --blog/--badge need
-    # -- a blog name can just as easily carry a space as a badge title can.
+    # bashly joins repeated values %q-escaped; eval re-splits them, keeping spaces.
     eval "add_blog_specs=(${args[--add-blog]})"
     for spec in "${add_blog_specs[@]}"; do
       bid="${spec%%:*}"
@@ -5667,9 +5722,31 @@ goodreads_challenges_edit_command() {
     done
   fi
 
-  # Parse --add-badge specs ('<count>' or '<count>:<name>') up front,
-  # validating the count is a positive integer before writing anything --
-  # same as `challenges create`'s own --badge/--badges validation.
+  # --blogs: into the same add_blog_* arrays (list is cleared first, below);
+  # each post is fetched to validate it. Untitled entries keep their current
+  # title, else the post's own.
+  if [[ "$replace_blogs" -eq 1 ]]; then
+    blog_specs=()
+    [[ -n "${args[--blogs]}" ]] && IFS=',' read -r -a blog_specs <<<"${args[--blogs]}"
+    for spec in "${blog_specs[@]}"; do
+      bid="${spec%%:*}"
+      if [[ "$spec" == *:* ]]; then
+        bname="${spec#*:}"
+      else
+        bname=""
+      fi
+      blog_json="$(gr::blog_json "$bid")" || {
+        echo "error: could not fetch blog post $bid" >&2
+        exit 1
+      }
+      [[ -z "$bname" ]] && bname="$(jq -r --arg bid "$bid" '.blogs[]? | select(.blog_id == $bid) | .name // empty' "$file")"
+      [[ -z "$bname" ]] && bname="$(jq -r '.title // empty' <<<"$blog_json")"
+      add_blog_ids+=("$bid")
+      add_blog_names+=("$bname")
+    done
+  fi
+
+  # Parse --add-badge specs ('<count>' or '<count>:<name>') up front.
   add_badge_counts=()
   add_badge_names=()
   add_badge_specs=()
@@ -5691,11 +5768,31 @@ goodreads_challenges_edit_command() {
     done
   fi
 
-  # Validate --remove-badge counts up front too -- a typo shouldn't leave
-  # some of this edit's other changes applied and others not.
+  # --badges: same, into the same arrays; untitled entries keep their current title.
+  if [[ "$replace_badges" -eq 1 ]]; then
+    badge_specs=()
+    [[ -n "${args[--badges]}" ]] && IFS=',' read -r -a badge_specs <<<"${args[--badges]}"
+    for spec in "${badge_specs[@]}"; do
+      bcount="${spec%%:*}"
+      if [[ "$spec" == *:* ]]; then
+        bname="${spec#*:}"
+      else
+        bname=""
+      fi
+      if ! [[ "$bcount" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: --badges entries must be '<count>' or '<count>:<title>' with a positive integer count: $spec" >&2
+        exit 1
+      fi
+      [[ -z "$bname" ]] && bname="$(jq -r --argjson c "$bcount" '.count_badges[]? | select(.count == $c) | .name // empty' "$file")"
+      add_badge_counts+=("$bcount")
+      add_badge_names+=("$bname")
+    done
+  fi
+
+  # Validate --remove-badge counts up front, so a typo can't half-apply the edit.
   remove_badge_counts=()
   if [[ -n "$remove_badge_raw" ]]; then
-    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — remove_badge_raw is bashly's own space-separated repeatable-arg string
+    # shellcheck disable=SC2086 # intentional word-splitting of bashly's repeatable arg
     for c in $remove_badge_raw; do
       if ! [[ "$c" =~ ^[1-9][0-9]*$ ]]; then
         echo "error: --remove-badge must be a positive integer: $c" >&2
@@ -5710,6 +5807,11 @@ goodreads_challenges_edit_command() {
     echo "$id -> updated"
   fi
 
+  if [[ "$replace_blogs" -eq 1 ]]; then
+    gr::clear_challenge_blogs "$id" || exit 1
+    echo "$id -> blogs cleared"
+  fi
+
   for i in "${!add_blog_ids[@]}"; do
     gr::add_challenge_blog "$id" "${add_blog_ids[$i]}" "${add_blog_names[$i]}" || exit 1
     if [[ -n "${add_blog_names[$i]}" ]]; then
@@ -5718,6 +5820,11 @@ goodreads_challenges_edit_command() {
       echo "$id -> blog ${add_blog_ids[$i]} added/updated"
     fi
   done
+
+  if [[ "$replace_badges" -eq 1 ]]; then
+    gr::clear_challenge_count_badges "$id" || exit 1
+    echo "$id -> badges cleared"
+  fi
 
   for i in "${!add_badge_counts[@]}"; do
     gr::add_challenge_count_badge "$id" "${add_badge_counts[$i]}" "${add_badge_names[$i]}" || exit 1
@@ -5732,7 +5839,7 @@ goodreads_challenges_edit_command() {
 
   if [[ -n "$remove_blog_ids" ]]; then
     ok=0
-    # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — remove_blog_ids is bashly's own space-separated repeatable-arg string
+    # shellcheck disable=SC2086 # intentional word-splitting of bashly's repeatable arg
     for bid in $remove_blog_ids; do
       if gr::remove_challenge_blog "$id" "$bid"; then
         echo "$id -> blog $bid removed"
@@ -5768,7 +5875,7 @@ goodreads_challenges_edit_command() {
 goodreads_challenges_remove_command() {
 
   # src/challenges_remove_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   all="${args[--all]:-}"
   challenge_ids="${args[challenge_id]:-}"
@@ -5810,7 +5917,7 @@ goodreads_challenges_remove_command() {
 
   ok=0
   fail=0
-  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — challenge_ids is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+  # shellcheck disable=SC2086 # intentional word-splitting of the id list
   for id in $challenge_ids; do
     if remove_one "$id"; then
       ok=$((ok + 1))
@@ -5848,7 +5955,7 @@ goodreads_config_list_command() {
 goodreads_config_get_command() {
 
   # src/config_get_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   key="${args[key]}"
 
@@ -5870,7 +5977,7 @@ goodreads_config_get_command() {
 goodreads_config_set_command() {
 
   # src/config_set_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   key="${args[key]}"
   value="${args[value]}"
@@ -5888,7 +5995,7 @@ goodreads_config_set_command() {
 goodreads_config_unset_command() {
 
   # src/config_unset_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+  : # no-op, keeps the shellcheck directive below line-scoped
   # shellcheck disable=SC2154 # args is bashly's global associative array
   all="${args[--all]:-}"
   keys="${args[key]:-}"
@@ -5904,7 +6011,7 @@ goodreads_config_unset_command() {
   fi
 
   if [[ -n "$all" ]]; then
-    # shellcheck disable=SC2207 # gr::config_keys' own output is a plain newline-separated list, one key per line, none of them containing whitespace
+    # shellcheck disable=SC2207 # one whitespace-free key per line
     set_keys=($(gr::config_keys))
     if [[ "${#set_keys[@]}" -eq 0 ]]; then
       echo "No settings are currently set."
@@ -5914,7 +6021,7 @@ goodreads_config_unset_command() {
   fi
 
   ok=0
-  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — keys is either bashly's own space-separated repeatable-arg string, or built the same way just above for --all
+  # shellcheck disable=SC2086 # intentional word-splitting of the key list
   for key in $keys; do
     gr::config_del "$key"
     echo "$key -> unset (reverts to its default, if any)"
@@ -7836,6 +7943,34 @@ goodreads_challenges_edit_parse_requirements() {
           shift
         else
           printf "%s\n" "--end requires an argument: --end DATE" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --blogs)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--blogs']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--blogs requires an argument: --blogs BLOG_IDS" >&2
+          exit 1
+        fi
+        ;;
+
+      # :flag.case
+      --badges)
+
+        # :flag.case_arg
+        if [[ -n ${2+x} ]]; then
+          args['--badges']="$2"
+          shift
+          shift
+        else
+          printf "%s\n" "--badges requires an argument: --badges COUNTS" >&2
           exit 1
         fi
         ;;

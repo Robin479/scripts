@@ -1,4 +1,4 @@
-: # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+: # no-op, keeps the shellcheck directive below line-scoped
 # shellcheck disable=SC2154 # args is bashly's global associative array
 id_raw="${args[--id]:-}"
 title_raw="${args[--title]:-}"
@@ -18,10 +18,7 @@ if [[ -n "$id_raw" ]]; then
   fi
 fi
 
-# --no-goals is shorthand for --no-badges --no-blogs together -- folded
-# into both flags' own state up front so every check/branch below just
-# looks at $no_badges/$no_blogs, with no separate --no-goals case needed
-# anywhere else.
+# --no-goals = --no-badges --no-blogs.
 no_badges="${args[--no-badges]:-}"
 no_blogs="${args[--no-blogs]:-}"
 if [[ -n "${args[--no-goals]:-}" ]]; then
@@ -29,12 +26,9 @@ if [[ -n "${args[--no-goals]:-}" ]]; then
   no_blogs=1
 fi
 
-# No `default:` in bashly.yml for --badges/--blogs: bashly applies it
-# whenever the value is *empty*, not just absent -- would silently defeat
-# an explicit `--badges ""`/`--blogs ""` opt-out. `[[ -v args[...] ]]`
-# tells "never passed" apart from "passed empty". Names exactly which
-# "no" flag(s) ($1/$2) and explicit-value flag ($3/$4) are in conflict,
-# rather than a generic message -- shared by the --badges/--blogs cases.
+# `[[ -v args[...] ]]` tells "not given" from "given empty" (so no bashly
+# `default:`, which would also replace an explicit `--badges ""`).
+# Warns that no-flags $1/$2 are overridden by explicit $3/$4.
 warn_superfluous_no_flag() {
   local no_flag="$1" no_goals_flag="$2" given_flag_a="$3" given_flag_b="$4"
   local ignored=()
@@ -56,22 +50,12 @@ if [[ -n "$no_badges" ]] && { [[ -v args[--badges] ]] || [[ -v args[--badge] ]];
   warn_superfluous_no_flag --no-badges --no-goals --badges --badge
 fi
 
-# Real Goodreads-style badge names -- note the space in "Book Boss".
 default_badges="2:Page-Turner,3:Speed Reader,5:Book Boss"
 
-# Each spec is '<count>' or '<count>:<title>'. --badge/--badges are
-# checked before $no_badges -- explicitly given badges just win outright
-# (with the warning above), rather than --no-badges/--no-goals still
-# managing to suppress them.
+# Each spec is '<count>' or '<count>:<title>'; explicit badges beat $no_badges.
 badge_specs=()
 if [[ -v args[--badge] ]]; then
-  # bashly escapes each repeated --badge value with printf %q before
-  # space-joining them into args[--badge] (see the generated script's own
-  # flag-parsing case), specifically so a title containing a space
-  # survives -- eval is what actually un-escapes and re-splits that,
-  # unlike the plain `for x in $y` word-split every other repeatable
-  # flag/arg in this project uses, none of which have ever needed to
-  # carry a literal space before.
+  # bashly joins repeated values %q-escaped; eval re-splits them, keeping spaces.
   eval "badge_specs=(${args[--badge]})"
 elif [[ -v args[--badges] ]]; then
   badges_raw="${args[--badges]}"
@@ -82,9 +66,7 @@ else
   IFS=',' read -r -a badge_specs <<<"$default_badges"
 fi
 
-# Split each spec into count/title up front, validating the count is a
-# positive integer -- before creating anything, so a bad value can't
-# leave a half-set-up challenge.
+# Validate counts before creating anything, so no half-set-up challenge.
 badge_counts=()
 badge_titles=()
 for spec in "${badge_specs[@]}"; do
@@ -156,27 +138,20 @@ else
   title="$(gr::default_challenge_title "$start" "$end")"
 fi
 
-# --blogs needs start/end already resolved (its default window is
-# relative to both), so this can't be decided any earlier than here.
-# --blogs/--blog are checked before $no_blogs, same "explicit wins
-# outright, with the warning above" precedence --badges/--badge get.
+# Needs start/end resolved (default blog window); explicit blogs beat $no_blogs.
 blog_ids=()
 blog_titles=()
 if [[ "$blogs_given" -eq 1 ]]; then
   blog_specs=()
   if [[ -v args[--blog] ]]; then
-    # Same %q/eval round-trip --badge needs -- a blog title can just as
-    # easily carry a space as a badge title can.
+    # Same %q/eval round-trip as --badge.
     eval "blog_specs=(${args[--blog]})"
   else
     blogs_raw="${args[--blogs]}"
     [[ -n "$blogs_raw" ]] && IFS=',' read -r -a blog_specs <<<"$blogs_raw"
   fi
 
-  # Every explicitly given post is fetched -- from cache if already there
-  # (the blog cache has no TTL, see CLAUDE.md, so this is cheap for
-  # anything not brand new), remotely otherwise -- both to validate it
-  # actually exists and, when no title was given, to default to its own.
+  # Fetch each post (cached or remote) to validate it and default its title.
   for spec in "${blog_specs[@]}"; do
     blog_id="${spec%%:*}"
     if [[ "$spec" == *:* ]]; then
@@ -198,7 +173,13 @@ elif [[ -n "$no_blogs" ]]; then
   : # blog_ids/blog_titles stay empty
 else
   mapfile -t blog_ids < <(gr::default_challenge_blogs "$start" "$end" "$today")
-  for _ in "${blog_ids[@]}"; do blog_titles+=(""); done
+  for blog_id in "${blog_ids[@]}"; do
+    blog_json="$(gr::blog_json "$blog_id")" || {
+      echo "error: could not fetch blog post $blog_id" >&2
+      exit 1
+    }
+    blog_titles+=("$(jq -r '.title // empty' <<<"$blog_json")")
+  done
 fi
 
 id="$(gr::create_challenge "$title" "$start" "$end" "$id_raw")"

@@ -1,4 +1,4 @@
-: # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+: # no-op, keeps the shellcheck directive below line-scoped
 # shellcheck disable=SC2154 # args is bashly's global associative array
 blog_ids="${args[blog_id]:-}"
 all="${args[--all]:-}"
@@ -57,7 +57,7 @@ fi
 
 files=()
 if [[ -n "$blog_ids" ]]; then
-  # shellcheck disable=SC2086 # word-splitting is exactly what's wanted — blog_ids is bashly's own space-separated repeatable-arg string
+  # shellcheck disable=SC2086 # intentional word-splitting of bashly's repeatable arg
   for id in $blog_ids; do
     file="$(gr::blog_file "$id")"
     if [[ -f "$file" ]]; then
@@ -84,8 +84,7 @@ bypass_limit=false
 reverse_flag=false
 [[ -n "$reverse" ]] && reverse_flag=true
 
-# "$GR_CHALLENGE_JQ_DEFS"'...' concatenates into one jq argument — see
-# GR_CHALLENGE_JQ_DEFS in lib/goodreads_blogs.sh.
+# Prepends jq defs from lib/goodreads_blogs.sh to the program.
 result="$(cat "${files[@]}" | jq -s \
   --arg since "$since" \
   --arg until "$until_date" \

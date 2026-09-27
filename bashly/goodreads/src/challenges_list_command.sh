@@ -1,4 +1,4 @@
-: # keeps the shellcheck directive below scoped to one line, not file-wide (see CLAUDE.md)
+: # no-op
 challenge_dir="$(gr::challenge_dir)"
 
 if [[ ! -d "$challenge_dir" ]] || [[ -z "$(ls -A "$challenge_dir" 2>/dev/null)" ]]; then
@@ -13,8 +13,7 @@ done
 
 today="$(date +%Y-%m-%d)"
 
-# "$GR_CHALLENGE_STATUS_JQ_DEF"'...' concatenates into one jq argument —
-# see GR_CHALLENGE_STATUS_JQ_DEF in lib/goodreads_challenges.sh.
+# Prepends jq defs from lib/goodreads_challenges.sh to the program.
 lines="$(cat "${files[@]}" | jq -s -r --arg today "$today" "$GR_CHALLENGE_STATUS_JQ_DEF"'
   sort_by(.start)
   | .[] | [
