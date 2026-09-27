@@ -2,6 +2,27 @@
 
 Personal collection of bash and bashly tools for the Linux command line.
 
+## Scripts
+
+Everything that ends up in `bin/` after `make all`, alphabetically:
+
+- **`beam-shop`** (bashly) — Scrape and organize book cover images from
+  www.beam-shop.de, matched into user-defined series independent of the
+  shop's own (often unreliable) category structure.
+- **`boxctl`** (bashly) — Grab-bag CLI for local machine maintenance/setup
+  tasks that don't warrant their own project (dropping caches, installing
+  tools not packaged in the default system repos, ...).
+- **`desktopctl`** (plain) — Save and restore X window positions, e.g.
+  across a compiz restart, which forgets all window geometries.
+- **`fix-eclipse-classpath`** (plain) — Normalize an Eclipse `.classpath`
+  file's entry/attribute ordering for stable, low-noise diffs.
+- **`fix-umask`** (plain) — Find files/directories whose permission bits
+  don't match what the current umask implies and interactively fix them.
+- **`goodreads`** (bashly) — Interact with goodreads.com: scrape book
+  details, and manage shelves, reading progress, and reading challenges.
+- **`remote-exec`** (bashly) — Rsync the current project directory to a
+  scratch location on a remote host, then run a command there.
+
 ## Layout
 
 - `bin/` — flat directory of everything meant to go on `$PATH`. Contains

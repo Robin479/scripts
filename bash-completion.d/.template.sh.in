@@ -9,9 +9,43 @@
 # on PATH -- and only if that binary actually supports
 # `@NAME@ completions bash`. Does nothing otherwise, which is also what
 # happens for a bashly project that doesn't support completions at all.
+#
+# Also filters a short-form command alias (e.g. "ls") out of the candidate
+# list whenever its own long form ("list") is also a candidate at that
+# same position -- bashly's own generated candidate lists include both as
+# equally-weighted plain words, so a bare TAB would otherwise show both
+# side by side. This is a *global* rule applied here, once, for every
+# bashly project in this repo -- not something any individual project's
+# own src/completions_command.sh needs to hand-implement. Alias pairs are
+# read straight from that project's own bashly.yml at shell-startup time
+# (every "- name: X" line immediately followed by "alias: Y", bashly's
+# own fixed convention for declaring a command's short form -- confirmed
+# directly across every bashly.yml in this repo), never hardcoded here or
+# per-project, so this applies automatically, present or future, and is a
+# correct no-op for a project with no aliases at all (nothing here
+# overrides its plain `complete -F` registration in that case).
+#
+# Also fixes up a real gap in bashly itself (confirmed across every
+# version this repo has built with, 1.4.0 and current 2.0.0.rc2 HEAD:
+# neither ever emits `compopt -o filenames`): a `completions: [<file>]`/
+# `<directory>`/`<dir>` builtin token compiles to a bare `compgen -A
+# file`/`-A directory` (1.x) or `compgen -f`/`-d` (2.x), with no
+# `compopt` telling readline the results are paths. Without it,
+# completing into a directory inserts a trailing space instead of `/`
+# (ending completion instead of letting you continue into it), and a
+# path containing a space or other shell-special character gets
+# inserted raw/unescaped. See ~/.claude/rules/bashly.md for the full
+# writeup (symptoms, why there's no official fix, the blanket-vs-scoped
+# tradeoff). Detected the same way as alias pairs -- grepping that
+# project's own bashly.yml for the literal builtin token, at
+# shell-startup time -- so this also applies automatically, present or
+# future, with no per-project code.
+
+declare -gA __bash_completion_alias_pairs 2> /dev/null
+declare -gA __bash_completion_needs_filenames 2> /dev/null
 
 __bash_completion_setup_@NAME@() {
-  local resolved script
+  local resolved script bashly_yml
 
   resolved="$(which @NAME@ 2>/dev/null)"
   [[ -n "${resolved}" ]] || return 0
@@ -26,6 +60,66 @@ __bash_completion_setup_@NAME@() {
   [[ -n "${script}" ]] || return 0
 
   eval "${script}"
+
+  # ${resolved} is .../bashly/@NAME@/@NAME@ (the generated executable);
+  # its own src/bashly.yml is a fixed sibling path from there, whichever
+  # of this repo's several equally-valid paths ${resolved} was actually
+  # reached through.
+  bashly_yml="$(dirname "${resolved}")/src/bashly.yml"
+  [[ -r "${bashly_yml}" ]] || return 0
+
+  __bash_completion_alias_pairs[@NAME@]="$(awk '
+    $0 ~ /alias:[[:space:]]*[^[:space:]]+/ && prev ~ /name:[[:space:]]*[^[:space:]]+/ {
+      long = prev; sub(/.*name:[[:space:]]*/, "", long); sub(/[[:space:]]+$/, "", long)
+      short = $0;  sub(/.*alias:[[:space:]]*/, "", short); sub(/[[:space:]]+$/, "", short)
+      print long ":" short
+    }
+    { prev = $0 }
+  ' "${bashly_yml}" 2> /dev/null | sort -u | tr '\n' ' ')"
+
+  if grep -Eq '<(file|directory|dir)>' "${bashly_yml}" 2> /dev/null; then
+    __bash_completion_needs_filenames[@NAME@]=1
+  fi
+
+  [[ -n "${__bash_completion_alias_pairs[@NAME@]// /}" || -n "${__bash_completion_needs_filenames[@NAME@]:-}" ]] || return 0
+  complete -F __bash_completion_filtered_@NAME@ @NAME@
+}
+
+__bash_completion_filtered_@NAME@() {
+  _@NAME@_completions
+  # See the header comment above -- this repo's bashly builds never emit
+  # `compopt -o filenames` themselves for a `<file>`/`<directory>`/`<dir>`
+  # completion. Applied for the whole invocation, not scoped to just the
+  # candidates that came from a `<file>`/`<directory>` argument position
+  # -- bashly's generated function returns one flat COMPREPLY per call,
+  # with no marker saying which candidates came from where, so there's no
+  # finer-grained hook to attach this to without patching the generated
+  # script itself (never done -- see the file's own top comment). Harmless
+  # for this project's *other*, non-path candidates in practice (it only
+  # changes how a candidate is treated if it also happens to name a real
+  # file/directory in the current directory -- a subcommand/alias
+  # colliding with a real cwd entry is the one edge case this could ever
+  # affect, and only cosmetically, not correctness -- see the rule file
+  # for the full tradeoff).
+  if [[ -n "${__bash_completion_needs_filenames[@NAME@]:-}" ]]; then
+    compopt -o filenames 2> /dev/null
+  fi
+  local pair long short w keep filtered
+  for pair in ${__bash_completion_alias_pairs[@NAME@]}; do
+    long="${pair%%:*}"
+    short="${pair#*:}"
+    keep=1
+    for w in "${COMPREPLY[@]}"; do
+      [[ "${w}" == "${long}" ]] && { keep=0; break; }
+    done
+    if [[ "${keep}" -eq 0 ]]; then
+      filtered=()
+      for w in "${COMPREPLY[@]}"; do
+        [[ "${w}" == "${short}" ]] || filtered+=("${w}")
+      done
+      COMPREPLY=("${filtered[@]}")
+    fi
+  done
 }
 
 __bash_completion_setup_@NAME@
