@@ -75,15 +75,19 @@ bs::is_known_placeholder_hash() {
   return 1
 }
 
-# Registers $2 under $1's sha256 in image_hashes.json, then recomputes cover_status
-# for every product sharing that hash -- placeholder if known/shared by 2+, else final.
+# Registers $2 under $1's sha256 in image_hashes.json (dropping it from any
+# other hash it was registered under before, i.e. a replaced cover), then
+# recomputes cover_status for every product sharing that hash -- placeholder
+# if known/shared by 2+, else final. Prints that status, since $2's own record
+# may not exist yet for this to write it into.
 bs::register_image_hash() {
   local hash="$1" product_id="$2"
   local hashes_file; hashes_file="$(bs::image_hashes_file)"
 
   local content
   content="$(jq --arg hash "$hash" --arg id "$product_id" \
-    '.[$hash] = ((.[$hash] // []) + [$id] | unique)' \
+    'map_values(map(select(. != $id))) | with_entries(select(.value != []))
+     | .[$hash] = ((.[$hash] // []) + [$id] | unique)' \
     "$hashes_file")" && bs::write_file "$hashes_file" "$content"
 
   local status="final"
@@ -100,6 +104,8 @@ bs::register_image_hash() {
     local pcontent
     pcontent="$(jq --arg status "$status" '.cover_status = $status' "$pfile")" && bs::write_file "$pfile" "$pcontent"
   done < <(jq -r --arg hash "$hash" '(.[$hash] // [])[]' "$hashes_file")
+
+  echo "$status"
 }
 
 # Total page count from a fetched category listing page.
@@ -153,7 +159,7 @@ bs::finalize_product() {
   }
 
   local hash; hash="$(sha256sum "$image_file" | cut -d' ' -f1)"
-  bs::register_image_hash "$hash" "$product_id"
+  local status; status="$(bs::register_image_hash "$hash" "$product_id")"
 
   local product_file; product_file="$(bs::product_file "$product_id")"
   local existing_overrides="{}"
@@ -163,14 +169,14 @@ bs::finalize_product() {
   if ! content="$(jq -n --arg product_id "$product_id" \
     --arg title "$title" --arg source_url "$source_url" \
     --arg fetched_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hash "$hash" \
-    --argjson overrides "$existing_overrides" \
+    --arg status "$status" --argjson overrides "$existing_overrides" \
     '{
       product_id: $product_id,
       title: $title,
       source_url: (if $source_url == "" then null else $source_url end),
       image_sha256: $hash,
       fetched_at: $fetched_at,
-      cover_status: "final",
+      cover_status: $status,
       overrides: $overrides
     }')"; then
     bs::status_line_clear "$quiet"
@@ -234,7 +240,7 @@ bs::category_has_failures() {
 
 # Fetches one new product end to end: detail page, cover download, then
 # bs::finalize_product. A failure is recorded via bs::record_fetch_failure and
-# reported to stderr. Prints "fetched"/"placeholder" on success.
+# reported to stderr. Prints the resulting cover_status on success.
 bs::fetch_one_product() {
   local product_id="$1" category_id="$2" listing_title="$3" listing_url="$4" quiet="$5"
 

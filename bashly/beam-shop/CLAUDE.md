@@ -1242,6 +1242,9 @@ token, fixed for this (and every) project in this repo by the shared
 
 ## Open design questions
 
+- **Top priority: migrate to bashly 2.0.0** -- `bashly.yml`'s command-level
+  `completions:` keys fail validation under 2.0; pinned to 1.4.0 until then.
+  See "Backlog" in the repo root `CLAUDE.md`.
 - **The `bs::products_dir`/`bs::product_file`/`bs::series_dir`/`bs::category_file`-
   style directory-helper functions are far more expensive per call than
   they look, and this whole file calls them repeatedly inside per-item/

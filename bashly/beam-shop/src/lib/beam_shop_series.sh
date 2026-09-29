@@ -794,7 +794,7 @@ bs::import_manual_cover() {
   cat -- "$src_file" > "$dest"
 
   local hash; hash="$(sha256sum "$dest" | cut -d' ' -f1)"
-  bs::register_image_hash "$hash" "$image_key"
+  local status; status="$(bs::register_image_hash "$hash" "$image_key")"
 
   local existing_manual="{}" existing_matched="[]"
   if [[ -f "$target" ]]; then
@@ -813,7 +813,7 @@ bs::import_manual_cover() {
 
   bs::_recompute_item "$series_id" "$key"
 
-  echo "final"
+  echo "$status"
 }
 
 # Prints series $1's own resize resolution specs, one per line (empty if

@@ -98,3 +98,19 @@ dockerized shellcheck or a different binary, e.g.
 - Symlink names in `bin/` are the invocable command name and drop any
   source file extension (e.g. `plain/fix-eclipse-classpath.sh` is symlinked
   as `bin/fix-eclipse-classpath`, not `bin/fix-eclipse-classpath.sh`).
+
+## Backlog
+
+Repo-wide work items, highest priority first. Project-specific open items
+live in each project's own `CLAUDE.md`.
+
+1. **Migrate the bashly projects to bashly 2.0.0.** `dannyben/bashly:latest`
+   moved to 2.0.0 on 2026-09-27, and 2.0 rejects a command-level
+   `completions:` key (`root.commands[..] contains invalid options:
+   completions`). `bashly validate` under 2.0.0 (checked 2026-09-29): `beam-shop`
+   and `goodreads` fail, `boxctl` and `remote-exec` pass. As a stopgap every
+   project is pinned to 1.4.0 via `bashly/.bashly-version` (the version all
+   committed scripts were generated with). To migrate: move those completions
+   onto the args they belong to (2.0's pattern-based completion generator),
+   regenerate, re-check `bash-completion.d/.template.sh.in`'s alias filtering
+   and `compopt -o filenames` handling against 2.0's output, then drop the pin.
