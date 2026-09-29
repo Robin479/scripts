@@ -2120,6 +2120,9 @@ bs::fetch_category() {
       url="$(jq -r '.url' <<< "$row")"
       pfile="$(bs::product_file "$product_id")"
       seen_products["$product_id"]=1
+      # Link every listed product, cached or not -- one already fetched via
+      # another category still belongs to this one too.
+      [[ -f "$pfile" ]] && bs::link_category_product "$category_id" "$product_id"
 
       bs::status_line "category $category_id p$page/$pages: examining $product_id..." "$quiet"
 

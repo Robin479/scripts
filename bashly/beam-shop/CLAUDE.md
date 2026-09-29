@@ -98,7 +98,18 @@ categories/<category_id>/products/`, then `ln -sf
 ../../../products/<product_id>.json categories/<category_id>/products/
 <product_id>.json`. Called from `bs::finalize_product`/`bs::record_fetch_failure`
 (`beam_shop_covers.sh`) wherever a fetch/import already knows the category
-it's working under. A product can be linked from any number of categories
+it's working under, **and** by `bs::fetch_category` for every
+already-cached product it sees on a listing page, before deciding to skip
+it or stop there. That second call was missing until 2026-09-29: a product
+got linked only from the category it was first *downloaded* through, so
+after c=43 ("Perry Rhodan Erstauflage", which lists every issue) had been
+walked, every cycle sub-category walk saw only cached products and linked
+almost nothing (e.g. c=44 "Die Dritte Macht 1-49" held 2 links; only 42
+products were linked from more than one category). Repaired once by
+deleting the sub-categories' `products/.synced` markers, so the next
+refresh re-walked them as a first backfill (see "Resumable backfills"
+below): every page, linking everything, downloading nothing already
+`final`. A product can be linked from any number of categories
 with zero write conflicts, since each link is an independent file in an
 independent directory. `bs::categories_for_product` (same file) is the
 reverse lookup — **every** category id a product is currently linked from,
