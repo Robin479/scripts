@@ -1,7 +1,6 @@
 : # keeps the shellcheck directive below scoped to one line, not file-wide
 # shellcheck disable=SC2154 # args is bashly's global associative array
 series_ids="${args[series_id]:-}"
-limit="${args[--limit]:-}"
 force="${args[--force]:-}"
 quiet=""
 if bs::fetch_quiet "${args[--batch]:-}"; then
@@ -21,15 +20,23 @@ bs::offline || bs::init_curl_cmd || exit 1
 # Fetches every category of series $1, then resizes it. $2/$3 (n/total)
 # are just for the "series [n/total]" status prefix.
 bs::_refresh_one_series() {
-  local sid="$1" n="$2" total="$3" categories cid resized
+  local sid="$1" n="$2" total="$3" categories cid resized mode until skipped=0
   categories="$(bs::series_category_ids "$sid")" || return 1
 
   echo "=== series $sid [$n/$total] ==="
   while IFS= read -r cid; do
     [[ -n "$cid" ]] || continue
-    echo "-- category $cid --"
-    bs::fetch_category "$cid" "$force" "$limit" "$quiet" || return 1
+    read -r mode until <<< "$(bs::category_fetch_mode "$cid" "$force")"
+    if [[ "$mode" == "skip" ]]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    echo "-- category $cid ($(bs::describe_fetch_mode "$mode" "$until")) --"
+    bs::fetch_category "$cid" "$mode" "$quiet" || return 1
   done <<< "$categories"
+  if (( skipped > 0 )); then
+    bs::skipped_categories_summary "$skipped"
+  fi
 
   resized="$(bs::resize_series "$sid" "" "" "" "$quiet")" || return 1
   echo "$sid -> resized ($resized file(s))"

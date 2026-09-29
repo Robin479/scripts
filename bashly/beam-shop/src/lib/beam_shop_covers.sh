@@ -1,3 +1,7 @@
+readonly BS_CATEGORY_SETTLE_PERIOD_DEFAULT=$((14 * 24 * 3600))
+readonly BS_CATEGORY_FULL_SYNC_MAX_INTERVAL_DEFAULT=$((180 * 24 * 3600))
+readonly BS_CATEGORY_FULL_SYNC_RAMP_DEFAULT=13700000 # ~365 days / ln(10): ~90% of max interval after a year
+
 # Extend via the known_placeholder_hashes config key rather than editing this.
 readonly BS_KNOWN_PLACEHOLDER_HASHES=(
   0a504b002eb1359f1b178c25fcd32818fec2d7a47adf1d8dbb885f965ca2ba7f
@@ -225,19 +229,6 @@ bs::record_fetch_failure() {
   bs::link_category_product "$category_id" "$product_id"
 }
 
-# True if any cached product in category $1 is recorded "failed".
-bs::category_has_failures() {
-  local category_id="$1" dir; dir="$(bs::category_dir "$category_id")/products"
-  [[ -d "$dir" ]] || return 1
-  shopt -s nullglob
-  local pfile
-  for pfile in "$dir"/*.json; do
-    jq -e '.cover_status == "failed"' "$pfile" > /dev/null 2>&1 && { shopt -u nullglob; return 0; }
-  done
-  shopt -u nullglob
-  return 1
-}
-
 # Fetches one new product end to end: detail page, cover download, then
 # bs::finalize_product. A failure is recorded via bs::record_fetch_failure and
 # reported to stderr. Prints the resulting cover_status on success.
@@ -310,106 +301,258 @@ bs::import_cover() {
   bs::finalize_product "$product_id" "$category_id" "$title" "" "$quiet"
 }
 
-# Marker: a fetch has walked category $1's products to the true end of pagination at least once.
+# Marker: every product in category $1 is complete (final cover on disk) as of
+# its mtime, the last full walk. See CLAUDE.md "Category sync".
 bs::category_synced_marker() {
   local dir; dir="$(bs::category_dir "$1")/products"
   mkdir -p "$dir"
   echo "${dir}/.synced"
 }
 
-# Paginates category $1, fetching any product not already cached "final".
-# Stops early at the first already-final product (releases are newest-first)
-# unless $2 (force), or this category was never fully synced before, or it has
-# any "failed" record (a stuck failure would otherwise never be retried).
-# $3 (limit) caps new downloads; a limited run never marks the category synced.
-# Prints "<new> new (of which <placeholder> placeholder)[, <skipped> already cached]".
+# Prints "<mtime> <pid>" for every cached image (one stat over the images dir).
+bs::_image_mtimes() {
+  local images_dir; images_dir="$(bs::images_dir)"
+  shopt -s nullglob
+  local files=("$images_dir"/*)
+  shopt -u nullglob
+  (( ${#files[@]} > 0 )) || return 0
+  stat -c '%Y %n' -- "${files[@]}" | while read -r mtime path; do
+    path="${path##*/}"
+    echo "$mtime ${path%.*}"
+  done
+}
+
+# Prints each product linked from category $1 that is incomplete: not
+# cover_status "final", or no image on disk. $2: output of bs::_image_mtimes.
+bs::category_incomplete_ids() {
+  local image_mtimes="$2" dir; dir="$(bs::category_dir "$1")/products"
+  shopt -s nullglob
+  local files=("$dir"/*.json)
+  shopt -u nullglob
+  (( ${#files[@]} > 0 )) || return 0
+  local -A has_image=()
+  local mtime pid status
+  while read -r mtime pid; do has_image["$pid"]=1; done <<< "$image_mtimes"
+  while IFS=$'\t' read -r pid status; do
+    [[ "$status" == "final" && -n "${has_image[$pid]:-}" ]] || echo "$pid"
+  done < <(jq -r '[.product_id, .cover_status] | @tsv' "${files[@]}")
+}
+
+# Sets every link in category $1 to its image's mtime (see CLAUDE.md
+# "Category sync"); links without an image are left alone. Prints the newest
+# resulting link mtime, or nothing if the category has no linked image. $2:
+# output of bs::_image_mtimes.
+bs::sync_category_link_times() {
+  local image_mtimes="$2" dir; dir="$(bs::category_dir "$1")/products"
+  shopt -s nullglob
+  local links=("$dir"/*.json)
+  shopt -u nullglob
+  (( ${#links[@]} > 0 )) || return 0
+  local -A image_mtime=()
+  local mtime pid path newest=""
+  while read -r mtime pid; do [[ -n "$pid" ]] && image_mtime["$pid"]="$mtime"; done <<< "$image_mtimes"
+  local images_dir; images_dir="$(bs::images_dir)"
+  while read -r mtime path; do
+    pid="${path##*/}"
+    pid="${pid%.json}"
+    local want="${image_mtime[$pid]:-}"
+    [[ -n "$want" ]] || continue
+    [[ "$mtime" == "$want" ]] || touch -h -d "@$want" -- "$path"
+    [[ -z "$newest" || "$want" -gt "$newest" ]] && newest="$want"
+  done < <(stat -c '%Y %n' -- "${links[@]}")
+  if [[ -n "$newest" ]]; then
+    echo "$newest"
+  fi
+}
+
+# Epoch at which a synced category's next confirming full walk is due, given
+# its newest item's epoch $1 and its last full walk's epoch $2 -- the backoff
+# strategy, kept separate so it can change. bs::category_fetch_mode ceils the
+# result to the end of the settle period.
+# interval = max * (1 - e^(-age/ramp)), age = last walk - newest item: grows
+# about linearly for young categories, levels off smoothly towards max.
+bs::category_full_sync_due() {
+  local newest="$1" last_sync="$2" max ramp
+  max="$(bs::config_get category_full_sync_max_interval "$BS_CATEGORY_FULL_SYNC_MAX_INTERVAL_DEFAULT")"
+  ramp="$(bs::config_get category_full_sync_ramp "$BS_CATEGORY_FULL_SYNC_RAMP_DEFAULT")"
+  awk -v n="$newest" -v s="$last_sync" -v max="$max" -v ramp="$ramp" \
+    'BEGIN { age = s - n; printf "%d\n", s + max * (1 - exp(-age / ramp)) }'
+}
+
+# Decides how a default refresh walks category $1 -- see CLAUDE.md "Category
+# sync". Prints "<mode>[ <epoch>]": "partial" (incomplete products remain),
+# "full", "head" (synced, within the settle period, until <epoch>) or "skip"
+# (synced, next full walk due at <epoch>). $2 (force) always means "full".
+# Also syncs the category's link times first, which the decision depends on.
+bs::category_fetch_mode() {
+  local category_id="$1" force="$2"
+  local image_mtimes; image_mtimes="$(bs::_image_mtimes)"
+  local newest; newest="$(bs::sync_category_link_times "$category_id" "$image_mtimes")"
+  [[ -n "$force" ]] && { echo "full"; return 0; }
+
+  if [[ -n "$(bs::category_incomplete_ids "$category_id" "$image_mtimes")" ]]; then
+    echo "partial"
+    return 0
+  fi
+
+  local marker; marker="$(bs::category_synced_marker "$category_id")"
+  [[ -f "$marker" ]] || { echo "full"; return 0; }
+
+  local last_sync; last_sync="$(stat -c %Y "$marker")"
+  local empty=""
+  [[ -n "$newest" ]] || { newest="$last_sync"; empty=1; }
+  local settle; settle="$(bs::config_get category_settle_period "$BS_CATEGORY_SETTLE_PERIOD_DEFAULT")"
+  local settle_end=$((newest + settle))
+  local due; due="$(bs::category_full_sync_due "$newest" "$last_sync")"
+  (( due < settle_end )) && due="$settle_end"
+
+  local now; now="$(date +%s)"
+  if (( now >= due )); then
+    echo "full"
+  elif [[ -z "$empty" ]] && (( now < settle_end )); then
+    echo "head $settle_end"
+  else
+    echo "skip $due"
+  fi
+}
+
+# Walks category $1's listing in mode $2 (from bs::category_fetch_mode),
+# downloading every new or incomplete product and linking every listed one:
+# - partial: stop once every previously incomplete product was seen again and
+#   some product is still incomplete; otherwise carry on as a full walk
+# - head: stop at the first product that was already linked and complete
+# - full: walk to the end
+# Reaching the end of pagination, in any mode, prunes links to products no
+# longer listed, and sets .synced if everything seen was complete. Finding
+# anything incomplete removes .synced.
+# Prints "<new> new (of which <incomplete> incomplete)".
 bs::fetch_category() {
-  local category_id="$1" force="$2" limit="$3" quiet="$4"
+  local category_id="$1" mode="$2" quiet="$3"
   local cat_file; cat_file="$(bs::category_file "$category_id")"
   [[ -f "$cat_file" ]] || { echo "error: unknown category $category_id -- run 'categories list' first" >&2; return 1; }
   local base_url; base_url="$(jq -r '.url' "$cat_file")"
 
-  local synced_marker; synced_marker="$(bs::category_synced_marker "$category_id")"
-  local already_synced=""
-  if [[ -f "$synced_marker" ]] && ! bs::category_has_failures "$category_id"; then
-    already_synced=1
+  local dir; dir="$(bs::category_dir "$category_id")/products"
+  local marker; marker="$(bs::category_synced_marker "$category_id")"
+  local products_dir; products_dir="$(bs::products_dir)"
+
+  local -A pending=()
+  local pid
+  if [[ "$mode" == "partial" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && pending["$pid"]=1
+    done < <(bs::category_incomplete_ids "$category_id" "$(bs::_image_mtimes)")
+    rm -f "$marker"
   fi
 
-  local new=0 placeholder=0 skipped=0 stop=0 limited=0 page=1 pages=1 pages_known=""
+  local new=0 incomplete=0 stop=0 page=1 pages=1 pages_known=""
   local -A seen_products=()
 
   while (( page <= pages && stop == 0 )); do
     local page_url="$base_url"
     (( page > 1 )) && page_url="${base_url}?p=${page}"
 
-    bs::status_line "category $category_id: fetching page $page${pages_known:+/$pages}..." "$quiet"
+    bs::status_line "category $category_id ($mode): fetching page $page${pages_known:+/$pages}..." "$quiet"
     local html_file; html_file="$(mktemp)"
     bs::http_get "$page_url" > "$html_file" || { rm -f "$html_file"; bs::status_line_clear "$quiet"; return 1; }
     pages="$(bs::listing_page_count "$html_file")"
     pages_known=1
 
-    local row product_id title url pfile
+    local row product_id title url pfile link
     while IFS= read -r row; do
       [[ -n "$row" ]] || continue
       product_id="$(jq -r '.product_id' <<< "$row")"
       title="$(jq -r '.title' <<< "$row")"
       url="$(jq -r '.url' <<< "$row")"
-      pfile="$(bs::product_file "$product_id")"
+      pfile="${products_dir}/${product_id}.json"
+      link="${dir}/${product_id}.json"
       seen_products["$product_id"]=1
-      # Link every listed product, cached or not -- one already fetched via
-      # another category still belongs to this one too.
-      [[ -f "$pfile" ]] && bs::link_category_product "$category_id" "$product_id"
+      unset 'pending[$product_id]'
 
       bs::status_line "category $category_id p$page/$pages: examining $product_id..." "$quiet"
 
-      local cached_final=""
-      [[ -f "$pfile" ]] && [[ "$(jq -r '.cover_status' "$pfile")" == "final" ]] && cached_final=1
+      local was_linked=""
+      [[ -L "$link" ]] && was_linked=1
 
-      if [[ -n "$cached_final" && -z "$force" ]]; then
-        if [[ -n "$already_synced" ]]; then
+      local complete=""
+      [[ -f "$pfile" ]] && [[ "$(jq -r '.cover_status' "$pfile")" == "final" ]] \
+        && bs::image_file "$product_id" > /dev/null && complete=1
+
+      if [[ -n "$complete" ]]; then
+        [[ -n "$was_linked" ]] || bs::link_category_product "$category_id" "$product_id"
+        bs::_sync_link_time "$link" "$product_id"
+        if [[ "$mode" == "head" && -n "$was_linked" ]]; then
           stop=1
           break
         fi
-        skipped=$((skipped + 1))
-        continue
+      else
+        bs::status_line "category $category_id p$page/$pages: fetching $product_id ($title)..." "$quiet"
+        local outcome=""
+        if outcome="$(bs::fetch_one_product "$product_id" "$category_id" "$title" "$url" "$quiet")"; then
+          new=$((new + 1))
+          bs::status_line_clear "$quiet"
+          echo "$product_id -> $outcome ($title)"
+        fi
+        bs::_sync_link_time "$link" "$product_id"
+        if [[ "$outcome" != "final" ]]; then
+          incomplete=$((incomplete + 1))
+          rm -f "$marker"
+        fi
       fi
 
-      if [[ -n "$limit" && "$new" -ge "$limit" ]]; then
-        stop=1
-        limited=1
-        break
+      if [[ "$mode" == "partial" && ${#pending[@]} -eq 0 ]]; then
+        if (( incomplete > 0 )); then
+          stop=1
+          break
+        fi
+        mode="full"
       fi
-
-      bs::status_line "category $category_id p$page/$pages: fetching $product_id ($title)..." "$quiet"
-      local outcome
-      outcome="$(bs::fetch_one_product "$product_id" "$category_id" "$title" "$url" "$quiet")" || continue
-      new=$((new + 1))
-      [[ "$outcome" == "placeholder" ]] && placeholder=$((placeholder + 1))
-      bs::status_line_clear "$quiet"
-      echo "$product_id -> $outcome ($title)"
     done < <(bs::listing_products "$html_file")
 
     rm -f "$html_file"
     page=$((page + 1))
   done
 
-  [[ "$limited" -eq 0 ]] && touch "$synced_marker"
-
-  # Prune stale product symlinks only when this run's own pagination never
-  # exited early for any reason (force run, or first-ever backfill).
+  # Reached the end of pagination: every listed product was seen.
   if [[ "$stop" -eq 0 ]]; then
-    local dir; dir="$(bs::category_dir "$category_id")/products"
-    local link pid
+    local l
     shopt -s nullglob
-    for link in "$dir"/*.json; do
-      pid="$(basename "$link" .json)"
-      [[ -n "${seen_products[$pid]:-}" ]] || rm -f "$link"
+    for l in "$dir"/*.json; do
+      pid="${l##*/}"
+      pid="${pid%.json}"
+      [[ -n "${seen_products[$pid]:-}" ]] || rm -f "$l"
     done
     shopt -u nullglob
+    if (( incomplete == 0 )); then
+      touch "$marker"
+    else
+      rm -f "$marker"
+    fi
   fi
 
   bs::status_line_clear "$quiet"
-  local summary="$new new (of which $placeholder placeholder)"
-  [[ "$skipped" -gt 0 ]] && summary="$summary, $skipped already cached (resuming an incomplete backfill)"
-  echo "$summary"
+  echo "$new new (of which $incomplete incomplete)"
+}
+
+# Sets link $1 to product $2's image mtime, if both exist.
+bs::_sync_link_time() {
+  local link="$1" product_id="$2" image
+  [[ -L "$link" ]] || return 0
+  image="$(bs::image_file "$product_id")" || return 0
+  touch -h -r "$image" -- "$link"
+}
+
+# Human-readable form of a bs::category_fetch_mode result ($1 mode, $2 epoch).
+bs::describe_fetch_mode() {
+  case "$1" in
+    partial) echo "re-checking incomplete covers" ;;
+    full) echo "full walk" ;;
+    head) echo "head check, settling until $(date -d "@$2" +%F)" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+bs::skipped_categories_summary() {
+  local n="$1"
+  echo "-- skipped $n synced categor$( ((n == 1)) && echo y || echo ies) not due for a full walk yet (--force to walk them anyway) --"
 }

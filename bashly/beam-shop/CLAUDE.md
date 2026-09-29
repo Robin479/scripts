@@ -99,16 +99,17 @@ categories/<category_id>/products/`, then `ln -sf
 <product_id>.json`. Called from `bs::finalize_product`/`bs::record_fetch_failure`
 (`beam_shop_covers.sh`) wherever a fetch/import already knows the category
 it's working under, **and** by `bs::fetch_category` for every
-already-cached product it sees on a listing page, before deciding to skip
-it or stop there. That second call was missing until 2026-09-29: a product
+already-cached, not-yet-linked product it sees on a listing page. Every
+link's own mtime is kept equal to its product's *image* mtime (see
+"Category sync" under `covers` below), so an existing link is never
+recreated just because it was seen again. That second call was missing until 2026-09-29: a product
 got linked only from the category it was first *downloaded* through, so
 after c=43 ("Perry Rhodan Erstauflage", which lists every issue) had been
 walked, every cycle sub-category walk saw only cached products and linked
 almost nothing (e.g. c=44 "Die Dritte Macht 1-49" held 2 links; only 42
 products were linked from more than one category). Repaired once by
 deleting the sub-categories' `products/.synced` markers, so the next
-refresh re-walked them as a first backfill (see "Resumable backfills"
-below): every page, linking everything, downloading nothing already
+refresh re-walked them as a first backfill: every page, linking everything, downloading nothing already
 `final`. A product can be linked from any number of categories
 with zero write conflicts, since each link is an independent file in an
 independent directory. `bs::categories_for_product` (same file) is the
@@ -120,12 +121,9 @@ categories that exist, all bash-builtin `[[ -f ]]` checks, no forks) and a
 whole-cache one (`bs::_all_categories_for_products`, one pass per category
 directory instead of per product — used by `series rebuild`) that no
 separate cached `categories` field on the product record itself is worth
-the added invalidation surface. `bs::category_has_failures` also switched
-to walking this symlink folder directly, instead of grepping every product
-for a now-nonexistent `category_id` field. A category's own listing fetch
+the added invalidation surface. A category's own listing fetch
 (`bs::fetch_category`) prunes stale links here too — but only once a run
-has genuinely walked the *entire* current listing without any early exit
-(neither `--limit` nor the already-synced shortcut), since anything less
+has genuinely reached the end of the current listing, since anything less
 hasn't actually confirmed which products are still really listed.
 
 ### Series matchers and the classification engine
@@ -609,9 +607,9 @@ downloaded bytes), via two independent mechanisms in
    `item_number` were removed from products, not `cover_status`/
    `image_sha256`/etc.).
 
-`bs::fetch_category`'s early-exit pagination ("stop once an already-cached
-product is hit") only stops on a `final` product — a cached `placeholder` is
-always re-checked on the next run, so real art that later replaces a
+A category with any `placeholder` (or `failed`) product is never `.synced`
+and gets a partial walk every refresh that re-downloads those covers (see
+"Category sync" under `covers` below), so real art that later replaces a
 placeholder gets picked up automatically. **Classification/cover-linking no
 longer excludes a `placeholder` product from the human-browsable view the
 way v1 did** — classification only ever looks at a product's *title*, not
@@ -681,10 +679,10 @@ costs one extra request, not per-cycle-page.
   issue, as long as *some* category the tool ever fetches does. It's the
   reason the early-exit pagination assumption ("releases are numerically
   monotonic newest-first") should not be trusted as a universal property of
-  every category — see "Resumable backfills" below for where that
-  assumption is actually load-bearing (it still holds for the parent
-  category's *own* listing order in practice, just not necessarily for
-  every possible category).
+  every category — see "Category sync" below: only discovering *new*
+  products during a partial walk or head check still relies on it (it holds
+  for the parent category's *own* listing in practice); the next full walk
+  catches anything a disordered listing hid.
 - **Pagination**: a category listing page's own `.listing[data-pages="N"]`
   attribute gives the total page count directly — no need to detect
   "empty page" as an end condition.
@@ -738,7 +736,7 @@ $data_dir/
   categories/<id>/products/<pid>.json     # symlink -> ../../../products/<pid>.json (category -> product, the one persisted relation)
   categories/<id>/<child_id>              # symlink -> ../<child_id> (this category's own direct sub-categories)
   categories/<id>/.synced                 # marker: this category's own child list was crawled, fresh for category_cache_ttl
-  categories/<id>/products/.synced        # marker: a fetch has walked category <id>'s products to their true end at least once
+  categories/<id>/products/.synced        # marker: every product in category <id> complete as of its mtime, the last full walk (see "Category sync")
   categories/.root/<child_id>             # symlink -> ../<child_id> (root-level genres -- the nil-parent's own "children")
   categories/.root/.synced                # marker: the discovery root's own child list (the genre list) was crawled
 
@@ -814,9 +812,8 @@ for two related but distinct facts**: `categories/<id>/.synced` (or
 `categories/.root/.synced`) means "this category's own *child-category
 list* was crawled, fresh for `category_cache_ttl`" (mtime matters, see
 `bs::category_children_fresh`); `categories/<id>/products/.synced` means
-"a fetch has walked *this category's own products* all the way to the
-true end of pagination at least once" (plain existence, no TTL, see
-`bs::category_synced_marker`/`bs::fetch_category` below). One folder
+"every product of *this category* was complete as of the last full walk,
+at the marker's mtime" (see "Category sync" under `covers` below). One folder
 level apart, one about sub-categories, the other about products.
 
 **`products/<pid>.json`** fields: `product_id`, `title`, `source_url` (the
@@ -863,7 +860,7 @@ id, `.root` for the nil-parent).
 Results are cached per parent (a `.synced` marker file inside that
 parent's own folder -- or `categories/.root/.synced` for the root; not to
 be confused with `categories/<id>/products/.synced`, one level deeper,
-which instead marks *that category's own products* as fully backfilled —
+which instead marks *that category's own products* as complete —
 see "The same `.synced` filename appears at two different levels" above),
 fresh for `category_cache_ttl` seconds (30 days by default —
 unlike a product's cache, a category's own child list genuinely does
@@ -896,10 +893,10 @@ anything's fetched from it — see "Category → product linking" above.
 `series matcher remove <id> --index <n>...` (alias `rm`),
 `series audit <id> [--hide-promoted]`,
 `series rebuild [id...] [--covers-only] [--batch]`,
-`series refresh [id...] [--limit n] [--force] [--batch]`,
+`series refresh [id...] [--force] [--batch]`,
 `series remove <id...> | --all` (alias `rm`).
 
-**`series refresh [id...] [--limit n] [--force] [--batch]`** is the
+**`series refresh [id...] [--force] [--batch]`** is the
 everyday day-to-day command: for each given series (default: all), fetch
 every one of its member categories (`bs::fetch_category`, classifying and
 linking covers as products are discovered — see "Cover linking is
@@ -1135,18 +1132,15 @@ for a *matcher* change, which can affect many products at once.
 ## `covers` commands
 
 `covers fetch (<category_id...> | --series <id>... | --all-series)
-[--all-children] [--limit n] [--force] [--resize] [--batch]`, `covers
+[--all-children] [--force] [--resize] [--batch]`, `covers
 resize [series_id...] [--width] [--height] [--format] [--batch]`, `covers
 import <image_file> (--product <product_id> --category <category_id>
 --title <title> | --series <series_id> --item <item_number> [--title
 <title>]) [--force]`.
 
-`fetch`'s core loop is `bs::fetch_category`: paginate a category (assumed
-newest-first, see "Site quirks" above for the caveat this doesn't
-universally hold), stop at the first already-`final` product unless
-`--force` *or* this category has never been walked all the way to the end
-before (see "Resumable backfills" below), fetch/classify/download each new
-one via `bs::fetch_one_product` → `bs::finalize_product`
+`fetch`'s core loop is `bs::category_fetch_mode` (decide how far to walk,
+or skip) plus `bs::fetch_category` (paginate, see "Category sync" below),
+fetching/classifying/downloading each new or incomplete product via `bs::fetch_one_product` → `bs::finalize_product`
 (`bs::link_category_product` + `bs::classify_product`, global — no
 series-scoped classification any more, and each classified product's cover
 gets linked as part of that same call — see "Cover linking is automatic"
@@ -1196,32 +1190,76 @@ unless `--force` — but only when there's something real to protect; a
 `broken`/`missing`-turned-manual slot with nothing behind it proceeds
 without `--force`.
 
-### Resumable backfills
+### Category sync
 
-The early-exit optimization above ("stop at the first already-`final`
-product, since releases are numerically monotonic newest-first" — see
-"Site quirks" above for where this assumption can actually fail) is only
-sound once a category has been walked all the way to its true end at
-least one time — a real bug, reported and fixed directly against this
-project: an interrupted large backfill (killed partway through, having
-already cached the newest N items) could never be resumed correctly,
-because the very next run's page 1 is entirely already-cached items, so
-the naive early-exit fired on the *first* item it looked at, and the
-older, never-fetched tail of the category silently never got checked
-again.
+Designed 2026-09-29 to stop requesting every category's page 1 on every
+refresh (47 requests per perry-rhodan refresh, ~46 of which never find
+anything new once a cycle is complete). State lives entirely in file
+timestamps, no extra state files:
 
-Fixed via `bs::category_synced_marker` (`categories/<id>/products/.synced`,
-plain existence, no content/TTL): the early-exit is only trusted once that
-marker exists. Until it does, an already-cached item is *skipped* (never
-re-fetched) rather than treated as proof there's nothing left further
-down. The marker is only written when a run reaches the true end of
-pagination *without* `--limit` cutting it short. `--force` is unaffected
-either way — it already re-fetches regardless of cache state, and doesn't
-touch the marker. Same reasoning applies to a category with any known
-`failed` record — `bs::category_has_failures` (now reading the
-`categories/<id>/products/` symlink folder, see above) makes such a
-category behave as not-yet-synced even if its marker exists, so a stuck
-failure always gets retried by a routine run.
+- **Product timestamp** = its image file's mtime (`images/<pid>.<ext>`,
+  written only by a download or import, never by override/status rewrites
+  of `products/<pid>.json`; `curl` runs without `-R`, so it's our download
+  time, not the server's).
+- **Link timestamp** = the product's timestamp. Every refresh of a category
+  (whatever mode, even one that ends up skipping) first runs
+  `bs::sync_category_link_times`: one `stat` over its links, one over
+  `images/`, `touch -h -d @<image mtime>` for each mismatch. Links without an
+  image are left alone. This is also how a cover downloaded through
+  *another* category shows up here. `newest` = the newest resulting link
+  mtime.
+- **Complete** product = `cover_status` `final` and an image on disk;
+  anything else (`placeholder`, `failed`, missing image) is **incomplete**
+  (`bs::category_incomplete_ids`).
+- **`.synced`** (`bs::category_synced_marker`) exists only while every
+  product in the category is complete; its mtime is the last full walk.
+
+`bs::category_fetch_mode` picks the mode (`--force` always means `full`):
+
+| State | Mode | Walk |
+|---|---|---|
+| incomplete products linked | `partial` | removes `.synced`; walk until every previously incomplete product was seen again; stop there if anything is still incomplete, otherwise continue as `full` |
+| no incomplete, no `.synced` | `full` | to the end |
+| `.synced`, `now < newest + category_settle_period` | `head` | from page 1 until the first product that was already linked and complete; `.synced` untouched unless something incomplete turns up (then removed) |
+| `.synced`, settle period over, not due | `skip` | no request |
+| `.synced`, due | `full` | confirming walk |
+
+Every mode downloads each new or incomplete product it passes. Any mode
+that reaches the end of pagination prunes links to products no longer
+listed, and touches `.synced` if nothing incomplete was seen (removes it
+otherwise). A partial walk whose incomplete products are no longer listed
+thus just becomes a full walk.
+
+**Due date**: `bs::category_full_sync_due <newest> <last_sync>` — the
+backoff strategy, deliberately its own function so it can be replaced
+Default: `last_sync + max × (1 − e^(−age/ramp))` with `age = last_sync −
+newest`, `max` = `category_full_sync_max_interval` (180 days) and `ramp` =
+`category_full_sync_ramp` (≈ 365 days / ln 10 ≈ 158.6 days, so the interval
+reaches ~90% of `max` after a year). Smooth, no clamping: grows about
+linearly while a category is young and levels off towards `max`. For a
+category that stops gaining items, successive full walks come at ages of
+about 14, 29, 60, 116, 209, 341, 500 days (intervals 15, 30, 56, 93, 132,
+159, 172 days), i.e. ~2 per year after the first year. Any result earlier
+than the end of the settle period (`newest + category_settle_period`, 14
+days by default) is ceiled to it.
+
+**Empty categories** (no linked image, so no `newest`): the marker's own
+mtime stands in for `newest`, and there's no head check — they're expected
+to be rare junk. So an empty synced category is skipped for one settle
+period, then walked in full; if it's still empty, touching the marker
+starts the next settle period.
+
+**`--force`** now only forces `full` mode: walk to the end regardless of
+state, downloading only new or incomplete covers. It no longer re-downloads
+covers already `final`; there's no command for that (a cover revised by the
+shop on an already-final product goes unnoticed). `--limit` was removed.
+
+Order dependence: partial walks and head checks only discover *new*
+products listed *before* the point where they stop — true for c=43's
+newest-first listing, not necessarily for backlist categories (see "Site
+quirks"). Full walks don't depend on order. An interrupted first backfill
+with no incomplete products just gets a full walk again; with incomplete
+products on page 1 it partial-walks until those are complete (accepted).
 
 `resize` (`bs::resize_series`, `beam_shop_resize.sh`) always reads a
 series' `covers/original/` folder and never touches originals or that
@@ -1248,7 +1286,9 @@ token, fixed for this (and every) project in this repo by the shared
 `config list` (default), `config get/set/unset <key>`. Same shape as
 `bashly/goodreads`' own `config` group. Keys: `curl_bin`,
 `http_request_delay_min`/`_max`, `http_retry_delays`, `discovery_root_url`,
-`category_cache_ttl`, `image_width`/`_height`/`_format`,
+`category_cache_ttl`, `category_settle_period`,
+`category_full_sync_max_interval`, `category_full_sync_ramp`,
+`image_width`/`_height`/`_format`,
 `known_placeholder_hashes`.
 
 ## Open design questions

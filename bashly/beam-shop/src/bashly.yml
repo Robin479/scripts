@@ -150,12 +150,9 @@ commands:
       completions:
       - '$(ls "${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series" 2>/dev/null)'
     flags:
-    - long: --limit
-      arg: n
-      help: Stop after downloading this many new covers per series
     - long: --force
       short: -f
-      help: Re-check every product in range for each series, not just up to the first already-final one
+      help: Walk every category of each series to its end, even a synced one that isn't due yet (downloads only new or incomplete covers, never re-downloads final ones)
     - long: --batch
       help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
   - name: remove
@@ -275,12 +272,9 @@ commands:
     - long: --all-children
       short: -A
       help: Fetch every direct child category of the given category id(s) instead of the id(s) themselves
-    - long: --limit
-      arg: n
-      help: Stop after downloading this many new covers
     - long: --force
       short: -f
-      help: Re-check every product in range, not just up to the first already-final one
+      help: Walk every category to its end, even a synced one that isn't due yet (downloads only new or incomplete covers, never re-downloads final ones)
     - long: --resize
       help: Also resize any newly fetched series' covers afterwards (see 'covers resize')
     - long: --batch
@@ -394,7 +388,7 @@ commands:
       required: true
       help: Setting name (see 'beam-shop config list')
     completions:
-    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url'
+    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url category_cache_ttl category_settle_period category_full_sync_max_interval category_full_sync_ramp'
   - name: set
     help: Set a setting's value
     args:
@@ -411,7 +405,7 @@ commands:
       repeatable: true
       help: Setting name(s) to unset
     completions:
-    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url'
+    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url category_cache_ttl category_settle_period category_full_sync_max_interval category_full_sync_ramp'
     flags:
     - long: --all
       short: -a

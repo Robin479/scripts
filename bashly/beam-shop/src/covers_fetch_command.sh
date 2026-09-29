@@ -4,7 +4,6 @@ category_ids="${args[category_id]:-}"
 series_args="${args[--series]:-}"
 all_series="${args[--all-series]:-}"
 all_children="${args[--all-children]:-}"
-limit="${args[--limit]:-}"
 force="${args[--force]:-}"
 resize="${args[--resize]:-}"
 quiet=""
@@ -52,10 +51,19 @@ else
   targets="$category_ids"
 fi
 
+skipped=0
 for id in $targets; do
-  echo "== category $id =="
-  bs::fetch_category "$id" "$force" "$limit" "$quiet" || exit 1
+  read -r mode until <<< "$(bs::category_fetch_mode "$id" "$force")"
+  if [[ "$mode" == "skip" ]]; then
+    skipped=$((skipped + 1))
+    continue
+  fi
+  echo "== category $id ($(bs::describe_fetch_mode "$mode" "$until")) =="
+  bs::fetch_category "$id" "$mode" "$quiet" || exit 1
 done
+if (( skipped > 0 )); then
+  bs::skipped_categories_summary "$skipped"
+fi
 
 if [[ -n "$resize" ]]; then
   for sid in $(bs::all_series_ids); do
