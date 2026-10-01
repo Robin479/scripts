@@ -119,7 +119,9 @@ bs::listing_page_count() {
   echo "${n:-1}"
 }
 
-# Every product on a fetched listing page, newest first: one {product_id, title, url} per line.
+# Every product on a fetched listing page, newest first: one
+# {product_id, title, subtitle, url} per line (subtitle "" if none -- the
+# shop's own second title line, e.g. a cycle name or an episode title).
 bs::listing_products() {
   local html_file="$1"
   # shellcheck disable=SC2016 # xidel xquery, not bash vars
@@ -128,13 +130,15 @@ bs::listing_products() {
      return {
        "ordernumber": string($box/@data-ordernumber),
        "title": normalize-space(string(($box//a[@class="product--title"])[1]/@title)),
+       "subtitle": normalize-space(string(($box//a[@class="product--title"])[1]/span[contains(concat(" ", normalize-space(@class), " "), " product--subtitle ")])),
        "url": string(($box//a[@class="product--title"])[1]/@href)
      }]
   ' --output-format=json-wrapped 2> /dev/null \
-    | jq -c '.[0][] | select(.ordernumber != "") | {product_id: (.ordernumber | ltrimstr("SW")), title, url}'
+    | jq -c '.[0][] | select(.ordernumber != "") | {product_id: (.ordernumber | ltrimstr("SW")), title, subtitle, url}'
 }
 
-# Fetches a product's detail page, extracts {title, image_url} (og:image).
+# Fetches a product's detail page, extracts {title, subtitle, image_url}
+# (og:image; subtitle "" if none).
 bs::fetch_product_detail() {
   local url="$1" html_file
   html_file="$(mktemp)"
@@ -145,6 +149,7 @@ bs::fetch_product_detail() {
   xidel -s "$html_file" --extract-kind=xquery3 -e '
     {
       "title": normalize-space(string((//meta[@property="og:title"])[1]/@content)),
+      "subtitle": normalize-space(string((//header[contains(concat(" ", normalize-space(@class), " "), " product--header ")]/following-sibling::h2[contains(concat(" ", normalize-space(@class), " "), " subtitle ")])[1])),
       "image_url": string((//meta[@property="og:image"])[1]/@content)
     }
   ' --output-format=json-wrapped 2> /dev/null | jq -c '.[0]'
@@ -152,9 +157,10 @@ bs::fetch_product_detail() {
 
 # Finishes a new cover already sitting at images/<id>.<ext>: placeholder-hash
 # classification, an atomic products/<id>.json write, category link (if $2
-# given), series classification. Prints resulting cover_status on success.
+# given), series classification. $6 subtitle ("" for none). Prints
+# resulting cover_status on success.
 bs::finalize_product() {
-  local product_id="$1" category_id="$2" title="$3" source_url="$4" quiet="$5"
+  local product_id="$1" category_id="$2" title="$3" source_url="$4" quiet="$5" subtitle="$6"
 
   local image_file; image_file="$(bs::image_file "$product_id")" || {
     bs::status_line_clear "$quiet"
@@ -173,10 +179,11 @@ bs::finalize_product() {
   if ! content="$(jq -n --arg product_id "$product_id" \
     --arg title "$title" --arg source_url "$source_url" \
     --arg fetched_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hash "$hash" \
-    --arg status "$status" --argjson overrides "$existing_overrides" \
+    --arg status "$status" --argjson overrides "$existing_overrides" --arg subtitle "$subtitle" \
     '{
       product_id: $product_id,
       title: $title,
+      subtitle: (if $subtitle == "" then null else $subtitle end),
       source_url: (if $source_url == "" then null else $source_url end),
       image_sha256: $hash,
       fetched_at: $fetched_at,
@@ -199,7 +206,7 @@ bs::finalize_product() {
 # cover_status "failed"/failure_reason $5, instead of leaving no trace. Still
 # links category->product. Never downgrades an existing final/placeholder record.
 bs::record_fetch_failure() {
-  local product_id="$1" category_id="$2" title="$3" source_url="$4" reason="$5"
+  local product_id="$1" category_id="$2" title="$3" source_url="$4" reason="$5" subtitle="$6"
 
   local product_file; product_file="$(bs::product_file "$product_id")"
   if [[ -f "$product_file" ]]; then
@@ -214,10 +221,11 @@ bs::record_fetch_failure() {
   content="$(jq -n --arg product_id "$product_id" \
     --arg title "$title" --arg source_url "$source_url" \
     --arg fetched_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg reason "$reason" \
-    --argjson overrides "$existing_overrides" \
+    --argjson overrides "$existing_overrides" --arg subtitle "$subtitle" \
     '{
       product_id: $product_id,
       title: (if $title == "" then null else $title end),
+      subtitle: (if $subtitle == "" then null else $subtitle end),
       source_url: (if $source_url == "" then null else $source_url end),
       image_sha256: null,
       fetched_at: $fetched_at,
@@ -233,14 +241,16 @@ bs::record_fetch_failure() {
 # bs::finalize_product. A failure is recorded via bs::record_fetch_failure and
 # reported to stderr. Prints the resulting cover_status on success.
 bs::fetch_one_product() {
-  local product_id="$1" category_id="$2" listing_title="$3" listing_url="$4" quiet="$5"
+  local product_id="$1" category_id="$2" listing_title="$3" listing_url="$4" quiet="$5" listing_subtitle="$6"
 
-  local detail="" title="$listing_title" image_url="" reason=""
+  local detail="" title="$listing_title" subtitle="$listing_subtitle" image_url="" reason=""
   if ! detail="$(bs::fetch_product_detail "$listing_url")"; then
     reason="could not fetch product detail page"
   else
     local detail_title; detail_title="$(jq -r '.title // empty' <<< "$detail")"
     [[ -n "$detail_title" ]] && title="$detail_title"
+    local detail_subtitle; detail_subtitle="$(jq -r '.subtitle // empty' <<< "$detail")"
+    [[ -n "$detail_subtitle" ]] && subtitle="$detail_subtitle"
     image_url="$(jq -r '.image_url // empty' <<< "$detail")"
     [[ -n "$image_url" ]] || reason="no cover image url found on the detail page"
   fi
@@ -255,11 +265,11 @@ bs::fetch_one_product() {
   if [[ -n "$reason" ]]; then
     bs::status_line_clear "$quiet"
     echo "error: product $product_id: $reason ($listing_url) -- recorded as failed; see 'covers import --series <id> --item <n>' once you have the real cover" >&2
-    bs::record_fetch_failure "$product_id" "$category_id" "$title" "$image_url" "$reason"
+    bs::record_fetch_failure "$product_id" "$category_id" "$title" "$image_url" "$reason" "$subtitle"
     return 1
   fi
 
-  bs::finalize_product "$product_id" "$category_id" "$title" "$image_url" "$quiet"
+  bs::finalize_product "$product_id" "$category_id" "$title" "$image_url" "$quiet" "$subtitle"
 }
 
 # Manually registers an already-on-disk cover for product $2, running it
@@ -298,7 +308,9 @@ bs::import_cover() {
     [[ -e "$old" && "$old" != "$dest" ]] && rm -f "$old"
   done
 
-  bs::finalize_product "$product_id" "$category_id" "$title" "" "$quiet"
+  local subtitle=""
+  [[ -f "$existing_file" ]] && subtitle="$(jq -r '.subtitle // empty' "$existing_file")"
+  bs::finalize_product "$product_id" "$category_id" "$title" "" "$quiet" "$subtitle"
 }
 
 # Marker: every product in category $1 is complete (final cover on disk) as of
@@ -458,12 +470,10 @@ bs::fetch_category() {
     pages="$(bs::listing_page_count "$html_file")"
     pages_known=1
 
-    local row product_id title url pfile link
+    local row product_id title subtitle url pfile link
     while IFS= read -r row; do
       [[ -n "$row" ]] || continue
-      product_id="$(jq -r '.product_id' <<< "$row")"
-      title="$(jq -r '.title' <<< "$row")"
-      url="$(jq -r '.url' <<< "$row")"
+      IFS=$'\x01' read -r product_id title subtitle url <<< "$(jq -r '[.product_id, .title, .subtitle, .url] | join("\u0001")' <<< "$row")"
       pfile="${products_dir}/${product_id}.json"
       link="${dir}/${product_id}.json"
       seen_products["$product_id"]=1
@@ -474,9 +484,18 @@ bs::fetch_category() {
       local was_linked=""
       [[ -L "$link" ]] && was_linked=1
 
-      local complete=""
-      [[ -f "$pfile" ]] && [[ "$(jq -r '.cover_status' "$pfile")" == "final" ]] \
-        && bs::image_file "$product_id" > /dev/null && complete=1
+      local complete="" cached_status="" cached_subtitle=""
+      if [[ -f "$pfile" ]]; then
+        IFS=$'\x01' read -r cached_status cached_subtitle <<< "$(jq -r '[.cover_status, (.subtitle // "")] | join("\u0001")' "$pfile")"
+        # Fill in / update a cached product's subtitle from the listing --
+        # no detail request needed; it changes what matchers see.
+        if [[ -n "$subtitle" && "$subtitle" != "$cached_subtitle" ]]; then
+          local pcontent; pcontent="$(jq --arg subtitle "$subtitle" '.subtitle = $subtitle' "$pfile")" \
+            && bs::write_file "$pfile" "$pcontent" \
+            && bs::classify_product "$product_id" "$(jq -r '.title // empty' "$pfile")"
+        fi
+        [[ "$cached_status" == "final" ]] && bs::image_file "$product_id" > /dev/null && complete=1
+      fi
 
       if [[ -n "$complete" ]]; then
         [[ -n "$was_linked" ]] || bs::link_category_product "$category_id" "$product_id"
@@ -488,7 +507,7 @@ bs::fetch_category() {
       else
         bs::status_line "category $category_id p$page/$pages: fetching $product_id ($title)..." "$quiet"
         local outcome=""
-        if outcome="$(bs::fetch_one_product "$product_id" "$category_id" "$title" "$url" "$quiet")"; then
+        if outcome="$(bs::fetch_one_product "$product_id" "$category_id" "$title" "$url" "$quiet" "$subtitle")"; then
           new=$((new + 1))
           bs::status_line_clear "$quiet"
           echo "$product_id -> $outcome ($title)"

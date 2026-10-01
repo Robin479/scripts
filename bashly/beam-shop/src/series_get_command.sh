@@ -22,7 +22,7 @@ if [[ "$matcher_count" -gt 0 ]]; then
   echo "Matchers:"
   {
     printf 'index\tpattern\tcategories\n'
-    bs::series_matchers "$series_id" | jq -r '[.index, .pattern, ((.categories // []) | join(","))] | @tsv'
+    bs::series_matchers "$series_id" | jq -r '[(.index | tostring), .pattern, ((.categories // []) | join(","))] | join("\t")'
   } | column -t -s $'\t' -R 1 | sed 's/^/  /'
 else
   echo "Matchers: none yet -- run 'series matcher add' to add one"

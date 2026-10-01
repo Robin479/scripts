@@ -331,7 +331,8 @@ bs::print_series_matchers_table() {
 
   {
     printf 'index\tpattern\tcategories\n'
-    jq -r '[.index, .pattern, ((.categories // []) | join(","))] | @tsv' <<< "$lines"
+    # join, not @tsv -- @tsv escapes backslashes, showing \d as \\d.
+    jq -r '[(.index | tostring), .pattern, ((.categories // []) | join(","))] | join("\t")' <<< "$lines"
   } | column -t -s $'\t' -R 1
 }
 
@@ -363,13 +364,25 @@ bs::_matcher_rows() {
 # bs::_matcher_rows' own output for this series. Prints
 # key\x01cleaned_title, or nothing if it doesn't belong (excluded via
 # override, or no matcher matched).
+#
+# Matchers see title and the product's stored subtitle joined by a
+# newline (just one of them if the other is missing/empty, "" if both
+# are), and are applied with "(?im)" prepended: case-insensitive, and ^/$
+# also match at line boundaries -- so a pattern ending in "$" still
+# matches line 1 when there is a subtitle line. A pattern can switch
+# multiline off again with e.g. (?m-m) (a bare (?-m) is a syntax error).
 bs::_resolve_series_match() {
   local product_id="$1" category_ids="$2" title="$3" series_id="$4" matcher_rows="$5"
   local product_file; product_file="$(bs::product_file "$product_id")"
 
   local item_index="" pre_title="" override_item=""
 
-  local override; override="$(jq -c --arg sid "$series_id" '.overrides[$sid] // empty' "$product_file" 2> /dev/null)"
+  local override="" subtitle=""
+  IFS=$'\x01' read -r override subtitle <<< "$(jq -r --arg sid "$series_id" \
+    '[(.overrides[$sid] // null | if . == null then "" else tojson end), (.subtitle // "")] | join("\u0001")' \
+    "$product_file" 2> /dev/null)"
+  local match_text="${title}${title:+${subtitle:+$'\n'}}${subtitle}"
+
   if [[ -n "$override" && "$override" != "null" ]]; then
     if [[ "$(jq -r '.exclude // false' <<< "$override")" == "true" ]]; then
       return 0
@@ -402,8 +415,8 @@ bs::_resolve_series_match() {
       fi
 
       local cap_result
-      cap_result="$(jq -n --arg title "$title" --arg re "$m_pattern" \
-        '$title | if test($re) then (capture($re) // {}) else null end' 2> /dev/null)"
+      cap_result="$(jq -n --arg text "$match_text" --arg re "(?im)$m_pattern" \
+        '$text | if test($re) then (capture($re) // {}) else null end' 2> /dev/null)"
       [[ -n "$cap_result" && "$cap_result" != "null" ]] || continue
 
       matched=1

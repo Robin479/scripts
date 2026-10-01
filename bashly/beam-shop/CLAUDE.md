@@ -135,7 +135,8 @@ an ordered **`matchers`** array, each `{pattern, categories}`:
 - `pattern` is a PCRE regex (evaluated by `jq`'s own `test()`/`capture()`
   builtins, Oniguruma-backed — **not** `grep -oP`, no new dependency; see
   below) whose only required job is asserting *membership* — does this
-  product's title belong to this series at all. It may optionally embed
+  product's title (see "What a matcher sees" below) belong to this series
+  at all. It may optionally embed
   named capture groups `(?<index>...)` and/or `(?<title>...)` to also pull
   out an item number and/or a cleaned title from that same match, e.g. Perry
   Rhodan's own `Perry Rhodan 0*(?<index>[1-9][0-9]*): (?<title>.*)`. Neither
@@ -305,6 +306,40 @@ now joins with **`\x01`** instead (via `join("\u0001")` in the jq side,
 `column -t -s $'\t'`-consuming output (a *display* pipeline, not `read`) is
 unaffected and still uses plain tabs.
 
+
+#### What a matcher sees
+
+The shop shows a second title line under every product: in listings a
+`<span class="product--subtitle">` inside the title link, on the product
+page an `<h2 class="subtitle">` right after `header.product--header`. Its
+meaning differs per series (confirmed 2026-10-01): Perry Rhodan puts the
+cycle there (`Perry Rhodan 3407: Legat Atlan` / `Perry Rhodan-Zyklus
+"Chroniden"`), John Sinclair the episode title (`John Sinclair 2473` /
+`Horror auf Hawaii`) — the main title alone has no episode title at all.
+It's stored as the product's `subtitle` (`bs::fetch_product_detail`, falling
+back to the listing's; `bs::fetch_category` also fills in or updates it for
+an already-cached product from the listing, reclassifying just that
+product — no detail request).
+
+`bs::_resolve_series_match` matches against **title and subtitle joined by
+a newline** (just one of them if the other is empty, `""` if both are), and
+prepends **`(?im)`** to every pattern: case-insensitive, and `^`/`$` also
+match at line boundaries, so a pattern ending in `$` still matches line 1
+when a subtitle line follows. Without `(?m)`, jq's regex engine is
+Perl-like: `^`/`$` only at the very start/end, `.` never matches `\n`
+(`(?s)` would change that). Notes from testing jq 1.6:
+- jq's own `"m"` flag (`test($re; "m")`) is *not* `(?m)` — it makes `.`
+  match newlines. No jq flag gives line anchors, hence the inline prefix.
+- `(?m)` can be switched off with `(?m-m)` or e.g. `(?i-m)`, also scoped
+  `(?i-m:...)`; a bare `(?-m)` (only negative flags) is a syntax error.
+- With `(?m)`, `^` also matches at the start of line 2, so a pattern whose
+  line-1 match fails could match line 2 instead; anchor with `\A` to rule
+  that out.
+
+Current matchers (no `(?i)` needed any more):
+- `perry-rhodan`: `^ *perry +rhodan +0*(?<index>[1-9][0-9]*) *: *(?<title>.*?) *$` (line 1)
+- `perry-rhodan-neo`: `^(?!.*leseprobe) *perry +rhodan +neo +0*(?<index>[1-9][0-9]*) *: *(?<title>.*?) *$` (line 1; the lookahead only scans line 1, since `.` doesn't cross the newline)
+- `john-sinclair`: `^ *john +sinclair +0*(?<index>[1-9][0-9]*) *(?:\n *(?<title>.*?) *)?$` (index from line 1, title from line 2 if there is one, else the raw title)
 ### The translation layer
 
 ```
@@ -818,7 +853,9 @@ list* was crawled, fresh for `category_cache_ttl`" (mtime matters, see
 at the marker's mtime" (see "Category sync" under `covers` below). One folder
 level apart, one about sub-categories, the other about products.
 
-**`products/<pid>.json`** fields: `product_id`, `title`, `source_url` (the
+**`products/<pid>.json`** fields: `product_id`, `title`, `subtitle` (the
+shop's second title line, `null` if none — see "What a matcher sees"),
+`source_url` (the
 og:image url, or the source listing url for a `failed` record where no
 image url was ever confirmed), `image_sha256` (`null` for `failed`),
 `fetched_at` (ISO 8601 UTC, meaning "last attempted" for a `failed` record),
@@ -1391,6 +1428,27 @@ token, fixed for this (and every) project in this repo by the shared
   separately-discovered local archive
   (`/mnt/media/media/incoming/ebooks/Perry Rhodan - Hefte 0001-3187/beam-shop-img/`,
   which already has every cover 1-3399) is undecided.
+- **Rule-based cover correction per series is not built (requested
+  2026-10-01).** Wanted: a correction step during series building, defined
+  as rules on the series (like the planned title-cleanup rules) and applied
+  to every cover of that series, never to the canonical `images/` files.
+  Motivating case: the shop's own image for John Sinclair 2498
+  (`9783819800511.jpg`) is 1764×2560 with a pure-black bar in rows
+  2322-2559, i.e. a smaller rendition (artwork 1764×2322, ratio 0.760) padded
+  to the usual 2560 height; the other 83 cached Sinclair covers are
+  1926×2560 (ratio 0.752). Through `700x1000!` the bar stays visible and the
+  cover gets distorted. Rule ideas:
+  - crop one side (here the bottom) so the image approximates a given ratio
+  - ratio-preserving resizing (fit/pad) and ratio-dropping resizing (forced
+    geometry, like `700x1000!` today) -- possibly replacing the current
+    `resolutions` feature (`bs::resize_series`, `covers/<spec>/`)
+
+  Open: where corrected images live (an intermediate stage between
+  `covers/original/` and the resized folders?), how rules are ordered and
+  addressed (cf. `series matcher` commands), and how a rule change
+  invalidates outputs -- today's resize sync keys only off the image mtime
+  (see `covers` "resize"), so a rule change would need its own marker, like
+  `.dirty` for matchers.
 - **Real, non-regex title-cleanup rules are not built** — only the hook
   (`bs::clean_series_item_title`) exists, currently an identity function.
   Independent of series-membership matching by design; to be designed later
