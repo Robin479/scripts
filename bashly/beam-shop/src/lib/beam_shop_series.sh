@@ -444,9 +444,12 @@ bs::_resolve_series_match() {
 }
 
 # Ensures series $1's item $2 (its fixed storage key) has a correct
-# covers/original/<display-key>.<ext> symlink. Idempotent/self-correcting
-# -- safe to call any time the item's own file might have changed.
-# Effective image key: manual.image_key // derived.product_id. $3
+# covers/original/<display-key>.<ext> symlink -- or none, unless its cover
+# is a real final one. Idempotent/self-correcting -- safe to call any time
+# the item's own file might have changed.
+# Effective image key: manual.image_key // derived.product_id; a product's
+# cover must be cover_status "final" (a manual image has no product record
+# and always counts). $3
 # item_key_format is optional -- a caller in a per-item loop should pass
 # its own already-hoisted value; a one-off caller leaves it empty and
 # gets it fetched fresh.
@@ -477,6 +480,11 @@ bs::_link_series_item() {
 
   local image_key; image_key="$(jq -r '(.manual.image_key // .derived.product_id) // empty' "$target")"
   [[ -n "$image_key" ]] || return 0
+
+  local pfile; pfile="$(bs::product_file "$image_key")"
+  if [[ -f "$pfile" ]] && [[ "$(jq -r '.cover_status' "$pfile")" != "final" ]]; then
+    return 0
+  fi
 
   local image_file; image_file="$(bs::image_file "$image_key")" || return 0
   local base; base="${image_file##*/}"
@@ -887,17 +895,17 @@ bs::series_remove() {
   rm -rf "$(bs::series_dir "$id")"
 }
 
-# Rebuilds series $1's covers/ subtree (images only) from its
-# already-classified series-item files -- deletes and recreates covers/
-# entirely, but leaves every *.json file untouched. $2 quiet suppresses
-# the status line.
+# Syncs series $1's covers/original/ in place with its series-item files:
+# exactly one link per item whose cover is a real final one (see
+# bs::_link_series_item), nothing else -- wrong or superfluous entries are
+# removed. Never touches the resized covers/<spec>/ folders or any *.json
+# file. $2 quiet suppresses the status line. Prints the number of links.
 bs::series_relink() {
   local id="$1" quiet="$2" file
   file="$(bs::require_series_file "$id")" || return 1
 
   local series_dir; series_dir="$(bs::series_dir "$id")"
   local orig_dir="${series_dir}/covers/original"
-  rm -rf "${series_dir}/covers"
   mkdir -p "$orig_dir"
 
   local item_key_format; item_key_format="$(bs::series_item_key_format "$id")"
@@ -909,10 +917,6 @@ bs::series_relink() {
     candidates+=("$f")
   done
   shopt -u nullglob dotglob
-  if [[ "${#candidates[@]}" -eq 0 ]]; then
-    echo 0
-    return 0
-  fi
 
   local images_dir; images_dir="$(bs::images_dir)"
   local -A image_for=()
@@ -922,38 +926,65 @@ bs::series_relink() {
     base="${f##*/}"
     image_for["${base%.*}"]="$base"
   done
+  local product_files=("$(bs::products_dir)"/*.json)
   shopt -u nullglob
 
-  local rows; rows="$(jq -r \
-    '[input_filename, (.manual.image_key // .derived.product_id // empty)] | join("\u0001")' \
-    "${candidates[@]}")"
+  local -A not_final=()
+  local pid
+  if (( ${#product_files[@]} > 0 )); then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && not_final["$pid"]=1
+    done < <(jq -r 'select(.cover_status != "final") | .product_id' "${product_files[@]}")
+  fi
 
-  local linked=0 processed=0
-  local item_path image_key key display_key index image_file ext
-  while IFS=$'\x01' read -r item_path image_key; do
-    [[ -n "$item_path" ]] || continue
-    processed=$((processed + 1))
-    key="$(basename "$item_path" .json)"
-    bs::status_line "series $id: relinking [$processed] $key..." "$quiet"
+  # Desired links: <display-key>.<ext> -> image basename.
+  local -A want=()
+  if (( ${#candidates[@]} > 0 )); then
+    local rows; rows="$(jq -r \
+      '[input_filename, (.manual.image_key // .derived.product_id // empty)] | join("\u0001")' \
+      "${candidates[@]}")"
 
-    [[ -n "$image_key" ]] || continue
-    image_file="${image_for[$image_key]:-}"
-    [[ -n "$image_file" ]] || continue
-    ext="${image_file##*.}"
+    local processed=0 item_path image_key key display_key index image_file
+    while IFS=$'\x01' read -r item_path image_key; do
+      [[ -n "$item_path" ]] || continue
+      processed=$((processed + 1))
+      key="$(basename "$item_path" .json)"
+      bs::status_line "series $id: relinking [$processed] $key..." "$quiet"
 
-    display_key="$key"
-    if [[ "$key" =~ ^item-([0-9]+)$ ]]; then
-      index=$((10#${BASH_REMATCH[1]}))
-      # shellcheck disable=SC2059 # item_key_format is a trusted pattern, not user input
-      printf -v display_key "$item_key_format" "$index"
+      [[ -n "$image_key" && -z "${not_final[$image_key]:-}" ]] || continue
+      image_file="${image_for[$image_key]:-}"
+      [[ -n "$image_file" ]] || continue
+
+      display_key="$key"
+      if [[ "$key" =~ ^item-([0-9]+)$ ]]; then
+        index=$((10#${BASH_REMATCH[1]}))
+        # shellcheck disable=SC2059 # item_key_format is a trusted pattern, not user input
+        printf -v display_key "$item_key_format" "$index"
+      fi
+      want["${display_key}.${image_file##*.}"]="$image_file"
+    done <<< "$rows"
+  fi
+
+  local entry name
+  shopt -s nullglob dotglob
+  for entry in "$orig_dir"/*; do
+    name="${entry##*/}"
+    if [[ -L "$entry" && -n "${want[$name]:-}" && "$(readlink "$entry")" == "../../../../images/${want[$name]}" ]]; then
+      unset 'want[$name]'
+    else
+      rm -f "$entry"
     fi
-
-    ln -s "../../../../images/${image_file}" "${orig_dir}/${display_key}.${ext}"
-    linked=$((linked + 1))
-  done <<< "$rows"
+  done
+  shopt -u nullglob dotglob
+  for name in "${!want[@]}"; do
+    ln -s "../../../../images/${want[$name]}" "${orig_dir}/${name}"
+  done
 
   bs::status_line_clear "$quiet"
-  echo "$linked"
+  shopt -s nullglob
+  local links=("$orig_dir"/*)
+  shopt -u nullglob
+  echo "${#links[@]}"
 }
 
 # Reports problems in series $1's cached data, purely from local

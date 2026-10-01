@@ -280,7 +280,7 @@ commands:
     - long: --batch
       help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
   - name: resize
-    help: Normalize a series' covers into a common size/format via ImageMagick
+    help: Normalize a series' covers into a common size/format via ImageMagick -- only new or changed covers are converted, stale resized copies are removed
     args:
     - name: series_id
       repeatable: true
@@ -297,6 +297,9 @@ commands:
     - long: --format
       arg: ext
       help: Target image format/extension (default -- the image_format config key, jpg)
+    - long: --force
+      short: -f
+      help: Re-convert every cover, not just new or changed ones (a cover counts as changed when its image's mtime differs from its resized copy's)
     - long: --batch
       help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
   - name: import

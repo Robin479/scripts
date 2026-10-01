@@ -39,7 +39,7 @@ bs::_refresh_one_series() {
   fi
 
   resized="$(bs::resize_series "$sid" "" "" "" "$quiet")" || return 1
-  echo "$sid -> resized ($resized file(s))"
+  echo "$sid -> resized (${resized% *} file(s) resized, ${resized#* } stale removed)"
 }
 
 # shellcheck disable=SC2206 # intentional word-splitting

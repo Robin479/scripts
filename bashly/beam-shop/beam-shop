@@ -815,7 +815,7 @@ beam_shop_covers_usage() {
   # :command.usage_commands
   printf "%s\n" "Commands:"
   printf "  %s   Fetch new covers from one or more shop categories, discovering newly released ones\n" "fetch "
-  printf "  %s   Normalize a series' covers into a common size/format via ImageMagick\n" "resize"
+  printf "  %s   Normalize a series' covers into a common size/format via ImageMagick -- only new or changed covers are converted, stale resized copies are removed\n" "resize"
   printf "  %s   Manually register an already-on-disk cover -- for when the shop's own copy is unreachable (e.g. a 404 on what should be its image url), or an item the shop never listed at all, but you already have the real cover some other way\n" "import"
   echo
 
@@ -895,7 +895,7 @@ beam_shop_covers_fetch_usage() {
 
 # :command.usage
 beam_shop_covers_resize_usage() {
-  printf "beam-shop covers resize - Normalize a series' covers into a common size/format via ImageMagick\n\n"
+  printf "beam-shop covers resize - Normalize a series' covers into a common size/format via ImageMagick -- only new or changed covers are converted, stale resized copies are removed\n\n"
 
   printf "%s\n" "Usage:"
   printf "  beam-shop covers resize [SERIES_ID...] [OPTIONS]\n"
@@ -921,6 +921,11 @@ beam_shop_covers_resize_usage() {
     # :flag.usage
     printf "  %s\n" "--format EXT"
     printf "    Target image format/extension (default -- the image_format config key, jpg)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--force, -f"
+    printf "    Re-convert every cover, not just new or changed ones (a cover counts as\n    changed when its image's mtime differs from its resized copy's)\n"
     echo
 
     # :flag.usage
@@ -2332,50 +2337,80 @@ bs::series_resized_dir() {
   echo "$dir"
 }
 
-# Runs `convert $src <args> $out` per symlinked cover in $1, into $2 (ext
-# $3). $4=quiet, $5=status-line label. Prints count converted; a per-file
-# failure is reported and skipped, not fatal.
+# Syncs resize output dir $2 (ext $3) with the covers linked in $1: runs
+# `convert $src <args> $out` for each cover whose output is missing or whose
+# mtime differs from the cover image's (or every one, if $6 force), then
+# gives the output the image's mtime; deletes every other file in $2. $4
+# quiet, $5 status-line label. A per-file failure is reported and skipped,
+# not fatal. Prints "<converted> <removed>".
 bs::_resize_view_dir() {
-  local view_dir="$1" out_dir="$2" format="$3" quiet="$4" label="$5"; shift 5
+  local view_dir="$1" out_dir="$2" format="$3" quiet="$4" label="$5" force="$6"; shift 6
   mkdir -p "$out_dir"
 
   shopt -s nullglob
-  local all_src=("$view_dir"/*)
+  local all_src=("$view_dir"/*) all_out=("$out_dir"/*)
   shopt -u nullglob
   local sources=()
   local candidate
   for candidate in "${all_src[@]}"; do
     [[ "$candidate" == *.json ]] && continue
-    [[ -L "$candidate" ]] || continue
+    [[ -L "$candidate" && -e "$candidate" ]] || continue
     sources+=("$candidate")
   done
   local total="${#sources[@]}"
 
-  local count=0 processed=0 src base out
+  local -A src_mtime=() out_mtime=() wanted=()
+  local mtime path base
+  if (( total > 0 )); then
+    while read -r mtime path; do
+      src_mtime["${path##*/}"]="$mtime"
+    done < <(stat -L -c '%Y %n' -- "${sources[@]}")
+  fi
+  if (( ${#all_out[@]} > 0 )); then
+    while read -r mtime path; do
+      out_mtime["${path##*/}"]="$mtime"
+    done < <(stat -c '%Y %n' -- "${all_out[@]}")
+  fi
+
+  local count=0 processed=0 src out name
   for src in "${sources[@]}"; do
     processed=$((processed + 1))
-    base="$(basename "$src")"
+    base="${src##*/}"
+    name="${base%.*}.${format}"
+    wanted["$name"]=1
+    out="${out_dir}/${name}"
+    if [[ -z "$force" && "${out_mtime[$name]:-}" == "${src_mtime[$base]}" ]]; then
+      continue
+    fi
     bs::status_line "${label}[$processed/$total] $base..." "$quiet"
-
-    out="${out_dir}/${base%.*}.${format}"
-    if convert "$src" "$@" "$out"; then
+    if convert "$src" "$@" "$out" && touch -r "$src" -- "$out"; then
       count=$((count + 1))
     else
       bs::status_line_clear "$quiet"
       echo "error: failed to resize $src" >&2
     fi
   done
+
+  local removed=0 stale
+  for stale in "${all_out[@]}"; do
+    [[ -n "${wanted[${stale##*/}]:-}" ]] && continue
+    rm -f -- "$stale"
+    removed=$((removed + 1))
+  done
+
   bs::status_line_clear "$quiet"
-  echo "$count"
+  echo "$count $removed"
 }
 
-# Resizes every cover in series $1's covers/original/ (never touched
-# itself). Prints total files written. $2/$3 (width/height) given, or no
-# 'resolutions' on the series: pad to WxH on white, into
-# covers/<width>x<height>/. Otherwise one pass per resolution spec, into
-# covers/<spec>/.
+# Brings series $1's resized covers up to date: first syncs covers/original/
+# with its series items (bs::series_relink), then syncs each output folder
+# with covers/original/ (bs::_resize_view_dir), converting only what changed
+# unless $6 (force). Never touches the originals themselves. $2/$3
+# (width/height) given, or no 'resolutions' on the series: pad to WxH on
+# white, into covers/<width>x<height>/. Otherwise one pass per resolution
+# spec, into covers/<spec>/. Prints "<converted> <removed>" summed over all.
 bs::resize_series() {
-  local id="$1" width="$2" height="$3" format="$4" quiet="$5"
+  local id="$1" width="$2" height="$3" format="$4" quiet="$5" force="$6"
   format="${format:-$(bs::config_get image_format "$BS_IMAGE_FORMAT_DEFAULT")}"
 
   command -v convert > /dev/null 2>&1 || {
@@ -2383,27 +2418,28 @@ bs::resize_series() {
     return 1
   }
 
+  bs::series_relink "$id" "$quiet" > /dev/null || return 1
   local view_dir; view_dir="$(bs::series_dir "$id")/covers/original"
-  [[ -d "$view_dir" ]] || { echo "error: no covers linked yet for '$id' -- run 'series rebuild $id' first (or 'series rebuild $id --covers-only' if it's already classified but the file tree itself needs repairing)" >&2; return 1; }
 
   local resolutions=""
   [[ -z "$width" && -z "$height" ]] && resolutions="$(bs::series_resolutions "$id" | tr '\n' ' ')"
 
-  local total=0
+  local converted=0 removed=0 c r
   if [[ -n "${resolutions// /}" ]]; then
-    local spec n
+    local spec
     for spec in $resolutions; do
-      n="$(bs::_resize_view_dir "$view_dir" "$(bs::series_resized_dir "$id" "$spec")" "$format" "$quiet" "$id $spec " -resize "$spec")"
-      total=$((total + n))
+      read -r c r <<< "$(bs::_resize_view_dir "$view_dir" "$(bs::series_resized_dir "$id" "$spec")" "$format" "$quiet" "$id $spec " "$force" -resize "$spec")"
+      converted=$((converted + c))
+      removed=$((removed + r))
     done
   else
     width="${width:-$(bs::config_get image_width "$BS_IMAGE_WIDTH_DEFAULT")}"
     height="${height:-$(bs::config_get image_height "$BS_IMAGE_HEIGHT_DEFAULT")}"
-    total="$(bs::_resize_view_dir "$view_dir" "$(bs::series_resized_dir "$id" "${width}x${height}")" "$format" "$quiet" "$id " \
+    read -r converted removed <<< "$(bs::_resize_view_dir "$view_dir" "$(bs::series_resized_dir "$id" "${width}x${height}")" "$format" "$quiet" "$id " "$force" \
       -resize "${width}x${height}" -background white -gravity center -extent "${width}x${height}")"
   fi
 
-  echo "$total"
+  echo "$converted $removed"
 }
 
 # src/lib/beam_shop_series.sh
@@ -2853,9 +2889,12 @@ bs::_resolve_series_match() {
 }
 
 # Ensures series $1's item $2 (its fixed storage key) has a correct
-# covers/original/<display-key>.<ext> symlink. Idempotent/self-correcting
-# -- safe to call any time the item's own file might have changed.
-# Effective image key: manual.image_key // derived.product_id. $3
+# covers/original/<display-key>.<ext> symlink -- or none, unless its cover
+# is a real final one. Idempotent/self-correcting -- safe to call any time
+# the item's own file might have changed.
+# Effective image key: manual.image_key // derived.product_id; a product's
+# cover must be cover_status "final" (a manual image has no product record
+# and always counts). $3
 # item_key_format is optional -- a caller in a per-item loop should pass
 # its own already-hoisted value; a one-off caller leaves it empty and
 # gets it fetched fresh.
@@ -2886,6 +2925,11 @@ bs::_link_series_item() {
 
   local image_key; image_key="$(jq -r '(.manual.image_key // .derived.product_id) // empty' "$target")"
   [[ -n "$image_key" ]] || return 0
+
+  local pfile; pfile="$(bs::product_file "$image_key")"
+  if [[ -f "$pfile" ]] && [[ "$(jq -r '.cover_status' "$pfile")" != "final" ]]; then
+    return 0
+  fi
 
   local image_file; image_file="$(bs::image_file "$image_key")" || return 0
   local base; base="${image_file##*/}"
@@ -3296,17 +3340,17 @@ bs::series_remove() {
   rm -rf "$(bs::series_dir "$id")"
 }
 
-# Rebuilds series $1's covers/ subtree (images only) from its
-# already-classified series-item files -- deletes and recreates covers/
-# entirely, but leaves every *.json file untouched. $2 quiet suppresses
-# the status line.
+# Syncs series $1's covers/original/ in place with its series-item files:
+# exactly one link per item whose cover is a real final one (see
+# bs::_link_series_item), nothing else -- wrong or superfluous entries are
+# removed. Never touches the resized covers/<spec>/ folders or any *.json
+# file. $2 quiet suppresses the status line. Prints the number of links.
 bs::series_relink() {
   local id="$1" quiet="$2" file
   file="$(bs::require_series_file "$id")" || return 1
 
   local series_dir; series_dir="$(bs::series_dir "$id")"
   local orig_dir="${series_dir}/covers/original"
-  rm -rf "${series_dir}/covers"
   mkdir -p "$orig_dir"
 
   local item_key_format; item_key_format="$(bs::series_item_key_format "$id")"
@@ -3318,10 +3362,6 @@ bs::series_relink() {
     candidates+=("$f")
   done
   shopt -u nullglob dotglob
-  if [[ "${#candidates[@]}" -eq 0 ]]; then
-    echo 0
-    return 0
-  fi
 
   local images_dir; images_dir="$(bs::images_dir)"
   local -A image_for=()
@@ -3331,38 +3371,65 @@ bs::series_relink() {
     base="${f##*/}"
     image_for["${base%.*}"]="$base"
   done
+  local product_files=("$(bs::products_dir)"/*.json)
   shopt -u nullglob
 
-  local rows; rows="$(jq -r \
-    '[input_filename, (.manual.image_key // .derived.product_id // empty)] | join("\u0001")' \
-    "${candidates[@]}")"
+  local -A not_final=()
+  local pid
+  if (( ${#product_files[@]} > 0 )); then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && not_final["$pid"]=1
+    done < <(jq -r 'select(.cover_status != "final") | .product_id' "${product_files[@]}")
+  fi
 
-  local linked=0 processed=0
-  local item_path image_key key display_key index image_file ext
-  while IFS=$'\x01' read -r item_path image_key; do
-    [[ -n "$item_path" ]] || continue
-    processed=$((processed + 1))
-    key="$(basename "$item_path" .json)"
-    bs::status_line "series $id: relinking [$processed] $key..." "$quiet"
+  # Desired links: <display-key>.<ext> -> image basename.
+  local -A want=()
+  if (( ${#candidates[@]} > 0 )); then
+    local rows; rows="$(jq -r \
+      '[input_filename, (.manual.image_key // .derived.product_id // empty)] | join("\u0001")' \
+      "${candidates[@]}")"
 
-    [[ -n "$image_key" ]] || continue
-    image_file="${image_for[$image_key]:-}"
-    [[ -n "$image_file" ]] || continue
-    ext="${image_file##*.}"
+    local processed=0 item_path image_key key display_key index image_file
+    while IFS=$'\x01' read -r item_path image_key; do
+      [[ -n "$item_path" ]] || continue
+      processed=$((processed + 1))
+      key="$(basename "$item_path" .json)"
+      bs::status_line "series $id: relinking [$processed] $key..." "$quiet"
 
-    display_key="$key"
-    if [[ "$key" =~ ^item-([0-9]+)$ ]]; then
-      index=$((10#${BASH_REMATCH[1]}))
-      # shellcheck disable=SC2059 # item_key_format is a trusted pattern, not user input
-      printf -v display_key "$item_key_format" "$index"
+      [[ -n "$image_key" && -z "${not_final[$image_key]:-}" ]] || continue
+      image_file="${image_for[$image_key]:-}"
+      [[ -n "$image_file" ]] || continue
+
+      display_key="$key"
+      if [[ "$key" =~ ^item-([0-9]+)$ ]]; then
+        index=$((10#${BASH_REMATCH[1]}))
+        # shellcheck disable=SC2059 # item_key_format is a trusted pattern, not user input
+        printf -v display_key "$item_key_format" "$index"
+      fi
+      want["${display_key}.${image_file##*.}"]="$image_file"
+    done <<< "$rows"
+  fi
+
+  local entry name
+  shopt -s nullglob dotglob
+  for entry in "$orig_dir"/*; do
+    name="${entry##*/}"
+    if [[ -L "$entry" && -n "${want[$name]:-}" && "$(readlink "$entry")" == "../../../../images/${want[$name]}" ]]; then
+      unset 'want[$name]'
+    else
+      rm -f "$entry"
     fi
-
-    ln -s "../../../../images/${image_file}" "${orig_dir}/${display_key}.${ext}"
-    linked=$((linked + 1))
-  done <<< "$rows"
+  done
+  shopt -u nullglob dotglob
+  for name in "${!want[@]}"; do
+    ln -s "../../../../images/${want[$name]}" "${orig_dir}/${name}"
+  done
 
   bs::status_line_clear "$quiet"
-  echo "$linked"
+  shopt -s nullglob
+  local links=("$orig_dir"/*)
+  shopt -u nullglob
+  echo "${#links[@]}"
 }
 
 # Reports problems in series $1's cached data, purely from local
@@ -3917,6 +3984,7 @@ send_completions() {
   echo $'    22:--format) return 2 ;;'
   echo $'    22:--offline) return 0 ;;'
   echo $'    22:--help|22:-h) return 0 ;;'
+  echo $'    22:--force|22:-f) return 0 ;;'
   echo $'    22:--batch) return 0 ;;'
   echo $'    23:--data-path) return 2 ;;'
   echo $'    23:--product) return 2 ;;'
@@ -4672,6 +4740,7 @@ send_completions() {
   echo $'        _beam-shop_completions_option_seen "--width" || words+=("--width")'
   echo $'        _beam-shop_completions_option_seen "--height" || words+=("--height")'
   echo $'        _beam-shop_completions_option_seen "--format" || words+=("--format")'
+  echo $'        _beam-shop_completions_option_seen "--force" "-f" || words+=("--force" "-f")'
   echo $'        _beam-shop_completions_option_seen "--batch" || words+=("--batch")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
@@ -5257,7 +5326,7 @@ beam_shop_series_refresh_command() {
     fi
 
     resized="$(bs::resize_series "$sid" "" "" "" "$quiet")" || return 1
-    echo "$sid -> resized ($resized file(s))"
+    echo "$sid -> resized (${resized% *} file(s) resized, ${resized#* } stale removed)"
   }
 
   # shellcheck disable=SC2206 # intentional word-splitting
@@ -5567,7 +5636,7 @@ beam_shop_covers_fetch_command() {
   if [[ -n "$resize" ]]; then
     for sid in $(bs::all_series_ids); do
       resized="$(bs::resize_series "$sid" "" "" "" "$quiet")"
-      echo "series $sid resized ($resized file(s))"
+      echo "series $sid resized (${resized% *} file(s) resized, ${resized#* } stale removed)"
     done
   fi
 
@@ -5583,6 +5652,7 @@ beam_shop_covers_resize_command() {
   width="${args[--width]:-}"
   height="${args[--height]:-}"
   format="${args[--format]:-}"
+  force="${args[--force]:-}"
   quiet=""
   if bs::fetch_quiet "${args[--batch]:-}"; then
     quiet=1
@@ -5597,15 +5667,16 @@ beam_shop_covers_resize_command() {
 
   # shellcheck disable=SC2086 # intentional word-splitting
   for id in $series_ids; do
-    count="$(bs::resize_series "$id" "$width" "$height" "$format" "$quiet")" || exit 1
+    read -r converted removed <<< "$(bs::resize_series "$id" "$width" "$height" "$format" "$quiet" "$force")" || exit 1
+    summary="$converted file(s) resized, $removed stale removed"
     if [[ -n "$width" || -n "$height" ]]; then
-      echo "$id -> $count file(s) resized to ${width:-$(bs::config_get image_width "$BS_IMAGE_WIDTH_DEFAULT")}x${height:-$(bs::config_get image_height "$BS_IMAGE_HEIGHT_DEFAULT")} (explicit override)"
+      echo "$id -> $summary, to ${width:-$(bs::config_get image_width "$BS_IMAGE_WIDTH_DEFAULT")}x${height:-$(bs::config_get image_height "$BS_IMAGE_HEIGHT_DEFAULT")} (explicit override)"
     else
       resolutions="$(bs::series_resolutions "$id" | tr '\n' ' ')"
       if [[ -n "${resolutions// /}" ]]; then
-        echo "$id -> $count file(s) resized across resolutions: ${resolutions% }"
+        echo "$id -> $summary, across resolutions: ${resolutions% }"
       else
-        echo "$id -> $count file(s) resized (see 'beam-shop config list' for the effective width/height/format)"
+        echo "$id -> $summary (see 'beam-shop config list' for the effective width/height/format)"
       fi
     fi
   done
@@ -7885,6 +7956,14 @@ beam_shop_covers_resize_parse_requirements() {
           printf "%s\n" "--format requires an argument: --format EXT" >&2
           exit 1
         fi
+        ;;
+
+      # :flag.case
+      --force | -f)
+
+        # :flag.case_no_arg
+        args['--force']=1
+        shift
         ;;
 
       # :flag.case

@@ -283,9 +283,9 @@ naming the **cover symlink only**:
   again, and needs no rebuild for data correctness. Only already-linked
   cover symlink names go stale (still valid, just under their previous
   display name) until whatever next relinks that item, or an explicit
-  `series rebuild --covers-only` (a full `covers/` wipe + rebuild — the only
-  thing that can find and clean up a cover left behind under a *previous*
-  display name, since a single-item relink only ever looks at that one
+  `series rebuild --covers-only` or any `covers resize`/`series refresh`
+  (a full in-place sync of `covers/original/` — the only thing that can
+  find and clean up a cover left behind under a *previous* display name, since a single-item relink only ever looks at that one
   item's *current* display name). `series edit --item-key-format` marks the
   series `.dirty` for exactly this reason, same signal a matcher change
   raises, cleared the same way.
@@ -423,9 +423,10 @@ idempotent and self-correcting (its only input is the item's own current
 call after *any* change to that one item, however it happened. It resolves
 the effective image key (`manual.image_key // derived.product_id`), removes
 any existing symlink for that key first (covers an extension change or the
-image disappearing), and relinks only if there's a real image to point at —
-so calling it on an item that no longer resolves to anything correctly
-leaves no symlink behind. `bs::_classify_product_into_series` calls it right
+image disappearing), and relinks only if there's a real *final* cover to
+point at (a product with any other `cover_status` gets no link; a manual
+image has no product record and always counts) — so calling it on an item
+that no longer resolves to anything correctly leaves no symlink behind. `bs::_classify_product_into_series` calls it right
 after every successful write; `bs::import_manual_cover` calls it right after
 its own write. **There used to be a separate top-level `series relink`
 command that did this in bulk for a whole series — it's gone now, folded
@@ -445,11 +446,14 @@ itself doesn't need this at all any more (see below) — its own clear-then-
 rediscover design handles a moved key without tracking "old" vs. "new"
 separately.
 
-**`bs::series_relink` (the old bulk implementation) still exists**, but is
-now only reachable via `series rebuild --covers-only` — a genuinely rare
-repair path (see "`series rebuild`" below) for when the file tree itself
-needs fixing independent of classification (an image or symlink deleted by
-hand), not the everyday way covers stay current.
+**`bs::series_relink`** is the bulk version: it syncs `covers/original/`
+in place with every series-item file (same rules as `bs::_link_series_item`:
+one link per item with a final cover, anything else in the folder is
+removed), never touching the resized folders. It runs at the start of every
+`bs::resize_series` (so `series refresh` and `covers resize` always start
+from a correct `original/`, which also catches a product retroactively
+flagged `placeholder` by a hash collision without its item being
+recomputed), and via `series rebuild --covers-only`.
 
 **Products never carry `series_id`/`item_number` any more, so
 `series remove`'s old un-classify step (resetting those fields on every
@@ -523,8 +527,9 @@ be correctly placed, and there's no redundant second recompute of
 anything pass 1 already settled.
 
 **`series rebuild --covers-only`** skips classification entirely and just
-calls the old bulk `bs::series_relink` — a full `covers/` wipe, then
-walking every already-existing series-item file and relinking its
+calls the bulk `bs::series_relink` — an in-place sync of `covers/original/`
+(resized folders untouched), walking every already-existing series-item
+file and relinking its
 `covers/original/<display-key>.<ext>` symlink from whatever it already says
 (same `item_key_format`-applied display-name derivation `bs::_link_series_item`
 uses, computed once per series rather than passed in, see "`item_key_format`
@@ -610,14 +615,11 @@ downloaded bytes), via two independent mechanisms in
 A category with any `placeholder` (or `failed`) product is never `.synced`
 and gets a partial walk every refresh that re-downloads those covers (see
 "Category sync" under `covers` below), so real art that later replaces a
-placeholder gets picked up automatically. **Classification/cover-linking no
-longer excludes a `placeholder` product from the human-browsable view the
-way v1 did** — classification only ever looks at a product's *title*, not
-its `cover_status`, so a placeholder cover is now classified and linked like
-any other final one; `series audit`'s own `placeholder` finding still flags
-it (by cross-referencing the linked product's own `cover_status`), so it's
-discoverable, just not automatically hidden from browsing any more. Not yet
-decided whether that's worth restoring — see "Open design questions."
+placeholder gets picked up automatically. Classification only ever looks
+at a product's *title*, not its `cover_status`, so a placeholder product is
+still classified into its series item — but **`covers/original/` (and so
+every resized folder) only links final covers** (since 2026-09-30); `series
+audit`'s own `placeholder` finding still flags the item.
 
 ### Cover image source: `og:image`, not the listing thumbnail
 
@@ -1133,7 +1135,7 @@ for a *matcher* change, which can affect many products at once.
 
 `covers fetch (<category_id...> | --series <id>... | --all-series)
 [--all-children] [--force] [--resize] [--batch]`, `covers
-resize [series_id...] [--width] [--height] [--format] [--batch]`, `covers
+resize [series_id...] [--width] [--height] [--format] [--force] [--batch]`, `covers
 import <image_file> (--product <product_id> --category <category_id>
 --title <title> | --series <series_id> --item <item_number> [--title
 <title>]) [--force]`.
@@ -1261,9 +1263,21 @@ quirks"). Full walks don't depend on order. An interrupted first backfill
 with no incomplete products just gets a full walk again; with incomplete
 products on page 1 it partial-walks until those are complete (accepted).
 
-`resize` (`bs::resize_series`, `beam_shop_resize.sh`) always reads a
-series' `covers/original/` folder and never touches originals or that
-folder itself. Two modes:
+`resize` (`bs::resize_series`, `beam_shop_resize.sh`) first syncs a
+series' `covers/original/` with its series items (`bs::series_relink`),
+then syncs each output folder with it (`bs::_resize_view_dir`), never
+touching the images themselves:
+- A cover is converted only if its output is missing or the output's mtime
+  differs from the cover image's mtime (the image's mtime is the change
+  marker — see "Category sync"); after converting, the output gets the
+  image's mtime (`touch -r`). `--force` converts every cover regardless.
+- Every other file in the output folder (a cover no longer in `original/`,
+  an output in an outdated `--format`, anything else) is deleted.
+- Output folders for resolutions no longer configured (or an old explicit
+  `--width`/`--height` run) are left alone.
+- Prints converted/removed counts.
+
+Two modes:
 - **No `--width`/`--height` override, series has its own `resolutions`**:
   one `convert -resize <spec>` pass per resolution string, raw geometry
   passed straight through — into `series/<id>/covers/<spec>/`, one
@@ -1384,12 +1398,6 @@ token, fixed for this (and every) project in this repo by the shared
   "Series Title #1234: " prefix is already free via a matcher's own
   `<title>` capture — this is about cleanups a regex genuinely can't do,
   e.g. case conversion).
-- **Placeholder covers are no longer excluded from the human-browsable view**
-  the way v1 excluded them from `series relink` — see "Placeholder-cover
-  detection" above. `series audit` still flags them; nothing hides them from
-  `covers/original/`/resize output any more. Not yet decided whether that's
-  worth restoring, and if so, where it should live (classification itself,
-  or relink specifically).
 - `matchers[].pattern` relies on the runtime's `jq` having Oniguruma regex
   support (near-universal, not defensively checked).
 - No `--all-children` recursion depth limit — fine for Perry Rhodan (one

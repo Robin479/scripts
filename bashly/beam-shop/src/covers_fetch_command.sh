@@ -68,6 +68,6 @@ fi
 if [[ -n "$resize" ]]; then
   for sid in $(bs::all_series_ids); do
     resized="$(bs::resize_series "$sid" "" "" "" "$quiet")"
-    echo "series $sid resized ($resized file(s))"
+    echo "series $sid resized (${resized% *} file(s) resized, ${resized#* } stale removed)"
   done
 fi
