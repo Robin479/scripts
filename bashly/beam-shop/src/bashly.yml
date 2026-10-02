@@ -118,7 +118,7 @@ commands:
       default: auto
       help: "Applies to the resulting category list either way: 'auto' sorts it by the numeric range parsed from each category's name/slug; 'given' keeps it in the order categories end up combined (existing, then --add-categories, minus --remove-categories) without re-sorting"
   - name: audit
-    help: "Report gaps/problems in a series' cached data, purely from local metadata (no network access): item numbers missing entirely, items with no actual image file on disk, covers still stuck at 'placeholder', fallback-keyed items still awaiting a manual rename ('unsorted'), two or more products currently matching the same item ('ambiguous'), and a manually-pinned product that doesn't (or no longer) naturally match its own item ('promoted')"
+    help: "Report gaps/problems in a series' cached data, purely from local metadata (no network access): item numbers missing entirely, items with no actual image file on disk, covers still stuck at 'placeholder', fallback-keyed items still awaiting a manual rename ('unsorted'), two or more products currently matching the same item ('ambiguous'), items with no shop product behind them at all, e.g. a manually imported cover ('productless'), a manual image overriding a matched product's final cover ('shadowed'), and a manually-pinned product that doesn't (or no longer) naturally match its own item ('promoted')"
     args:
     - name: series_id
       required: true

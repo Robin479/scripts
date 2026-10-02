@@ -203,7 +203,7 @@ beam_shop_series_usage() {
   printf "  %s   Show one series' definition and stats\n" "get    "
   printf "  %s   Create a new series from one or more shop categories\n" "create "
   printf "  %s   Change an existing series' category membership, resize resolutions, name, item-key format, and/or category order\n" "edit   "
-  printf "  %s   Report gaps/problems in a series' cached data, purely from local metadata (no network access): item numbers missing entirely, items with no actual image file on disk, covers still stuck at 'placeholder', fallback-keyed items still awaiting a manual rename ('unsorted'), two or more products currently matching the same item ('ambiguous'), and a manually-pinned product that doesn't (or no longer) naturally match its own item ('promoted')\n" "audit  "
+  printf "  %s   Report gaps/problems in a series' cached data, purely from local metadata (no network access): item numbers missing entirely, items with no actual image file on disk, covers still stuck at 'placeholder', fallback-keyed items still awaiting a manual rename ('unsorted'), two or more products currently matching the same item ('ambiguous'), items with no shop product behind them at all, e.g. a manually imported cover ('productless'), a manual image overriding a matched product's final cover ('shadowed'), and a manually-pinned product that doesn't (or no longer) naturally match its own item ('promoted')\n" "audit  "
   printf "  %s   Re-run series-membership classification against every already-cached product, with no network access at all -- for after changing a series' matchers ('series matcher add/remove'); a single product's own override ('product exclude/set-item/unset') already applies immediately on its own and doesn't need this. --covers-only skips classification entirely and just repairs the covers/ symlink tree from whatever's already classified -- the rare case where the file tree itself needs fixing (a manually deleted image/symlink, say), not the classification data.\n" "rebuild"
   printf "  %s   The routine day-to-day command: fetch new covers and resize them (at every preconfigured resolution) for one or more series in one step -- covers are already kept linked as they're classified, no separate relink step needed\n" "refresh"
   printf "  %s   Remove one or more series definitions (categories/products/images are kept -- only the series mapping and its derived views go)\n" "remove "
@@ -417,7 +417,7 @@ beam_shop_series_edit_usage() {
 
 # :command.usage
 beam_shop_series_audit_usage() {
-  printf "beam-shop series audit - Report gaps/problems in a series' cached data, purely from local metadata (no network access): item numbers missing entirely, items with no actual image file on disk, covers still stuck at 'placeholder', fallback-keyed items still awaiting a manual rename ('unsorted'), two or more products currently matching the same item ('ambiguous'), and a manually-pinned product that doesn't (or no longer) naturally match its own item ('promoted')\n\n"
+  printf "beam-shop series audit - Report gaps/problems in a series' cached data, purely from local metadata (no network access): item numbers missing entirely, items with no actual image file on disk, covers still stuck at 'placeholder', fallback-keyed items still awaiting a manual rename ('unsorted'), two or more products currently matching the same item ('ambiguous'), items with no shop product behind them at all, e.g. a manually imported cover ('productless'), a manual image overriding a matched product's final cover ('shadowed'), and a manually-pinned product that doesn't (or no longer) naturally match its own item ('promoted')\n\n"
 
   printf "%s\n" "Usage:"
   printf "  beam-shop series audit SERIES_ID [OPTIONS]\n"
@@ -3467,7 +3467,7 @@ bs::series_relink() {
 # Reports problems in series $1's cached data, purely from local
 # metadata (no network access). Emits one JSON object per finding
 # ({item_number, kind, product_id, title}), unsorted. Kinds: missing,
-# broken, placeholder, unsorted, ambiguous, promoted -- see CLAUDE.md's
+# broken, placeholder, unsorted, ambiguous, productless, shadowed, promoted -- see CLAUDE.md's
 # "series audit" section for what each means. $2 hide_promoted suppresses
 # the "promoted" kind.
 bs::series_audit() {
@@ -3519,7 +3519,7 @@ bs::series_audit() {
       "${item_files[@]}")"
 
     local item_path derived_pid image_key title matched_csv manual_pid
-    local key item_index display_title is_broken is_placeholder status reason
+    local key item_index display_title is_broken is_placeholder is_ambiguous status reason
     while IFS=$'\x01' read -r item_path derived_pid image_key title matched_csv manual_pid; do
       [[ -n "$item_path" ]] || continue
       key="$(basename "$item_path" .json)"
@@ -3541,10 +3541,20 @@ bs::series_audit() {
         [[ -z "$max" || "$item_index" -gt "$max" ]] && max="$item_index"
       fi
 
+      is_ambiguous=""
+      [[ "$matched_csv" == *,* && -z "$manual_pid" ]] && is_ambiguous=1
+
+      # An ambiguous item has derived == null by design, so it has no image
+      # key -- already reported as "ambiguous", not additionally "broken".
+      # A manual.image_key whose file is missing still counts as broken.
       display_title="$title"; is_broken=""; is_placeholder=""
-      if [[ -z "$image_key" || -z "${has_image[$image_key]:-}" ]]; then
+      if [[ -z "$image_key" && -n "$is_ambiguous" ]]; then
+        :
+      elif [[ -z "$image_key" || -z "${has_image[$image_key]:-}" ]]; then
         is_broken=1
-      elif [[ -n "$derived_pid" ]]; then
+      elif [[ -n "$derived_pid" && "$image_key" == "$derived_pid" ]]; then
+        # Only when the product's own cover is the one actually linked -- a
+        # manual.image_key overriding it makes its cover_status irrelevant.
         status="${cover_status_for[$derived_pid]:-}"
         if [[ "$status" == "failed" ]]; then
           is_broken=1
@@ -3561,8 +3571,18 @@ bs::series_audit() {
         out+="${item_index}"$'\t'"placeholder"$'\t'"${image_key}"$'\t'"${title}"$'\n'
       fi
 
-      if [[ "$matched_csv" == *,* && -z "$manual_pid" ]]; then
+      if [[ -n "$is_ambiguous" ]]; then
         out+="${item_index}"$'\t'"ambiguous"$'\t'"${matched_csv}"$'\t'""$'\n'
+      fi
+
+      if [[ -z "$matched_csv" && -z "$manual_pid" ]]; then
+        out+="${item_index}"$'\t'"productless"$'\t'"${image_key}"$'\t'"${title}"$'\n'
+      fi
+
+      # A manual.image_key overriding a product whose own cover is final.
+      if [[ -n "$derived_pid" && "$image_key" != "$derived_pid" \
+            && "${cover_status_for[$derived_pid]:-}" == "final" && -n "${has_image[$derived_pid]:-}" ]]; then
+        out+="${item_index}"$'\t'"shadowed"$'\t'"${derived_pid}"$'\t'"${title} (manual image: ${image_key})"$'\n'
       fi
 
       if [[ -z "$hide_promoted" && -n "$manual_pid" ]]; then
@@ -5273,8 +5293,10 @@ beam_shop_series_audit_command() {
     ([.[] | select(.kind == "placeholder")] | length) as $p |
     ([.[] | select(.kind == "unsorted")] | length) as $u |
     ([.[] | select(.kind == "ambiguous")] | length) as $a |
+    ([.[] | select(.kind == "productless")] | length) as $pl |
+    ([.[] | select(.kind == "shadowed")] | length) as $sh |
     ([.[] | select(.kind == "promoted")] | length) as $pr |
-    "\($m) missing (never reached), \($b) broken (no image file, or a linked product'"'"'s fetch failed), \($p) still placeholder, \($u) unsorted (fallback-keyed, awaiting a manual rename), \($a) ambiguous (2+ products currently match the same key -- see '"'"'product_id'"'"' above for which), \($pr) promoted (a manually-pinned product absent from its own item'"'"'s matched list)."
+    "\($m) missing (never reached), \($b) broken (no image file, or a linked product'"'"'s fetch failed), \($p) still placeholder, \($u) unsorted (fallback-keyed, awaiting a manual rename), \($a) ambiguous (2+ products currently match the same key -- see '"'"'product_id'"'"' above for which), \($pl) productless (no shop product behind the item, e.g. a manually imported cover -- '"'"'product_id'"'"' shows its image key), \($sh) shadowed (a manual image overrides a product'"'"'s final cover -- '"'"'product_id'"'"' is that product), \($pr) promoted (a manually-pinned product absent from its own item'"'"'s matched list)."
   ' <<< "$findings_json"
 
 }

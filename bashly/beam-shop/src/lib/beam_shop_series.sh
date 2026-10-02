@@ -1003,7 +1003,7 @@ bs::series_relink() {
 # Reports problems in series $1's cached data, purely from local
 # metadata (no network access). Emits one JSON object per finding
 # ({item_number, kind, product_id, title}), unsorted. Kinds: missing,
-# broken, placeholder, unsorted, ambiguous, promoted -- see CLAUDE.md's
+# broken, placeholder, unsorted, ambiguous, productless, shadowed, promoted -- see CLAUDE.md's
 # "series audit" section for what each means. $2 hide_promoted suppresses
 # the "promoted" kind.
 bs::series_audit() {
@@ -1055,7 +1055,7 @@ bs::series_audit() {
       "${item_files[@]}")"
 
     local item_path derived_pid image_key title matched_csv manual_pid
-    local key item_index display_title is_broken is_placeholder status reason
+    local key item_index display_title is_broken is_placeholder is_ambiguous status reason
     while IFS=$'\x01' read -r item_path derived_pid image_key title matched_csv manual_pid; do
       [[ -n "$item_path" ]] || continue
       key="$(basename "$item_path" .json)"
@@ -1077,10 +1077,20 @@ bs::series_audit() {
         [[ -z "$max" || "$item_index" -gt "$max" ]] && max="$item_index"
       fi
 
+      is_ambiguous=""
+      [[ "$matched_csv" == *,* && -z "$manual_pid" ]] && is_ambiguous=1
+
+      # An ambiguous item has derived == null by design, so it has no image
+      # key -- already reported as "ambiguous", not additionally "broken".
+      # A manual.image_key whose file is missing still counts as broken.
       display_title="$title"; is_broken=""; is_placeholder=""
-      if [[ -z "$image_key" || -z "${has_image[$image_key]:-}" ]]; then
+      if [[ -z "$image_key" && -n "$is_ambiguous" ]]; then
+        :
+      elif [[ -z "$image_key" || -z "${has_image[$image_key]:-}" ]]; then
         is_broken=1
-      elif [[ -n "$derived_pid" ]]; then
+      elif [[ -n "$derived_pid" && "$image_key" == "$derived_pid" ]]; then
+        # Only when the product's own cover is the one actually linked -- a
+        # manual.image_key overriding it makes its cover_status irrelevant.
         status="${cover_status_for[$derived_pid]:-}"
         if [[ "$status" == "failed" ]]; then
           is_broken=1
@@ -1097,8 +1107,18 @@ bs::series_audit() {
         out+="${item_index}"$'\t'"placeholder"$'\t'"${image_key}"$'\t'"${title}"$'\n'
       fi
 
-      if [[ "$matched_csv" == *,* && -z "$manual_pid" ]]; then
+      if [[ -n "$is_ambiguous" ]]; then
         out+="${item_index}"$'\t'"ambiguous"$'\t'"${matched_csv}"$'\t'""$'\n'
+      fi
+
+      if [[ -z "$matched_csv" && -z "$manual_pid" ]]; then
+        out+="${item_index}"$'\t'"productless"$'\t'"${image_key}"$'\t'"${title}"$'\n'
+      fi
+
+      # A manual.image_key overriding a product whose own cover is final.
+      if [[ -n "$derived_pid" && "$image_key" != "$derived_pid" \
+            && "${cover_status_for[$derived_pid]:-}" == "final" && -n "${has_image[$derived_pid]:-}" ]]; then
+        out+="${item_index}"$'\t'"shadowed"$'\t'"${derived_pid}"$'\t'"${title} (manual image: ${image_key})"$'\n'
       fi
 
       if [[ -z "$hide_promoted" && -n "$manual_pid" ]]; then

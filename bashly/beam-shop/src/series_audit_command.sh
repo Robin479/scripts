@@ -28,6 +28,8 @@ jq -r '
   ([.[] | select(.kind == "placeholder")] | length) as $p |
   ([.[] | select(.kind == "unsorted")] | length) as $u |
   ([.[] | select(.kind == "ambiguous")] | length) as $a |
+  ([.[] | select(.kind == "productless")] | length) as $pl |
+  ([.[] | select(.kind == "shadowed")] | length) as $sh |
   ([.[] | select(.kind == "promoted")] | length) as $pr |
-  "\($m) missing (never reached), \($b) broken (no image file, or a linked product'"'"'s fetch failed), \($p) still placeholder, \($u) unsorted (fallback-keyed, awaiting a manual rename), \($a) ambiguous (2+ products currently match the same key -- see '"'"'product_id'"'"' above for which), \($pr) promoted (a manually-pinned product absent from its own item'"'"'s matched list)."
+  "\($m) missing (never reached), \($b) broken (no image file, or a linked product'"'"'s fetch failed), \($p) still placeholder, \($u) unsorted (fallback-keyed, awaiting a manual rename), \($a) ambiguous (2+ products currently match the same key -- see '"'"'product_id'"'"' above for which), \($pl) productless (no shop product behind the item, e.g. a manually imported cover -- '"'"'product_id'"'"' shows its image key), \($sh) shadowed (a manual image overrides a product'"'"'s final cover -- '"'"'product_id'"'"' is that product), \($pr) promoted (a manually-pinned product absent from its own item'"'"'s matched list)."
 ' <<< "$findings_json"

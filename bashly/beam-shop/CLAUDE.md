@@ -1029,7 +1029,12 @@ rendered as a table:
   item index with no series-item at all.
 - **`broken`**: a series-item with no actual image file on disk for its
   effective image key, or (for a product-backed one) whose linked product's
-  own `cover_status` is `"failed"` (shown appended to the title).
+  own `cover_status` is `"failed"` (shown appended to the title) -- the
+  latter, like `placeholder` below, only while that product's cover is the
+  one actually linked, i.e. not overridden by a `manual.image_key`. Not
+  reported for an `ambiguous` item with no `manual.image_key`: its
+  `derived` is `null` by design, so having no image key is a consequence
+  of the ambiguity, not a separate problem.
 - **`placeholder`**: a product-backed series-item whose linked product is
   still stuck at `cover_status: "placeholder"`.
 - **`unsorted`**: a dot-keyed fallback series-item still awaiting a human
@@ -1042,6 +1047,19 @@ rendered as a table:
   rebuild`. Read straight off the item file itself, in the same single
   batch read every other finding kind already uses — nothing to dry-run any
   more (see "Performance history" below for what this replaced).
+- **`productless`**: a series-item with no shop product behind it at all
+  (empty `matched.product_ids`, no `manual.product_id`) -- typically a
+  cover imported via `covers import --series` for a book the shop doesn't
+  list (yet). `product_id` holds its effective image key. Purely
+  informational: `series refresh` doesn't walk categories any harder
+  because of it (a product turning up is caught by the next due/`--force`
+  full walk).
+- **`shadowed`**: a series-item whose `manual.image_key` overrides its
+  `derived.product_id`, while that product's own cover is `final` with an
+  image on disk -- e.g. a `productless` item whose book has since shown up
+  in the shop. `product_id` holds that product, the title carries the
+  manual image key. Meant for a human to resolve; how is still open (see
+  "Open design questions").
 - **`promoted`** (`--hide-promoted` to suppress): a series-item whose
   `manual.product_id` is set but isn't present in its own
   `matched.product_ids` — a human has pinned a product to this slot that
@@ -1428,6 +1446,19 @@ token, fixed for this (and every) project in this repo by the shared
   separately-discovered local archive
   (`/mnt/media/media/incoming/ebooks/Perry Rhodan - Hefte 0001-3187/beam-shop-img/`,
   which already has every cover 1-3399) is undecided.
+- **How to resolve a `shadowed` audit finding is not decided (deferred
+  2026-10-02).** Never automatic: a human decides. Two outcomes:
+  1. Drop the manual image so the product's cover takes over -- no command
+     can remove `manual.image_key` yet (only hand-editing the item file +
+     `series rebuild`); e.g. `series item unset <series> <n> --image`.
+  2. Keep the manual image deliberately -- needs persistent state so the
+     finding goes quiet. Candidates: (A) `manual.image_key_over:
+     "<product_id>"`, an acknowledgement bound to the specific product, so a
+     different product later re-flags it (preferred so far); (B) a boolean
+     `manual.image_key_pinned`, silencing any future product too; (C) no
+     state, just a `--hide-shadowed` flag like `--hide-promoted`.
+  Not keyed off the `import-` image-key prefix: the rule is "a manual image
+  hides a final product cover", wherever the image came from.
 - **Rule-based cover correction per series is not built (requested
   2026-10-01).** Wanted: a correction step during series building, defined
   as rules on the series (like the planned title-cleanup rules) and applied
