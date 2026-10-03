@@ -292,7 +292,7 @@ commands:
     - long: --add-blog
       arg: blog_id:name
       repeatable: true
-      help: "Add (or rename) a badge-linked blog post, as '<blog_id>' or '<blog_id>:<name>'; repeatable"
+      help: "Add (or rename) a badge-linked blog post, as '<blog_id>' or '<blog_id>:<name>' (default name: the current one, else the post's own title; the post is fetched to confirm it exists); repeatable"
       completions:
       - '$(ls "${GOODREADS_DATA:-$HOME/.goodreads}/blogs" 2>/dev/null | sed "s/\.json$//")'
     - long: --remove-blog

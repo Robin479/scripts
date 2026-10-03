@@ -943,7 +943,7 @@ goodreads_challenges_edit_usage() {
 
     # :flag.usage
     printf "  %s\n" "--add-blog BLOG_ID:NAME (repeatable)"
-    printf "    Add (or rename) a badge-linked blog post, as '<blog_id>' or\n    '<blog_id>:<name>'; repeatable\n"
+    printf "    Add (or rename) a badge-linked blog post, as '<blog_id>' or\n    '<blog_id>:<name>' (default name: the current one, else the post's own\n    title; the post is fetched to confirm it exists); repeatable\n"
     echo
 
     # :flag.usage
@@ -7048,6 +7048,13 @@ goodreads_challenges_edit_command() {
       else
         bname=""
       fi
+      # Untitled: keep the current title, else the post's own (also validates it).
+      blog_json="$(gr::blog_json "$bid")" || {
+        echo "error: could not fetch blog post $bid" >&2
+        exit 1
+      }
+      [[ -z "$bname" ]] && bname="$(jq -r --arg bid "$bid" '.blogs[]? | select(.blog_id == $bid) | .name // empty' "$file")"
+      [[ -z "$bname" ]] && bname="$(jq -r '.title // empty' <<<"$blog_json")"
       add_blog_ids+=("$bid")
       add_blog_names+=("$bname")
     done

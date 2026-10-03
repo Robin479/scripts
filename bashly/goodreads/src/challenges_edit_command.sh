@@ -72,6 +72,13 @@ if [[ -n "$add_blog_raw" ]]; then
     else
       bname=""
     fi
+    # Untitled: keep the current title, else the post's own (also validates it).
+    blog_json="$(gr::blog_json "$bid")" || {
+      echo "error: could not fetch blog post $bid" >&2
+      exit 1
+    }
+    [[ -z "$bname" ]] && bname="$(jq -r --arg bid "$bid" '.blogs[]? | select(.blog_id == $bid) | .name // empty' "$file")"
+    [[ -z "$bname" ]] && bname="$(jq -r '.title // empty' <<<"$blog_json")"
     add_blog_ids+=("$bid")
     add_blog_names+=("$bname")
   done
