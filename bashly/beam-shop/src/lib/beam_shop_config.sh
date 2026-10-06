@@ -9,6 +9,7 @@ readonly BS_CONFIG_KEYS=(
   category_settle_period
   category_full_sync_max_interval
   category_full_sync_ramp
+  category_full_sync_spread
   image_width
   image_height
   image_format
@@ -34,6 +35,7 @@ bs::config_describe() {
     category_settle_period) echo "seconds after a synced category's newest item during which refreshes still head-check it (page 1 until the first already-linked item); afterwards it's skipped until its next full walk is due" ;;
     category_full_sync_max_interval) echo "seconds between full walks of a synced category that hasn't gained anything for a long time -- the interval approaches this as (last full walk - newest item) grows" ;;
     category_full_sync_ramp) echo "seconds setting how fast the full-walk interval grows towards category_full_sync_max_interval: interval = max * (1 - e^(-(last full walk - newest item) / ramp))" ;;
+    category_full_sync_spread) echo "percent by which each synced category's full-walk interval is randomly stretched or shrunk (factor between 1/(1+spread) and 1+spread, fixed per last full walk), so categories synced together don't all fall due together" ;;
     image_width) echo "target width, in pixels, for 'covers resize'" ;;
     image_height) echo "target height, in pixels, for 'covers resize'" ;;
     image_format) echo "target image format/extension for 'covers resize'" ;;
@@ -53,6 +55,7 @@ bs::config_default_display() {
     category_settle_period) echo "$BS_CATEGORY_SETTLE_PERIOD_DEFAULT" ;;
     category_full_sync_max_interval) echo "$BS_CATEGORY_FULL_SYNC_MAX_INTERVAL_DEFAULT" ;;
     category_full_sync_ramp) echo "$BS_CATEGORY_FULL_SYNC_RAMP_DEFAULT" ;;
+    category_full_sync_spread) echo "$BS_CATEGORY_FULL_SYNC_SPREAD_DEFAULT" ;;
     image_width) echo "$BS_IMAGE_WIDTH_DEFAULT" ;;
     image_height) echo "$BS_IMAGE_HEIGHT_DEFAULT" ;;
     image_format) echo "$BS_IMAGE_FORMAT_DEFAULT" ;;

@@ -1296,7 +1296,14 @@ reaches ~90% of `max` after a year). Smooth, no clamping: grows about
 linearly while a category is young and levels off towards `max`. For a
 category that stops gaining items, successive full walks come at ages of
 about 14, 29, 60, 116, 209, 341, 500 days (intervals 15, 30, 56, 93, 132,
-159, 172 days), i.e. ~2 per year after the first year. Any result earlier
+159, 172 days), i.e. ~2 per year after the first year — before jitter: the
+interval is then multiplied by a factor between `1/x` and `x`, `x = 1 +
+category_full_sync_spread` (percent, default 30, a trailing `%` is allowed),
+log-uniform so stretching and shrinking are equally likely. The factor comes
+from the first 32 bits of `sha256(last_sync)`, so it's fixed for a given
+last walk (the due date doesn't move between refreshes) but differs between
+categories finalized seconds apart, spreading out batches that a refresh of a
+new series syncs together. Any result earlier
 than the end of the settle period (`newest + category_settle_period`, 14
 days by default) is ceiled to it.
 
@@ -1357,7 +1364,7 @@ token, fixed for this (and every) project in this repo by the shared
 `http_request_delay_min`/`_max`, `http_retry_delays`, `discovery_root_url`,
 `category_cache_ttl`, `category_settle_period`,
 `category_full_sync_max_interval`, `category_full_sync_ramp`,
-`image_width`/`_height`/`_format`,
+`category_full_sync_spread`, `image_width`/`_height`/`_format`,
 `known_placeholder_hashes`.
 
 ## Open design questions

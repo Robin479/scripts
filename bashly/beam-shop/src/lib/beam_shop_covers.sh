@@ -1,6 +1,7 @@
 readonly BS_CATEGORY_SETTLE_PERIOD_DEFAULT=$((14 * 24 * 3600))
 readonly BS_CATEGORY_FULL_SYNC_MAX_INTERVAL_DEFAULT=$((180 * 24 * 3600))
 readonly BS_CATEGORY_FULL_SYNC_RAMP_DEFAULT=13700000 # ~365 days / ln(10): ~90% of max interval after a year
+readonly BS_CATEGORY_FULL_SYNC_SPREAD_DEFAULT=30 # percent
 
 # Extend via the known_placeholder_hashes config key rather than editing this.
 readonly BS_KNOWN_PLACEHOLDER_HASHES=(
@@ -383,12 +384,38 @@ bs::sync_category_link_times() {
 # result to the end of the settle period.
 # interval = max * (1 - e^(-age/ramp)), age = last walk - newest item: grows
 # about linearly for young categories, levels off smoothly towards max.
+# The interval is then scaled by a factor between 1/x and x, x = 1 + spread,
+# log-uniformly distributed and derived from a hash of $2, so categories
+# synced in one batch spread out instead of falling due together, while the
+# same last walk always yields the same due date.
 bs::category_full_sync_due() {
-  local newest="$1" last_sync="$2" max ramp
+  local newest="$1" last_sync="$2" max ramp spread hash
   max="$(bs::config_get category_full_sync_max_interval "$BS_CATEGORY_FULL_SYNC_MAX_INTERVAL_DEFAULT")"
   ramp="$(bs::config_get category_full_sync_ramp "$BS_CATEGORY_FULL_SYNC_RAMP_DEFAULT")"
+  spread="$(bs::config_get category_full_sync_spread "$BS_CATEGORY_FULL_SYNC_SPREAD_DEFAULT")"
+  spread="${spread%\%}"
+  hash="$(printf '%s' "$last_sync" | sha256sum)"
+  # r: the hash's first 8 hex digits (32 bits) as an integer, 0 <= r < 2^32.
   awk -v n="$newest" -v s="$last_sync" -v max="$max" -v ramp="$ramp" \
-    'BEGIN { age = s - n; printf "%d\n", s + max * (1 - exp(-age / ramp)) }'
+    -v spread="$spread" -v r="$((16#${hash:0:8}))" \
+    'BEGIN {
+      age = s - n
+      # 4294967296 = 2^32, one past the largest 32-bit r, so u is a
+      # pseudo-random fraction with 0 <= u < 1.
+      u = r / 4294967296
+      # The factor has to be symmetric in the multiplicative sense: stretching
+      # by k as likely as shrinking by 1/k. Uniform between 1/x and x is not:
+      # for x = 1.3 that is 0.769..1.3, with 1 off-centre (0.231 below, 0.3
+      # above), so 56.5% of factors would exceed 1 (median ~1.035). In log
+      # space the bounds are symmetric, ln(1/x) = -ln(x), so pick ln(factor)
+      # uniformly from -ln(x)..+ln(x) and convert back:
+      #   ln(factor) = (2u - 1) * ln(x)  =>  factor = x^(2u - 1)
+      # Median and geometric mean are then exactly 1 (arithmetic mean
+      # (x - 1/x) / (2 ln x), ~1.012 for x = 1.3).
+      x = 1 + spread / 100
+      factor = exp((2 * u - 1) * log(x))
+      printf "%d\n", s + max * (1 - exp(-age / ramp)) * factor
+    }'
 }
 
 # Decides how a default refresh walks category $1 -- see CLAUDE.md "Category

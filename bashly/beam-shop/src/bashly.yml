@@ -391,7 +391,7 @@ commands:
       required: true
       help: Setting name (see 'beam-shop config list')
     completions:
-    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url category_cache_ttl category_settle_period category_full_sync_max_interval category_full_sync_ramp'
+    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url category_cache_ttl category_settle_period category_full_sync_max_interval category_full_sync_ramp category_full_sync_spread'
   - name: set
     help: Set a setting's value
     args:
@@ -408,7 +408,7 @@ commands:
       repeatable: true
       help: Setting name(s) to unset
     completions:
-    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url category_cache_ttl category_settle_period category_full_sync_max_interval category_full_sync_ramp'
+    - 'curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url category_cache_ttl category_settle_period category_full_sync_max_interval category_full_sync_ramp category_full_sync_spread'
     flags:
     - long: --all
       short: -a
