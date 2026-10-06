@@ -109,13 +109,10 @@ done
 # Lists: every challenge's blog posts (default challenge only without
 # --challenge/--blog), plus any --blog; a shared post is one list.
 if [[ "${#challenge_ids[@]}" -eq 0 && "${#blog_specs[@]}" -eq 0 ]]; then
-  next="$(gr::next_ending_challenge "$(date +%Y-%m-%d)")"
-  [[ -z "$next" ]] && next="$(gr::latest_challenge)"
-  if [[ -z "$next" ]]; then
+  default_id="$(gr::default_challenge_id "$(date +%Y-%m-%d)")" || {
     echo "error: no challenges yet. Give --blog <blog_id>, or run 'goodreads challenges create'." >&2
     exit 1
-  fi
-  IFS=$'\t' read -r default_id _ _ <<< "$next"
+  }
   challenge_ids=("$default_id")
 fi
 

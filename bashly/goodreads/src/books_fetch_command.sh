@@ -21,9 +21,13 @@ if [[ -n "$all" && ( -n "$book_ids" || -n "$blog_ids" || "${#challenge_ids[@]}" 
   exit 1
 fi
 
+# Nothing to fetch given: the default challenge, as 'challenges get' picks it.
 if [[ -z "$all" && -z "$book_ids" && -z "$blog_ids" && "${#challenge_ids[@]}" -eq 0 ]]; then
-  echo "error: give one or more book ids, --blog <blog_id>, --challenge <challenge_id>, or --all" >&2
-  exit 1
+  default_id="$(gr::default_challenge_id "$(date +%Y-%m-%d)")" || {
+    echo "error: no challenges yet. Give one or more book ids, --blog <blog_id>, or --all, or run 'goodreads challenges create'." >&2
+    exit 1
+  }
+  challenge_ids=("$default_id")
 fi
 
 if [[ "${#challenge_ids[@]}" -gt 0 ]]; then

@@ -539,7 +539,7 @@ goodreads_books_usage() {
   echo
   # :command.usage_commands
   printf "%s\n" "Commands:"
-  printf "  %s   Fetch new books by id, or update already-cached ones\n" "fetch "
+  printf "  %s   Fetch new books by id, or update already-cached ones (default without ids/--blog/--challenge/--all: the default challenge's books, as 'challenges get' picks it)\n" "fetch "
   printf "  %s   List cached books, sorted by title (default)\n" "list  "
   printf "  %s   Print one book's details (fetches or refreshes it first if needed)\n" "get   "
   printf "  %s   Remove one or more books from the local cache\n" "remove"
@@ -560,7 +560,7 @@ goodreads_books_usage() {
 
 # :command.usage
 goodreads_books_fetch_usage() {
-  printf "goodreads books fetch - Fetch new books by id, or update already-cached ones\n\n"
+  printf "goodreads books fetch - Fetch new books by id, or update already-cached ones (default without ids/--blog/--challenge/--all: the default challenge's books, as 'challenges get' picks it)\n\n"
 
   printf "%s\n" "Usage:"
   printf "  goodreads books fetch [BOOK_ID...] [OPTIONS]\n"
@@ -2819,6 +2819,17 @@ gr::next_ending_challenge() {
   '
 }
 
+# Id of the default challenge as of $1 (today): the unfinished one ending
+# soonest, else the latest ended one. Prints nothing, returns 1, if none exist.
+gr::default_challenge_id() {
+  local today="$1" pick id
+  pick="$(gr::next_ending_challenge "$today")"
+  [[ -z "$pick" ]] && pick="$(gr::latest_challenge)"
+  [[ -z "$pick" ]] && return 1
+  IFS=$'\t' read -r id _ _ <<< "$pick"
+  echo "$id"
+}
+
 # "<id>\t<start>\t<end>" of every challenge overlapping [$1, $2].
 gr::challenges_overlapping() {
   local start="$1" end="$2" files=()
@@ -3852,7 +3863,7 @@ gr::http_status() {
 readonly GR_HTTP_REQUEST_INTERVAL_DEFAULT=5
 readonly GR_HTTP_CHALLENGE_PAUSE_DEFAULT=300
 readonly GR_HTTP_CHALLENGE_PROBE_PCT_DEFAULT=10
-readonly GR_HTTP_CHALLENGE_MAX_PROBES_DEFAULT=30
+readonly GR_HTTP_CHALLENGE_MAX_PROBES_DEFAULT=35
 
 # Fixed tuning, not config keys.
 readonly GR_HTTP_PACE_JITTER_PCT=50                # random extra per gap, % of the interval
@@ -6289,9 +6300,13 @@ goodreads_books_fetch_command() {
     exit 1
   fi
 
+  # Nothing to fetch given: the default challenge, as 'challenges get' picks it.
   if [[ -z "$all" && -z "$book_ids" && -z "$blog_ids" && "${#challenge_ids[@]}" -eq 0 ]]; then
-    echo "error: give one or more book ids, --blog <blog_id>, --challenge <challenge_id>, or --all" >&2
-    exit 1
+    default_id="$(gr::default_challenge_id "$(date +%Y-%m-%d)")" || {
+      echo "error: no challenges yet. Give one or more book ids, --blog <blog_id>, or --all, or run 'goodreads challenges create'." >&2
+      exit 1
+    }
+    challenge_ids=("$default_id")
   fi
 
   if [[ "${#challenge_ids[@]}" -gt 0 ]]; then
@@ -6910,18 +6925,10 @@ goodreads_challenges_get_command() {
 
   # No id: the unfinished challenge ending soonest, else the latest ended one.
   if [[ -z "$id" ]]; then
-    next="$(gr::next_ending_challenge "$(date +%Y-%m-%d)")"
-    if [[ -n "$next" ]]; then
-      IFS=$'\t' read -r id _ _ <<<"$next"
-    else
-      latest="$(gr::latest_challenge)"
-      if [[ -n "$latest" ]]; then
-        IFS=$'\t' read -r id _ _ <<<"$latest"
-      else
-        echo "error: no challenges yet. Run 'goodreads challenges create' to add one." >&2
-        exit 1
-      fi
-    fi
+    id="$(gr::default_challenge_id "$(date +%Y-%m-%d)")" || {
+      echo "error: no challenges yet. Run 'goodreads challenges create' to add one." >&2
+      exit 1
+    }
   fi
 
   file="$(gr::require_challenge_file "$id")" || exit 1
@@ -7387,13 +7394,10 @@ goodreads_solve_command() {
   # Lists: every challenge's blog posts (default challenge only without
   # --challenge/--blog), plus any --blog; a shared post is one list.
   if [[ "${#challenge_ids[@]}" -eq 0 && "${#blog_specs[@]}" -eq 0 ]]; then
-    next="$(gr::next_ending_challenge "$(date +%Y-%m-%d)")"
-    [[ -z "$next" ]] && next="$(gr::latest_challenge)"
-    if [[ -z "$next" ]]; then
+    default_id="$(gr::default_challenge_id "$(date +%Y-%m-%d)")" || {
       echo "error: no challenges yet. Give --blog <blog_id>, or run 'goodreads challenges create'." >&2
       exit 1
-    fi
-    IFS=$'\t' read -r default_id _ _ <<< "$next"
+    }
     challenge_ids=("$default_id")
   fi
 

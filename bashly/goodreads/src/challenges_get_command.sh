@@ -5,18 +5,10 @@ json="${args[--json]:-}"
 
 # No id: the unfinished challenge ending soonest, else the latest ended one.
 if [[ -z "$id" ]]; then
-  next="$(gr::next_ending_challenge "$(date +%Y-%m-%d)")"
-  if [[ -n "$next" ]]; then
-    IFS=$'\t' read -r id _ _ <<<"$next"
-  else
-    latest="$(gr::latest_challenge)"
-    if [[ -n "$latest" ]]; then
-      IFS=$'\t' read -r id _ _ <<<"$latest"
-    else
-      echo "error: no challenges yet. Run 'goodreads challenges create' to add one." >&2
-      exit 1
-    fi
-  fi
+  id="$(gr::default_challenge_id "$(date +%Y-%m-%d)")" || {
+    echo "error: no challenges yet. Run 'goodreads challenges create' to add one." >&2
+    exit 1
+  }
 fi
 
 file="$(gr::require_challenge_file "$id")" || exit 1

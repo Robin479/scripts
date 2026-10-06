@@ -8,7 +8,7 @@
 readonly GR_HTTP_REQUEST_INTERVAL_DEFAULT=5
 readonly GR_HTTP_CHALLENGE_PAUSE_DEFAULT=300
 readonly GR_HTTP_CHALLENGE_PROBE_PCT_DEFAULT=10
-readonly GR_HTTP_CHALLENGE_MAX_PROBES_DEFAULT=30
+readonly GR_HTTP_CHALLENGE_MAX_PROBES_DEFAULT=35
 
 # Fixed tuning, not config keys.
 readonly GR_HTTP_PACE_JITTER_PCT=50                # random extra per gap, % of the interval

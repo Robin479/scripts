@@ -293,6 +293,17 @@ gr::next_ending_challenge() {
   '
 }
 
+# Id of the default challenge as of $1 (today): the unfinished one ending
+# soonest, else the latest ended one. Prints nothing, returns 1, if none exist.
+gr::default_challenge_id() {
+  local today="$1" pick id
+  pick="$(gr::next_ending_challenge "$today")"
+  [[ -z "$pick" ]] && pick="$(gr::latest_challenge)"
+  [[ -z "$pick" ]] && return 1
+  IFS=$'\t' read -r id _ _ <<< "$pick"
+  echo "$id"
+}
+
 # "<id>\t<start>\t<end>" of every challenge overlapping [$1, $2].
 gr::challenges_overlapping() {
   local start="$1" end="$2" files=()

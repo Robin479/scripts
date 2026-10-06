@@ -148,7 +148,7 @@ called "delay", which fit both):
   10%) of the time since the incident's first challenged request (minimum
   1s, `GR_HTTP_PACE_PROBE_MIN_MS`) — probes spread out gradually instead of
   overshooting a block that usually ends within minutes. After
-  `http_challenge_max_probes` (default 30, ≈ 1.5h from a 300s start) failed
+  `http_challenge_max_probes` (default 35, ≈ 2.1h from a 300s start) failed
   probes, `gr::http_get` gives up (`GR_PACE_GIVE_UP`) and `gr::run_fetch`'s
   circuit breaker stops the run. A pause is only ever extended, never
   shortened, by a later challenge.
@@ -457,7 +457,7 @@ value`; keys may be dotted (`section.key`) INI-style.
 | `http_request_interval` | 5 | min seconds between request starts, all processes, + 0-50% jitter |
 | `http_challenge_pause` | 300 | seconds paused after an incident's first challenge |
 | `http_challenge_probe_pct` | 10 | a failed probe pauses this % of the time waited in the incident |
-| `http_challenge_max_probes` | 30 | give up on a request after this many failed probes |
+| `http_challenge_max_probes` | 35 | give up on a request after this many failed probes |
 | `fetch_max_consecutive_failures` | 3 | a `fetch` run stops after this many failures in a row (0 disables) |
 | `book_cache_ttl` | 8640000 (100 days) | seconds a cached book counts as fresh for `fetch --all` |
 
@@ -852,8 +852,11 @@ in that post's `book_sections`), `--challenge <challenge_id>` (repeatable;
 every book in any blog post linked to that challenge), or `--all` (every cached book). The
 first three combine and are deduped (`sort -n -u`) into one pool — books
 repeat across posts (a challenge's posts share many books), so the dedup
-matters; `--all` is mutually exclusive with them; none of the four is a
-usage error.
+matters; `--all` is mutually exclusive with them. With none of the four,
+`fetch` behaves as `--challenge <default>`, the default being what
+`challenges get` (and `solve`) pick without an id: the unfinished challenge
+ending soonest, else the latest ended one (`gr::default_challenge_id`);
+with no challenges at all it's a usage error.
 
 **`--challenge`** resolves the challenge's `.blogs[].blog_id`
 (`gr::require_challenge_file`, same lookup and `error: no challenge <id>` as
