@@ -86,6 +86,11 @@ dockerized shellcheck or a different binary, e.g.
   gets its own sibling wrapper folder (e.g. `argbash/`) rather than being
   mixed into `bashly/`.
 
+- `docs/` — per-tool context notes (not linked anywhere). Currently
+  `docs/comdirect-finanzreport.md`: how `plain/comdirect-finanzreport.sh` works,
+  its privacy rules for the bank PDFs, and how to adapt it when the format
+  changes. Read it before touching that script.
+
 ## Conventions
 
 - Nothing is edited or authored directly in `bin/` — it holds only
