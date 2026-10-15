@@ -59,8 +59,8 @@ masked content:
 
 | `layout` | years | notes |
 |---|---|---|
-| `soll-haben` | 2008-2009 | table header `Buchungstag / Valuta / Soll / Haben`; each tx on ONE line: `type  booking  valuta  amount`, description on indented lines below; sometimes the type is missing (line = two dates + amount); overview has no IBAN |
-| `vorgang` | 2010-2013 | header `Buchungstag Vorgang Auftraggeber / Empfänger Buchungstext Ausgang` + second header line `Valuta ... Eingang`; booking date on the first tx line, valuta date on a later line; no IBANs in overview |
+| `soll-haben` | 2008-2009 | table header `Buchungstag / Valuta / Soll / Haben`; each tx on ONE line: `type  booking  valuta  amount`, description on indented lines below; sometimes the type is missing (line = two dates + amount); overview has no IBAN (derived, see Transaction id) |
+| `vorgang` | 2010-2013 | header `Buchungstag Vorgang Auftraggeber / Empfänger Buchungstext Ausgang` + second header line `Valuta ... Eingang` (`Umsatztag ...` in the 2013 Visa tables); booking date on the first tx line, valuta date on a later line; no IBANs in overview (derived) |
 | `vorgang-iban` | 2014- | same table; overview lists IBAN, later two balance columns (`Saldo in Kontowährung`, `Saldo in EUR`); foreign-currency accounts (`Währungsanlagekonto (XXX)`); depot from ~2012; `Zinsübersicht`, `Steuerliche Daten`; from ~2021 depot rows have WKN/Verwahrart on the row, an extra note line (e.g. custody country) before the name, and `Kontoübersicht` heading |
 
 Depot position layouts (all handled, in `# --- depot` of the parser):
@@ -79,7 +79,9 @@ Line-oriented state machine over the footer-stripped text:
 2. **Overview**: from `Ihre aktuellen Salden` to `Gesamtsaldo`; rows = name,
    optional IBAN, 1-2 amounts (native currency, EUR).
 3. **Sections**: heading (first table cell without digits, remembered only while
-   *outside* a section) -> `Alter Saldo` opens, `Neuer Saldo` closes. Overdraft
+   *outside* a section; table header words such as `Umsatztag` are skipped) ->
+   `Alter Saldo` opens, `Neuer Saldo` closes. A `Visa-Karte NNNN` line always wins
+   as heading (the `Visa Limit ...` line above it is only a note). Overdraft
    limit from `Dispositionskredit N EUR` on the heading line.
 4. **Transactions**: right-aligned amount column. The right edge is taken from
    the table header line **of the current page** (it shifts per page!) with a
@@ -92,11 +94,12 @@ Line-oriented state machine over the footer-stripped text:
    overflows into the next column is not repaired (`raw_lines` keep the full
    lines). Details (End-to-End-Ref, Mandatsref, Gläubiger-ID, card, WKN/ISIN) are
    regexed out of the text lines.
-5. **Depot**, **tax data**, **interest rates**, **IBAN/BIC table** at the end.
+5. **Depot**, **tax data**, **interest rates**, **IBAN/BIC table** at the end;
+   then IBANs are derived for IBAN-less giro/tagesgeld accounts.
 6. **Validation** -> `warnings[]` (never fatal): `opening + sum(tx) == closing`
    per account (0.005), overview balance == closing balance, depot positions sum
    == `Gesamtkurswert`, `Gesamtwert` == overview depot value, report number and
-   header present. **A clean run has an empty `warnings` for every report** --
+   header present, no `Kontonummer` footer to derive an IBAN from. **A clean run has an empty `warnings` for every report** --
    this is the regression test.
 
 Gotchas already hit:
@@ -115,11 +118,30 @@ dates), `source{file,hash,file_date}`, `layout`, `accounts[]`, `depot{positions[
 totals}`, `tax_data[]`, `interest_rates[]`, `warnings[]`, optionally
 `total_eur`. Account: `name`, `type` (giro/tagesgeld/fremdwaehrung/depot/
 verrechnung/sonstige), `currency`, `iban`, `bic`, `overdraft_limit_eur`,
+`iban_derived` (true when the IBAN was derived, see below),
 `opening_balance`/`closing_balance{date,amount}`, `balance_eur`,
 `eur_equivalent{value,implied_rate_eur_per_unit}` (non-EUR accounts),
 `transactions[]` {`booking_date`, `value_date`, `amount` (signed), `type`,
 `reference`, `counterparty{name,iban_bic}`, `text_lines`, `details`,
-`raw_lines`}. Amounts are numbers (German format `1.234,56` converted).
+`raw_lines`, `id`}. Amounts are numbers (German format `1.234,56` converted).
+
+### Transaction id
+
+`YYYY-NN/AA/IIII#CCCCCCCC`: `YYYY-NN` = report `year`/`number`, `AA` = last 2 digits
+of the account's IBAN, `IIII` = 1-based position within the account's
+transactions in that report (restarts at 0001 per account), `C...` = lowercase CRC32 over
+`booking_date|value_date|amount_in_cents`. The script only emits it; label storage
+and detecting changed ids (index/CRC mismatch) are out of scope. Accounts with no
+IBAN (the `sonstige` accounts = Visa card accounts: temporary, zero balance at start and
+end, settled by one booking on the main account) get a synthetic `AA` `X1`, `X2`, ... --
+a running number per report over the card accounts that have transactions (so far
+never more than one per report). The Visa section is named after its `Visa-Karte NNNN`
+line, so it merges with the overview entry of the same name.
+
+Pre-2014 reports list no IBANs: for giro/tagesgeld the IBAN is derived (`iban_derived:
+true`) from bank id 20041155 + the account number in the report footer (`Kontonummer N /`)
++ suffix (giro 00, tagesgeld 05) + mod-97 checksum. Derived IBANs equal the real ones
+of later reports.
 
 ## Workflow when the format changes
 
@@ -133,14 +155,15 @@ verrechnung/sonstige), `currency`, `iban`, `bic`, `overdraft_limit_eur`,
    parser over a new parser. Typical breakages: renamed headings (overview,
    `Alter/Neuer Saldo`), shifted columns (check the amount edge tolerance), new
    depot row shape, new account types (`acct_for` type mapping).
-4. Re-run on all 214 files; all `warnings` must stay empty and transaction /
-   position counts must not drop for old files.
+4. Re-run on all 214 files; all `warnings` must stay empty, transaction /
+   position counts must not drop for old files, and all transaction `id`s must stay
+   unique (`jq -s '[.[].accounts[]|(.transactions//[])[].id]|(length==(unique|length))'`).
 5. `shellcheck plain/comdirect-finanzreport.sh` (`make lint-plain` also checks the
    unrelated `desktopctl.sh`, which has pre-existing findings).
 
-## Status when written (2026-10-14)
+## Status (2026-10-15)
 
-214 reports, 9501 transactions, 1093 depot positions; zero warnings. Not yet
-done / ideas: drop `raw_lines` if output size matters; rejoin words wrapped
+214 reports, 9501 transactions (all with a unique `id`), 1093 depot positions; zero
+warnings. Not yet done / ideas: drop `raw_lines` if output size matters; rejoin words wrapped
 mid-token in `text_lines`; Jahressteuerbescheinigung parsing; unit tests with
 synthetic PDFs (none exist because real PDFs cannot be committed).

@@ -13,6 +13,11 @@
 # the respective report, e.g. --output 'report-\(.year)-\(.number).json'; the
 # report is then written to that path instead of stdout.
 #
+# Every transaction carries an `id`: YYYY-NN/AA/IIII#CCCCCCCC (report year and
+# number / last 2 IBAN digits of the account, X1, X2.. for Visa card accounts /
+# 1-based position within the account in that report / lowercase CRC32 of
+# booking date, value date and amount in cents). See docs/comdirect-finanzreport.md.
+#
 # skeleton prints the `pdftotext -layout` text for layout inspection. Default
 # (blacklist): digits, tokens containing digits, mail/URL-like tokens and any
 # word listed in .local/comdirect-sensitive-words.txt in this repo (one per line,
@@ -190,6 +195,18 @@ convert_file() {
 		| .[1] as $content
 		| ($base + ($content | del(.header)))
 		| .source.file_date = $base.date
+		| .year as $year | .number as $number
+		| .accounts |= (
+			. as $accts
+			| [range(0; length) as $k | .[$k]
+				| ([$accts[:$k][] | select(.type == "sonstige" and .iban == null and (.transactions // [] | length) > 0)] | length + 1) as $card
+				| (if .iban != null then .iban | gsub(" "; "") | .[-2:]
+				   else "X\($card)" end) as $aa
+				| if .transactions then
+					.transactions |= [to_entries[] | .key as $i | .value
+						| .id = "\($year)-\(("0" + ($number | tostring))[-2:])/\($aa)/\(("000" + ($i + 1 | tostring))[-4:])#\(.crc)"
+						| del(.crc)]
+				  else . end])
 		| .date = ($content.header.date // $base.date)
 		| .warnings += (
 			if $content.header == null then ["no Finanzreport header (Nr. N per DATE) found"]
@@ -340,6 +357,7 @@ use strict;
 use warnings;
 use utf8;
 use JSON::PP;
+use Compress::Zlib ();
 
 binmode(STDIN, ":encoding(UTF-8)");
 binmode(STDOUT, ":encoding(UTF-8)");
@@ -357,6 +375,10 @@ sub round2 { return sprintf("%.2f", shift) + 0; }
 my @raw = <STDIN>;
 chomp @raw;
 s/\r$//, s/\f//g for @raw;
+
+# Account number printed in the footer of the pre-IBAN reports ('Kontonummer N / ...'),
+# sometimes without the leading zero. Used to derive the missing IBANs below.
+my ($main_acct_no) = map { /^\s*Kontonummer\s+(\d+) \// ? sprintf("%08d", $1) : () } @raw;
 
 # Drop page footers; table headers get repeated on every page by the bank.
 my @L = grep {
@@ -495,8 +517,11 @@ for my $i (0 .. $#L) {
 	unless ($cur) {
 		# Account heading candidates: first table cell without digits.
 		my ($cell) = $l =~ /^\s*(\S.{0,60}?)(?:\s{2,}|$)/;
+		# Visa sections: the account is the card ('Visa-Karte NNNN'), listed below
+		# the 'Visa Limit ...' line, which is only a note about its limits.
+		if ($l =~ /^\s*(Visa-Karte \d{4})(?:\s|$)/) { $heading = $1; next; }
 		if (defined $cell && ($cell !~ /\d/ || $cell =~ /^[^\d]+\([A-Z]{3}\)$/)) {
-			$heading = norm($cell) unless $cell =~ /^(Umsätze|Buchungstag|Valuta|Alter Saldo|Neuer Saldo|EUR)\b/;
+			$heading = norm($cell) unless $cell =~ /^(Umsätze|Umsatztag|Buchungstag|Valuta|Alter Saldo|Neuer Saldo|EUR)\b/;
 			if ($l =~ /Dispositionskredit\s+([\d.]+)\s*EUR/ && defined $heading) {
 				(my $v = $1) =~ s/\.//g;
 				acct_for($heading)->{overdraft_limit_eur} = $v + 0;
@@ -624,6 +649,28 @@ for my $l (@L) {
 	$acct{$name}{bic} = $bic if defined $bic;
 }
 
+# --- derive the IBAN of accounts the old reports list without one ------------------------
+# Same bank id and main account number for all accounts; only the 2-digit suffix
+# differs per account (giro 00, tagesgeld 05).
+my %SUFFIX = (giro => "00", tagesgeld => "05");
+sub iban_checksum {
+	my $bban = shift;
+	my $n = 0;
+	$n = ($n * 10 + $_) % 97 for split //, join "", map { /\d/ ? $_ : ord($_) - 55 } split //, "${bban}DE00";
+	return sprintf("%02d", 98 - $n);
+}
+for my $name (@order) {
+	my $a = $acct{$name};
+	next if defined $a->{iban} || !exists $SUFFIX{ $a->{type} };
+	unless (defined $main_acct_no) {
+		push @warnings, "$name: no IBAN and no 'Kontonummer' footer to derive one from";
+		next;
+	}
+	my $bban = "20041155" . $main_acct_no . $SUFFIX{ $a->{type} };
+	$a->{iban} = "DE" . iban_checksum($bban) . $bban;
+	$a->{iban_derived} = JSON::PP::true;
+}
+
 # --- assemble -----------------------------------------------------------------------------
 my (@accounts, @dates_from, @dates_to);
 for my $name (@order) {
@@ -649,6 +696,13 @@ for my $name (@order) {
 	}
 	if ($a->{currency} ne "EUR" && defined $a->{overview_native} && defined $a->{balance_eur} && $a->{overview_native} != 0) {
 		$a->{eur_equivalent} = { value => $a->{balance_eur}, implied_rate_eur_per_unit => $a->{balance_eur} / $a->{overview_native} };
+	}
+	# Checksum part of the transaction id (composed in the jq step, which knows
+	# year/number): CRC32 over the fields that must not move if the report is
+	# re-parsed -- booking date, value date, amount in cents.
+	for my $t (@{ $a->{transactions} // [] }) {
+		$t->{crc} = sprintf("%08x", Compress::Zlib::crc32(join("|",
+			$t->{booking_date} // "", $t->{value_date} // "", sprintf("%.0f", ($t->{amount} // 0) * 100))));
 	}
 	delete $a->{overview_native};
 	delete $a->{transactions} if $a->{type} eq "depot" && !@{ $a->{transactions} // [] };
