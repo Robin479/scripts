@@ -2,6 +2,7 @@
 # shellcheck disable=SC2154 # args is bashly's global associative array
 series_ids="${args[series_id]:-}"
 force="${args[--force]:-}"
+fetch_only="${args[--fetch-only]:-}"
 quiet=""
 if bs::fetch_quiet "${args[--batch]:-}"; then
   quiet=1
@@ -17,6 +18,9 @@ fi
 
 bs::offline || bs::init_curl_cmd || exit 1
 
+# Rebuilds series $1 first if its matchers changed since the last rebuild
+# (.dirty), unless --fetch-only: cached products classify against the current
+# rules before the fetch, which then classifies new ones against them too.
 # Fetches every category of series $1, then resizes it. $2/$3 (n/total)
 # are just for the "series [n/total]" status prefix.
 bs::_refresh_one_series() {
@@ -24,6 +28,10 @@ bs::_refresh_one_series() {
   categories="$(bs::series_category_ids "$sid")" || return 1
 
   echo "=== series $sid [$n/$total] ==="
+  if [[ -z "$fetch_only" ]] && bs::series_is_dirty "$sid"; then
+    echo "-- matchers changed since the last rebuild, rebuilding first (--fetch-only skips this) --"
+    bs::rebuild_series "$sid" "$quiet" || return 1
+  fi
   while IFS= read -r cid; do
     [[ -n "$cid" ]] || continue
     read -r mode until <<< "$(bs::category_fetch_mode "$cid" "$force")"

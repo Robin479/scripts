@@ -142,7 +142,7 @@ commands:
     - long: --batch
       help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
   - name: refresh
-    help: "The routine day-to-day command: fetch new covers and resize them (at every preconfigured resolution) for one or more series in one step -- covers are already kept linked as they're classified, no separate relink step needed"
+    help: "The routine day-to-day command: fetch new covers and resize them (at every preconfigured resolution) for one or more series in one step -- covers are already kept linked as they're classified, no separate relink step needed. A series whose matchers changed since its last rebuild (dirty) is rebuilt first, offline, so already-cached products get classified too; --fetch-only skips that"
     args:
     - name: series_id
       repeatable: true
@@ -153,6 +153,8 @@ commands:
     - long: --force
       short: -f
       help: Walk every category of each series to its end, even a synced one that isn't due yet (downloads only new or incomplete covers, never re-downloads final ones)
+    - long: --fetch-only
+      help: "Skip the automatic 'series rebuild' of a series whose matchers changed since its last rebuild (marked dirty) -- fetch and resize only"
     - long: --batch
       help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
   - name: remove

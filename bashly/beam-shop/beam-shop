@@ -205,7 +205,7 @@ beam_shop_series_usage() {
   printf "  %s   Change an existing series' category membership, resize resolutions, name, item-key format, and/or category order\n" "edit   "
   printf "  %s   Report gaps/problems in a series' cached data, purely from local metadata (no network access): item numbers missing entirely, items with no actual image file on disk, covers still stuck at 'placeholder', fallback-keyed items still awaiting a manual rename ('unsorted'), two or more products currently matching the same item ('ambiguous'), items with no shop product behind them at all, e.g. a manually imported cover ('productless'), a manual image overriding a matched product's final cover ('shadowed'), and a manually-pinned product that doesn't (or no longer) naturally match its own item ('promoted')\n" "audit  "
   printf "  %s   Re-run series-membership classification against every already-cached product, with no network access at all -- for after changing a series' matchers ('series matcher add/remove'); a single product's own override ('product exclude/set-item/unset') already applies immediately on its own and doesn't need this. --covers-only skips classification entirely and just repairs the covers/ symlink tree from whatever's already classified -- the rare case where the file tree itself needs fixing (a manually deleted image/symlink, say), not the classification data.\n" "rebuild"
-  printf "  %s   The routine day-to-day command: fetch new covers and resize them (at every preconfigured resolution) for one or more series in one step -- covers are already kept linked as they're classified, no separate relink step needed\n" "refresh"
+  printf "  %s   The routine day-to-day command: fetch new covers and resize them (at every preconfigured resolution) for one or more series in one step -- covers are already kept linked as they're classified, no separate relink step needed. A series whose matchers changed since its last rebuild (dirty) is rebuilt first, offline, so already-cached products get classified too; --fetch-only skips that\n" "refresh"
   printf "  %s   Remove one or more series definitions (categories/products/images are kept -- only the series mapping and its derived views go)\n" "remove "
   printf "  %s   Manage a series' own membership-matching regexes (also see 'series get' for the current list)\n" "matcher"
   echo
@@ -494,7 +494,7 @@ beam_shop_series_rebuild_usage() {
 
 # :command.usage
 beam_shop_series_refresh_usage() {
-  printf "beam-shop series refresh - The routine day-to-day command: fetch new covers and resize them (at every preconfigured resolution) for one or more series in one step -- covers are already kept linked as they're classified, no separate relink step needed\n\n"
+  printf "beam-shop series refresh - The routine day-to-day command: fetch new covers and resize them (at every preconfigured resolution) for one or more series in one step -- covers are already kept linked as they're classified, no separate relink step needed. A series whose matchers changed since its last rebuild (dirty) is rebuilt first, offline, so already-cached products get classified too; --fetch-only skips that\n\n"
 
   printf "%s\n" "Usage:"
   printf "  beam-shop series refresh [SERIES_ID...] [OPTIONS]\n"
@@ -510,6 +510,11 @@ beam_shop_series_refresh_usage() {
     # :flag.usage
     printf "  %s\n" "--force, -f"
     printf "    Walk every category of each series to its end, even a synced one that isn't\n    due yet (downloads only new or incomplete covers, never re-downloads final\n    ones)\n"
+    echo
+
+    # :flag.usage
+    printf "  %s\n" "--fetch-only"
+    printf "    Skip the automatic 'series rebuild' of a series whose matchers changed since\n    its last rebuild (marked dirty) -- fetch and resize only\n"
     echo
 
     # :flag.usage
@@ -4016,6 +4021,7 @@ send_completions() {
   echo $'    12:--offline) return 0 ;;'
   echo $'    12:--help|12:-h) return 0 ;;'
   echo $'    12:--force|12:-f) return 0 ;;'
+  echo $'    12:--fetch-only) return 0 ;;'
   echo $'    12:--batch) return 0 ;;'
   echo $'    13:--data-path) return 2 ;;'
   echo $'    13:--offline) return 0 ;;'
@@ -4722,6 +4728,7 @@ send_completions() {
   echo $'        _beam-shop_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _beam-shop_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
   echo $'        _beam-shop_completions_option_seen "--force" "-f" || words+=("--force" "-f")'
+  echo $'        _beam-shop_completions_option_seen "--fetch-only" || words+=("--fetch-only")'
   echo $'        _beam-shop_completions_option_seen "--batch" || words+=("--batch")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
@@ -5373,6 +5380,7 @@ beam_shop_series_refresh_command() {
   # shellcheck disable=SC2154 # args is bashly's global associative array
   series_ids="${args[series_id]:-}"
   force="${args[--force]:-}"
+  fetch_only="${args[--fetch-only]:-}"
   quiet=""
   if bs::fetch_quiet "${args[--batch]:-}"; then
     quiet=1
@@ -5388,6 +5396,9 @@ beam_shop_series_refresh_command() {
 
   bs::offline || bs::init_curl_cmd || exit 1
 
+  # Rebuilds series $1 first if its matchers changed since the last rebuild
+  # (.dirty), unless --fetch-only: cached products classify against the current
+  # rules before the fetch, which then classifies new ones against them too.
   # Fetches every category of series $1, then resizes it. $2/$3 (n/total)
   # are just for the "series [n/total]" status prefix.
   bs::_refresh_one_series() {
@@ -5395,6 +5406,10 @@ beam_shop_series_refresh_command() {
     categories="$(bs::series_category_ids "$sid")" || return 1
 
     echo "=== series $sid [$n/$total] ==="
+    if [[ -z "$fetch_only" ]] && bs::series_is_dirty "$sid"; then
+      echo "-- matchers changed since the last rebuild, rebuilding first (--fetch-only skips this) --"
+      bs::rebuild_series "$sid" "$quiet" || return 1
+    fi
     while IFS= read -r cid; do
       [[ -n "$cid" ]] || continue
       read -r mode until <<< "$(bs::category_fetch_mode "$cid" "$force")"
@@ -7125,6 +7140,14 @@ beam_shop_series_refresh_parse_requirements() {
 
         # :flag.case_no_arg
         args['--force']=1
+        shift
+        ;;
+
+      # :flag.case
+      --fetch-only)
+
+        # :flag.case_no_arg
+        args['--fetch-only']=1
         shift
         ;;
 

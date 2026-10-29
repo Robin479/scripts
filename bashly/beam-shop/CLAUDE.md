@@ -932,11 +932,16 @@ anything's fetched from it — see "Category → product linking" above.
 `series matcher remove <id> --index <n>...` (alias `rm`),
 `series audit <id> [--hide-promoted]`,
 `series rebuild [id...] [--covers-only] [--batch]`,
-`series refresh [id...] [--force] [--batch]`,
+`series refresh [id...] [--force] [--fetch-only] [--batch]`,
 `series remove <id...> | --all` (alias `rm`).
 
-**`series refresh [id...] [--force] [--batch]`** is the
-everyday day-to-day command: for each given series (default: all), fetch
+**`series refresh [id...] [--force] [--fetch-only] [--batch]`** is the
+everyday day-to-day command: for each given series (default: all), first
+`bs::rebuild_series` it if it's `.dirty` (matchers changed since the last
+rebuild; offline; a fetch alone only classifies *newly discovered* products,
+so already-cached ones would otherwise never match a new matcher; a failed
+rebuild fails that series and skips its fetch, leaving `.dirty` set;
+`--fetch-only` skips this step), then fetch
 every one of its member categories (`bs::fetch_category`, classifying and
 linking covers as products are discovered — see "Cover linking is
 automatic" below), then resize it (`bs::resize_series`). No separate
