@@ -138,26 +138,22 @@ bs::listing_products() {
     | jq -c '.[0][] | select(.ordernumber != "") | {product_id: (.ordernumber | ltrimstr("SW")), title, subtitle, url}'
 }
 
-# Fetches a product's detail page, extracts {title, subtitle, isbn, image_url}
-# (og:image; subtitle/isbn "" if none). isbn: the gtin13 microdata meta, else
-# the "ISBN" row of the details table; digits (and a check-digit X) only.
+# Fetches a product's detail page, prints bs::assess_product_detail's
+# {title, subtitle, image_url, isbn, isbn_issues, ...} (subtitle/isbn "" if
+# none). With $2 (the expected product id), checks the page is that
+# product's and keeps it under isbn-anomalies/ if its ISBN looks off.
 bs::fetch_product_detail() {
-  local url="$1" html_file
+  local url="$1" product_id="${2:-}" html_file detail
   html_file="$(mktemp)"
   trap 'rm -f "$html_file"; trap - RETURN' RETURN
 
   bs::http_get "$url" > "$html_file" || return 1
 
-  xidel -s "$html_file" --extract-kind=xquery3 -e '
-    {
-      "title": normalize-space(string((//meta[@property="og:title"])[1]/@content)),
-      "subtitle": normalize-space(string((//header[contains(concat(" ", normalize-space(@class), " "), " product--header ")]/following-sibling::h2[contains(concat(" ", normalize-space(@class), " "), " subtitle ")])[1])),
-      "gtin13": normalize-space(string((//meta[@itemprop="gtin13"])[1]/@content)),
-      "isbn_entry": normalize-space(string((//span[@class="entryText"][normalize-space(.) = "ISBN"]/following-sibling::span[@class="entryTextAdditional"])[1])),
-      "image_url": string((//meta[@property="og:image"])[1]/@content)
-    }
-  ' --output-format=json-wrapped 2> /dev/null \
-    | jq -c '.[0] | .isbn = ([.gtin13, .isbn_entry] | map(gsub("[^0-9Xx]"; "") | ascii_upcase) | map(select(. != "")) | first // "") | del(.gtin13, .isbn_entry)'
+  detail="$(bs::extract_product_detail "$html_file" | bs::assess_product_detail "$product_id")" || return 1
+  if [[ -n "$product_id" ]]; then
+    bs::record_isbn_anomaly "$product_id" "$url" "$html_file" "$detail" || return 1
+  fi
+  echo "$detail"
 }
 
 # Finishes a new cover already sitting at images/<id>.<ext>: placeholder-hash
@@ -256,7 +252,7 @@ bs::fetch_one_product() {
   local product_id="$1" category_id="$2" listing_title="$3" listing_url="$4" quiet="$5" listing_subtitle="$6"
 
   local detail="" title="$listing_title" subtitle="$listing_subtitle" isbn="" image_url="" reason=""
-  if ! detail="$(bs::fetch_product_detail "$listing_url")"; then
+  if ! detail="$(bs::fetch_product_detail "$listing_url" "$product_id")"; then
     reason="could not fetch product detail page"
   else
     local detail_title; detail_title="$(jq -r '.title // empty' <<< "$detail")"

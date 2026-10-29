@@ -738,12 +738,21 @@ costs one extra request, not per-cycle-page.
   `SW9783845356242110164`): `<meta itemprop="gtin13" content="978...">`
   (schema.org microdata) and a details-table row (`<span
   class="entryText">ISBN</span>` followed by `<span
-  class="entryTextAdditional">978...</span>`). `bs::fetch_product_detail`
-  takes the meta, falling back to the table row, keeping only digits (and a
-  check-digit `X`). Listing pages carry no ISBN, so a cached product only
-  gets one when its detail page is fetched again. The cover's own filename
-  is usually the ISBN too (`.../9783845318745.jpg`), but nothing guarantees
-  that, so it isn't used.
+  class="entryTextAdditional">978...</span>`); a third copy sits in the
+  reading-sample widget (`data-reading_sample_ean`).
+  `bs::assess_product_detail` (`beam_shop_isbn.sh`) takes the meta, falling
+  back to the table row, keeping only digits (and a check-digit `X`).
+  Listing pages carry no ISBN, so a cached product only gets one when its
+  detail page is fetched again (`product backfill-isbn`). The cover's own
+  filename is usually the ISBN too (`.../9783845318745.jpg`), but nothing
+  guarantees that, so it isn't used as a source — only as a cross-check.
+  Bundles (`PA...` ids, "Perry Rhodan-Paket ...") have no ISBN at all.
+- **Search by ordernumber redirects to the product page**:
+  `/search?sSearch=SW277126` answers `302` to the detail page (confirmed
+  for both ordernumber generations), which is how `product backfill-isbn`
+  reaches a cached product without a stored page url. A search that
+  doesn't hit exactly one product lands on a results page instead, caught
+  by the ordernumber check below.
 
 ## Global flags
 
@@ -779,6 +788,7 @@ $data_dir/
   config.ini                              # INI config (bashly's vendored config library)
   .last_request_at                        # bs::throttle state
   image_hashes.json                       # sha256 -> [product_id, ...], drives placeholder detection
+  isbn-anomalies/<pid>.{json,html}        # a detail page whose ISBN looked off: assessment + the raw page (see "product backfill-isbn")
 
   categories/<id>/meta.json               # raw shop category cache: {category_id, name, url, parent_id}
   categories/<id>/products/<pid>.json     # symlink -> ../../../products/<pid>.json (category -> product, the one persisted relation)
@@ -866,9 +876,10 @@ level apart, one about sub-categories, the other about products.
 
 **`products/<pid>.json`** fields: `product_id`, `title`, `subtitle` (the
 shop's second title line, `null` if none — see "What a matcher sees"),
-`isbn` (from the detail page — see "ISBN" under site quirks; `null` if none
-or the product predates this field: it's only set when a detail page is
-fetched, and a write without one, e.g. `covers import`, keeps the old value),
+`isbn` (from the detail page — see "ISBN" under site quirks; `null` if the
+page has none; the field is *absent* on a record whose page hasn't been
+checked yet, which is what `product backfill-isbn` selects on; a write
+without one, e.g. `covers import`, keeps the old value),
 `source_url` (the
 og:image url, or the source listing url for a `failed` record where no
 image url was ever confirmed), `image_sha256` (`null` for `failed`),
@@ -1204,6 +1215,32 @@ immediately" above), which reclassifies and relinks that one product in
 that one series on the spot. No separate "now make it take effect" step,
 and no `series rebuild` needed for a single product's own override — only
 for a *matcher* change, which can affect many products at once.
+
+**`product backfill-isbn [product_id...] [--force] [--report] [--batch]`**
+(`beam_shop_isbn.sh`): re-fetches the detail page of every product record
+with no `isbn` field (`grep -L`; given ids are always re-checked, `--force`
+re-checks everything) via the ordernumber search (see site quirks), and
+sets just `isbn` on the record (nothing else changes, not even
+`fetched_at`). One throttled request per product, so the first full run
+over ~6,600 products takes ~10-15h; it's resumable, since a checked record
+always has the field afterwards (`null` if the page had none). A page
+that isn't the expected product leaves the record untouched (retried next
+run). `--report` summarizes the anomaly store offline.
+
+**ISBN anomalies**: every detail page fetched for a known product id —
+backfill *and* a regular `covers fetch`/`series refresh` — goes through
+`bs::assess_product_detail`, which collects every ISBN-looking value on the
+page (gtin13 meta, "ISBN" row, other `itemprop` isbn/gtin metas, the
+reading-sample EAN, and 13-digit `97[89]` / "ISBN"-labelled 10-digit
+numbers in the visible text) and flags: `not-a-product-page` (no
+Artikelnummer row), `ordernumber-mismatch`, `no-isbn`, `multiple-isbns`
+(more than one distinct normalized value), `gtin13-meta-missing`,
+`isbn-row-missing`, `isbn10`, `bad-length`, `non-isbn-prefix` (13 digits,
+not 978/979), `bad-checksum`, `cover-filename-differs` (the og:image's
+ISBN-shaped filename isn't the picked ISBN). The first two are fatal (no
+ISBN stored). Any issue keeps the assessment and the raw page as
+`isbn-anomalies/<pid>.{json,html}`; a later clean check of the same product
+removes them.
 
 ## `covers` commands
 

@@ -334,8 +334,23 @@ commands:
       short: -f
       help: Overwrite an existing cached-final cover for this product id
 - name: product
-  help: "Manage per-product series-classification overrides -- exclude a false match, or force an item number when automatic matching can't get there on its own"
+  help: "Manage per-product series-classification overrides -- exclude a false match, or force an item number when automatic matching can't get there on its own -- and backfill product details"
   commands:
+  - name: backfill-isbn
+    help: "Re-fetch the detail page of every cached product that has no isbn field yet and store its ISBN (one throttled request per product; resumable -- an interrupted run picks up where it stopped). Pages with anything unexpected about their ISBN (none, several, ISBN-10, bad checksum, wrong product, ...) are kept under isbn-anomalies/ in the data dir"
+    args:
+    - name: product_id
+      repeatable: true
+      help: Only these products, whether or not they already have an isbn (default every product without one)
+    flags:
+    - long: --force
+      short: -f
+      help: Re-check every product, even one that already has an isbn field
+    - long: --report
+      help: "Don't fetch anything, just summarize the anomalies on record"
+      conflicts: [--force]
+    - long: --batch
+      help: "Don't show a self-updating status line (default when stdout isn't a terminal anyway, e.g. redirected to a log)"
   - name: exclude
     help: Exclude a product from ever being auto-classified into a series (a matcher that would otherwise match it is ignored)
     args:
