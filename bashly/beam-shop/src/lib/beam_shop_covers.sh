@@ -138,8 +138,9 @@ bs::listing_products() {
     | jq -c '.[0][] | select(.ordernumber != "") | {product_id: (.ordernumber | ltrimstr("SW")), title, subtitle, url}'
 }
 
-# Fetches a product's detail page, extracts {title, subtitle, image_url}
-# (og:image; subtitle "" if none).
+# Fetches a product's detail page, extracts {title, subtitle, isbn, image_url}
+# (og:image; subtitle/isbn "" if none). isbn: the gtin13 microdata meta, else
+# the "ISBN" row of the details table; digits (and a check-digit X) only.
 bs::fetch_product_detail() {
   local url="$1" html_file
   html_file="$(mktemp)"
@@ -151,17 +152,20 @@ bs::fetch_product_detail() {
     {
       "title": normalize-space(string((//meta[@property="og:title"])[1]/@content)),
       "subtitle": normalize-space(string((//header[contains(concat(" ", normalize-space(@class), " "), " product--header ")]/following-sibling::h2[contains(concat(" ", normalize-space(@class), " "), " subtitle ")])[1])),
+      "gtin13": normalize-space(string((//meta[@itemprop="gtin13"])[1]/@content)),
+      "isbn_entry": normalize-space(string((//span[@class="entryText"][normalize-space(.) = "ISBN"]/following-sibling::span[@class="entryTextAdditional"])[1])),
       "image_url": string((//meta[@property="og:image"])[1]/@content)
     }
-  ' --output-format=json-wrapped 2> /dev/null | jq -c '.[0]'
+  ' --output-format=json-wrapped 2> /dev/null \
+    | jq -c '.[0] | .isbn = ([.gtin13, .isbn_entry] | map(gsub("[^0-9Xx]"; "") | ascii_upcase) | map(select(. != "")) | first // "") | del(.gtin13, .isbn_entry)'
 }
 
 # Finishes a new cover already sitting at images/<id>.<ext>: placeholder-hash
 # classification, an atomic products/<id>.json write, category link (if $2
-# given), series classification. $6 subtitle ("" for none). Prints
-# resulting cover_status on success.
+# given), series classification. $6 subtitle ("" for none), $7 isbn ("" keeps
+# the existing record's). Prints resulting cover_status on success.
 bs::finalize_product() {
-  local product_id="$1" category_id="$2" title="$3" source_url="$4" quiet="$5" subtitle="$6"
+  local product_id="$1" category_id="$2" title="$3" source_url="$4" quiet="$5" subtitle="$6" isbn="$7"
 
   local image_file; image_file="$(bs::image_file "$product_id")" || {
     bs::status_line_clear "$quiet"
@@ -175,16 +179,19 @@ bs::finalize_product() {
   local product_file; product_file="$(bs::product_file "$product_id")"
   local existing_overrides="{}"
   [[ -f "$product_file" ]] && existing_overrides="$(jq -c '.overrides // {}' "$product_file")"
+  [[ -z "$isbn" && -f "$product_file" ]] && isbn="$(jq -r '.isbn // empty' "$product_file")"
 
   local content
   if ! content="$(jq -n --arg product_id "$product_id" \
     --arg title "$title" --arg source_url "$source_url" \
     --arg fetched_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg hash "$hash" \
     --arg status "$status" --argjson overrides "$existing_overrides" --arg subtitle "$subtitle" \
+    --arg isbn "$isbn" \
     '{
       product_id: $product_id,
       title: $title,
       subtitle: (if $subtitle == "" then null else $subtitle end),
+      isbn: (if $isbn == "" then null else $isbn end),
       source_url: (if $source_url == "" then null else $source_url end),
       image_sha256: $hash,
       fetched_at: $fetched_at,
@@ -206,8 +213,9 @@ bs::finalize_product() {
 # Records a failed fetch attempt for product $1 as products/<id>.json with
 # cover_status "failed"/failure_reason $5, instead of leaving no trace. Still
 # links category->product. Never downgrades an existing final/placeholder record.
+# $7 isbn ("" keeps the existing record's).
 bs::record_fetch_failure() {
-  local product_id="$1" category_id="$2" title="$3" source_url="$4" reason="$5" subtitle="$6"
+  local product_id="$1" category_id="$2" title="$3" source_url="$4" reason="$5" subtitle="$6" isbn="$7"
 
   local product_file; product_file="$(bs::product_file "$product_id")"
   if [[ -f "$product_file" ]]; then
@@ -217,16 +225,19 @@ bs::record_fetch_failure() {
 
   local existing_overrides="{}"
   [[ -f "$product_file" ]] && existing_overrides="$(jq -c '.overrides // {}' "$product_file")"
+  [[ -z "$isbn" && -f "$product_file" ]] && isbn="$(jq -r '.isbn // empty' "$product_file")"
 
   local content
   content="$(jq -n --arg product_id "$product_id" \
     --arg title "$title" --arg source_url "$source_url" \
     --arg fetched_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg reason "$reason" \
     --argjson overrides "$existing_overrides" --arg subtitle "$subtitle" \
+    --arg isbn "$isbn" \
     '{
       product_id: $product_id,
       title: (if $title == "" then null else $title end),
       subtitle: (if $subtitle == "" then null else $subtitle end),
+      isbn: (if $isbn == "" then null else $isbn end),
       source_url: (if $source_url == "" then null else $source_url end),
       image_sha256: null,
       fetched_at: $fetched_at,
@@ -244,7 +255,7 @@ bs::record_fetch_failure() {
 bs::fetch_one_product() {
   local product_id="$1" category_id="$2" listing_title="$3" listing_url="$4" quiet="$5" listing_subtitle="$6"
 
-  local detail="" title="$listing_title" subtitle="$listing_subtitle" image_url="" reason=""
+  local detail="" title="$listing_title" subtitle="$listing_subtitle" isbn="" image_url="" reason=""
   if ! detail="$(bs::fetch_product_detail "$listing_url")"; then
     reason="could not fetch product detail page"
   else
@@ -252,6 +263,7 @@ bs::fetch_one_product() {
     [[ -n "$detail_title" ]] && title="$detail_title"
     local detail_subtitle; detail_subtitle="$(jq -r '.subtitle // empty' <<< "$detail")"
     [[ -n "$detail_subtitle" ]] && subtitle="$detail_subtitle"
+    isbn="$(jq -r '.isbn // empty' <<< "$detail")"
     image_url="$(jq -r '.image_url // empty' <<< "$detail")"
     [[ -n "$image_url" ]] || reason="no cover image url found on the detail page"
   fi
@@ -266,11 +278,11 @@ bs::fetch_one_product() {
   if [[ -n "$reason" ]]; then
     bs::status_line_clear "$quiet"
     echo "error: product $product_id: $reason ($listing_url) -- recorded as failed; see 'covers import --series <id> --item <n>' once you have the real cover" >&2
-    bs::record_fetch_failure "$product_id" "$category_id" "$title" "$image_url" "$reason" "$subtitle"
+    bs::record_fetch_failure "$product_id" "$category_id" "$title" "$image_url" "$reason" "$subtitle" "$isbn"
     return 1
   fi
 
-  bs::finalize_product "$product_id" "$category_id" "$title" "$image_url" "$quiet" "$subtitle"
+  bs::finalize_product "$product_id" "$category_id" "$title" "$image_url" "$quiet" "$subtitle" "$isbn"
 }
 
 # Manually registers an already-on-disk cover for product $2, running it

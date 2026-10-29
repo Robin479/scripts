@@ -733,6 +733,17 @@ costs one extra request, not per-cycle-page.
   still has the long form), just two different real numbering generations
   in the same catalog. Both are treated identically — just opaque stable
   keys.
+- **ISBN**: every product detail page carries it twice, confirmed
+  2026-10-29 on both ordernumber generations (`SW277126`,
+  `SW9783845356242110164`): `<meta itemprop="gtin13" content="978...">`
+  (schema.org microdata) and a details-table row (`<span
+  class="entryText">ISBN</span>` followed by `<span
+  class="entryTextAdditional">978...</span>`). `bs::fetch_product_detail`
+  takes the meta, falling back to the table row, keeping only digits (and a
+  check-digit `X`). Listing pages carry no ISBN, so a cached product only
+  gets one when its detail page is fetched again. The cover's own filename
+  is usually the ISBN too (`.../9783845318745.jpg`), but nothing guarantees
+  that, so it isn't used.
 
 ## Global flags
 
@@ -855,6 +866,9 @@ level apart, one about sub-categories, the other about products.
 
 **`products/<pid>.json`** fields: `product_id`, `title`, `subtitle` (the
 shop's second title line, `null` if none — see "What a matcher sees"),
+`isbn` (from the detail page — see "ISBN" under site quirks; `null` if none
+or the product predates this field: it's only set when a detail page is
+fetched, and a write without one, e.g. `covers import`, keeps the old value),
 `source_url` (the
 og:image url, or the source listing url for a `failed` record where no
 image url was ever confirmed), `image_sha256` (`null` for `failed`),
