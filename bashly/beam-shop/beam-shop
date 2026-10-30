@@ -31,7 +31,7 @@ beam_shop_usage() {
   printf "  %s   Explore the shop's own raw category tree (confusing -- see 'series' for a cleaner view)\n" "categories "
   printf "  %s   Manage logical series definitions (one or more shop categories, in order)\n" "series     "
   printf "  %s   Fetch and normalize book cover images\n" "covers     "
-  printf "  %s   Manage per-product series-classification overrides -- exclude a false match, or force an item number when automatic matching can't get there on its own -- and backfill product details\n" "product    "
+  printf "  %s   Manage per-product series-classification overrides -- exclude a false match, or force an item number when automatic matching can't get there on its own\n" "product    "
   printf "  %s   View or change beam-shop's own config.ini settings (curl_bin, throttling, image size, ...)\n" "config     "
   echo
 
@@ -1017,7 +1017,7 @@ beam_shop_covers_import_usage() {
 
 # :command.usage
 beam_shop_product_usage() {
-  printf "beam-shop product - Manage per-product series-classification overrides -- exclude a false match, or force an item number when automatic matching can't get there on its own -- and backfill product details\n\n"
+  printf "beam-shop product - Manage per-product series-classification overrides -- exclude a false match, or force an item number when automatic matching can't get there on its own\n\n"
 
   printf "%s\n" "Usage:"
   printf "  beam-shop product COMMAND\n"
@@ -1025,10 +1025,9 @@ beam_shop_product_usage() {
   echo
   # :command.usage_commands
   printf "%s\n" "Commands:"
-  printf "  %s   Re-fetch the detail page of every cached product that has no isbn field yet and store its ISBN (one throttled request per product; resumable -- an interrupted run picks up where it stopped). Pages with anything unexpected about their ISBN (none, several, ISBN-10, bad checksum, wrong product, ...) are kept under isbn-anomalies/ in the data dir\n" "backfill-isbn"
-  printf "  %s   Exclude a product from ever being auto-classified into a series (a matcher that would otherwise match it is ignored)\n" "exclude      "
-  printf "  %s   Force a product to a specific item number in a series, bypassing matcher-derived classification entirely for it\n" "set-item     "
-  printf "  %s   Remove a product's override for a series -- falls back to normal matcher-based classification again\n" "unset        "
+  printf "  %s   Exclude a product from ever being auto-classified into a series (a matcher that would otherwise match it is ignored)\n" "exclude "
+  printf "  %s   Force a product to a specific item number in a series, bypassing matcher-derived classification entirely for it\n" "set-item"
+  printf "  %s   Remove a product's override for a series -- falls back to normal matcher-based classification again\n" "unset   "
   echo
 
   # :command.long_usage
@@ -1039,53 +1038,6 @@ beam_shop_product_usage() {
     # :command.usage_fixed_flags
     printf "  %s\n" "--help, -h"
     printf "    Show this help\n"
-    echo
-
-  fi
-}
-
-# :command.usage
-beam_shop_product_backfill_isbn_usage() {
-  printf "beam-shop product backfill-isbn - Re-fetch the detail page of every cached product that has no isbn field yet and store its ISBN (one throttled request per product; resumable -- an interrupted run picks up where it stopped). Pages with anything unexpected about their ISBN (none, several, ISBN-10, bad checksum, wrong product, ...) are kept under isbn-anomalies/ in the data dir\n\n"
-
-  printf "%s\n" "Usage:"
-  printf "  beam-shop product backfill-isbn [PRODUCT_ID...] [OPTIONS]\n"
-  printf "  beam-shop product backfill-isbn --help | -h\n"
-  echo
-
-  # :command.long_usage
-  if [[ -n "$long_usage" ]]; then
-    # :command.usage_options
-    printf "%s\n" "Options:"
-
-    # :command.usage_flags
-    # :flag.usage
-    printf "  %s\n" "--force, -f"
-    printf "    Re-check every product, even one that already has an isbn field\n"
-    echo
-
-    # :flag.usage
-    printf "  %s\n" "--report"
-    printf "    Don't fetch anything, just summarize the anomalies on record\n"
-    printf "    %s\n" "Conflicts: --force"
-    echo
-
-    # :flag.usage
-    printf "  %s\n" "--batch"
-    printf "    Don't show a self-updating status line (default when stdout isn't a terminal\n    anyway, e.g. redirected to a log)\n"
-    echo
-
-    # :command.usage_fixed_flags
-    printf "  %s\n" "--help, -h"
-    printf "    Show this help\n"
-    echo
-
-    # :command.usage_args
-    printf "%s\n" "Arguments:"
-
-    # :argument.usage
-    printf "  %s\n" "PRODUCT_ID..."
-    printf "    Only these products, whether or not they already have an isbn (default every\n    product without one)\n"
     echo
 
   fi
@@ -1962,22 +1914,26 @@ bs::listing_products() {
     | jq -c '.[0][] | select(.ordernumber != "") | {product_id: (.ordernumber | ltrimstr("SW")), title, subtitle, url}'
 }
 
-# Fetches a product's detail page, prints bs::assess_product_detail's
-# {title, subtitle, image_url, isbn, isbn_issues, ...} (subtitle/isbn "" if
-# none). With $2 (the expected product id), checks the page is that
-# product's and keeps it under isbn-anomalies/ if its ISBN looks off.
+# Fetches a product's detail page, extracts {title, subtitle, isbn, image_url}
+# (og:image; subtitle/isbn "" if none). isbn: the gtin13 microdata meta, else
+# the "ISBN" row of the details table; digits (and a check-digit X) only.
 bs::fetch_product_detail() {
-  local url="$1" product_id="${2:-}" html_file detail
+  local url="$1" html_file
   html_file="$(mktemp)"
   trap 'rm -f "$html_file"; trap - RETURN' RETURN
 
   bs::http_get "$url" > "$html_file" || return 1
 
-  detail="$(bs::extract_product_detail "$html_file" | bs::assess_product_detail "$product_id")" || return 1
-  if [[ -n "$product_id" ]]; then
-    bs::record_isbn_anomaly "$product_id" "$url" "$html_file" "$detail" || return 1
-  fi
-  echo "$detail"
+  xidel -s "$html_file" --extract-kind=xquery3 -e '
+    {
+      "title": normalize-space(string((//meta[@property="og:title"])[1]/@content)),
+      "subtitle": normalize-space(string((//header[contains(concat(" ", normalize-space(@class), " "), " product--header ")]/following-sibling::h2[contains(concat(" ", normalize-space(@class), " "), " subtitle ")])[1])),
+      "gtin13": normalize-space(string((//meta[@itemprop="gtin13"])[1]/@content)),
+      "isbn_entry": normalize-space(string((//span[@class="entryText"][normalize-space(.) = "ISBN"]/following-sibling::span[@class="entryTextAdditional"])[1])),
+      "image_url": string((//meta[@property="og:image"])[1]/@content)
+    }
+  ' --output-format=json-wrapped 2> /dev/null \
+    | jq -c '.[0] | .isbn = ([.gtin13, .isbn_entry] | map(gsub("[^0-9Xx]"; "") | ascii_upcase) | map(select(. != "")) | first // "") | del(.gtin13, .isbn_entry)'
 }
 
 # Finishes a new cover already sitting at images/<id>.<ext>: placeholder-hash
@@ -2076,7 +2032,7 @@ bs::fetch_one_product() {
   local product_id="$1" category_id="$2" listing_title="$3" listing_url="$4" quiet="$5" listing_subtitle="$6"
 
   local detail="" title="$listing_title" subtitle="$listing_subtitle" isbn="" image_url="" reason=""
-  if ! detail="$(bs::fetch_product_detail "$listing_url" "$product_id")"; then
+  if ! detail="$(bs::fetch_product_detail "$listing_url")"; then
     reason="could not fetch product detail page"
   else
     local detail_title; detail_title="$(jq -r '.title // empty' <<< "$detail")"
@@ -2433,173 +2389,6 @@ bs::describe_fetch_mode() {
 bs::skipped_categories_summary() {
   local n="$1"
   echo "-- skipped $n synced categor$( ((n == 1)) && echo y || echo ies) not due for a full walk yet (--force to walk them anyway) --"
-}
-
-# src/lib/beam_shop_isbn.sh
-# ISBN extraction and sanity checks for product detail pages. See CLAUDE.md
-# "ISBN" (site quirks) and "product backfill-isbn".
-
-# Issue codes that mean the page isn't the expected product at all -- its
-# ISBN must not be stored.
-readonly BS_ISBN_FATAL_ISSUES='["not-a-product-page","ordernumber-mismatch"]'
-
-# jq helpers: normalization and ISBN-10/13 checksums.
-# shellcheck disable=SC2016 # jq source, not bash vars
-readonly BS_ISBN_JQ_DEFS='
-  def isbn_norm: gsub("[^0-9Xx]"; "") | ascii_upcase;
-  def isbn13_ok: test("^[0-9]{13}$")
-    and ([explode[] - 48] as $d | [range(13) | $d[.] * (if . % 2 == 0 then 1 else 3 end)] | add % 10 == 0);
-  def isbn10_ok: test("^[0-9]{9}[0-9X]$")
-    and ([explode[] | if . == 88 then 10 else . - 48 end] as $d | [range(10) | $d[.] * (10 - .)] | add % 11 == 0);
-'
-
-bs::isbn_anomalies_dir() {
-  local dir; dir="$(bs::data_dir)/isbn-anomalies"
-  mkdir -p "$dir"
-  echo "$dir"
-}
-
-# Raw facts from a product detail page (html file $1): title, subtitle,
-# image_url, page_url (canonical), ordernumber (details table), every place
-# an ISBN could show up, and the page's visible text -- minus other
-# products' boxes (recommendation sliders), which carry their own ISBNs.
-bs::extract_product_detail() {
-  local html_file="$1"
-  # shellcheck disable=SC2016 # xidel xquery, not bash vars
-  xidel -s "$html_file" --extract-kind=xquery3 -e '
-    let $doc := /,
-        $entry := function($label) {
-      $doc//span[@class="entryText"][normalize-space(.) = $label]/following-sibling::span[@class="entryTextAdditional"]
-    }
-    return {
-      "title": normalize-space(string((//meta[@property="og:title"])[1]/@content)),
-      "subtitle": normalize-space(string((//header[contains(concat(" ", normalize-space(@class), " "), " product--header ")]/following-sibling::h2[contains(concat(" ", normalize-space(@class), " "), " subtitle ")])[1])),
-      "image_url": string((//meta[@property="og:image"])[1]/@content),
-      "page_url": string((//link[@rel="canonical"])[1]/@href),
-      "ordernumber": normalize-space(string($entry("Artikelnummer")[1])),
-      "gtin13": [//meta[@itemprop="gtin13"]/normalize-space(@content)],
-      "isbn_row": [$entry("ISBN")/normalize-space(.)],
-      "other_meta": [//*[@itemprop = ("isbn", "gtin", "gtin8", "gtin12", "gtin14")]/normalize-space((@content, .)[1])],
-      "reading_sample_ean": [//@data-reading_sample_ean/normalize-space(.)],
-      "text": string-join(//body//text()[not(ancestor::script or ancestor::style
-        or ancestor::*[contains(concat(" ", normalize-space(@class), " "), " product--box ")])], " ")
-    }
-  ' --output-format=json-wrapped 2> /dev/null | jq -c '.[0]'
-}
-
-# Turns bs::extract_product_detail's raw facts (stdin) into {title, subtitle,
-# image_url, page_url, ordernumber, isbn, isbn_issues, isbn_sources}. isbn:
-# the gtin13 meta, else the "ISBN" table row ("" if neither, or if a fatal
-# issue says this isn't product $1's page; $1 "" skips that check).
-bs::assess_product_detail() {
-  local product_id="$1"
-  jq -c --arg pid "$product_id" --argjson fatal "$BS_ISBN_FATAL_ISSUES" "$BS_ISBN_JQ_DEFS"'
-    ({
-      gtin13: .gtin13,
-      isbn_row: .isbn_row,
-      other_meta: .other_meta,
-      reading_sample_ean: .reading_sample_ean,
-      text: ([.text | scan("(?<![0-9A-Za-z])97[89](?:[- ]?[0-9]){10}(?![0-9])")]
-        + [.text | scan("(?i)isbn(?:-1[03])?\\s*:?\\s*((?:[0-9][- ]?){9}[0-9X])(?![0-9X])") | .[0]])
-    } | map_values(map(isbn_norm) | map(select(. != "")) | unique)) as $sources
-    | ([$sources[][]] | unique) as $all
-    | (($sources.gtin13 + $sources.isbn_row)[0] // "") as $pick
-    | (.image_url | sub("^.*/"; "") | sub("\\.[^.]*$"; "")) as $cover_name
-    | [
-        (if .ordernumber == "" then "not-a-product-page" else empty end),
-        (if $pid != "" and .ordernumber != "" and (.ordernumber | ltrimstr("SW")) != $pid then "ordernumber-mismatch" else empty end),
-        (if ($all | length) == 0 then "no-isbn" else empty end),
-        (if ($all | length) > 1 then "multiple-isbns" else empty end),
-        (if ($all | length) > 0 and ($sources.gtin13 | length) == 0 then "gtin13-meta-missing" else empty end),
-        (if ($all | length) > 0 and ($sources.isbn_row | length) == 0 then "isbn-row-missing" else empty end),
-        (if any($all[]; length == 10) then "isbn10" else empty end),
-        (if any($all[]; length != 10 and length != 13) then "bad-length" else empty end),
-        (if any($all[]; length == 13 and (test("^97[89]") | not)) then "non-isbn-prefix" else empty end),
-        (if any($all[]; (length == 13 and (isbn13_ok | not)) or (length == 10 and (isbn10_ok | not))) then "bad-checksum" else empty end),
-        (if $pick != "" and ($cover_name | test("^([0-9]{13}|[0-9]{9}[0-9X])$")) and $cover_name != $pick then "cover-filename-differs" else empty end)
-      ] as $issues
-    | {
-        title, subtitle, image_url, page_url, ordernumber,
-        isbn: (if any($issues[]; IN($fatal[])) then "" else $pick end),
-        isbn_issues: $issues,
-        isbn_sources: $sources
-      }
-  '
-}
-
-# Keeps product $1's detail page (html file $3, fetched from $2) and its
-# assessment ($4) under isbn-anomalies/ if it has ISBN issues, else removes
-# any earlier record there.
-bs::record_isbn_anomaly() {
-  local product_id="$1" url="$2" html_file="$3" detail="$4"
-  local dir; dir="$(bs::isbn_anomalies_dir)"
-  if [[ "$(jq '.isbn_issues | length' <<< "$detail")" -eq 0 ]]; then
-    rm -f "$dir/$product_id.json" "$dir/$product_id.html"
-    return 0
-  fi
-  local content
-  content="$(jq --arg pid "$product_id" --arg url "$url" \
-    --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{product_id: $pid, fetched_url: $url, checked_at: $checked_at} + .' <<< "$detail")" || return 1
-  bs::write_file "$dir/$product_id.json" "$content"
-  cat -- "$html_file" > "$dir/$product_id.html"
-}
-
-# Re-fetches product $1's detail page (via the shop search, which redirects
-# straight to it -- the product record keeps no page url) and stores its
-# isbn (null if the page has none). Prints the stored isbn ("none" if null);
-# fails without touching the record if the page isn't product $1's.
-bs::backfill_isbn() {
-  local product_id="$1"
-  local product_file; product_file="$(bs::product_file "$product_id")"
-  [[ -f "$product_file" ]] || {
-    echo "error: unknown product $product_id" >&2
-    return 1
-  }
-
-  local term="$product_id"
-  [[ "$product_id" =~ ^[0-9] ]] && term="SW$product_id"
-  local url="${BS_BASE_URL}/search?sSearch=${term}"
-
-  local detail
-  detail="$(bs::fetch_product_detail "$url" "$product_id")" || {
-    echo "error: product $product_id: could not fetch $url" >&2
-    return 1
-  }
-  local fatal
-  fatal="$(jq -r --argjson fatal "$BS_ISBN_FATAL_ISSUES" '[.isbn_issues[] | select(IN($fatal[]))] | join(", ")' <<< "$detail")"
-  if [[ -n "$fatal" ]]; then
-    echo "error: product $product_id: $fatal ($url) -- kept in isbn-anomalies/, record unchanged" >&2
-    return 1
-  fi
-
-  local isbn; isbn="$(jq -r '.isbn' <<< "$detail")"
-  local content
-  content="$(jq --arg isbn "$isbn" \
-    '({product_id, title, subtitle, isbn: null} + .) | .isbn = (if $isbn == "" then null else $isbn end)' \
-    "$product_file")" || {
-    echo "error: could not update product record for $product_id" >&2
-    return 1
-  }
-  bs::write_file "$product_file" "$content"
-  echo "${isbn:-none}"
-}
-
-# Summary of every isbn-anomalies/ record: a count per issue code, then one
-# line per product (id, issues, stored isbn, title).
-bs::isbn_anomaly_report() {
-  local dir; dir="$(bs::isbn_anomalies_dir)"
-  local -a files=("$dir"/*.json)
-  if [[ ! -e "${files[0]}" ]]; then
-    echo "No ISBN anomalies on record."
-    return 0
-  fi
-  echo "${#files[@]} product(s) with ISBN anomalies:"
-  jq -rs '[.[].isbn_issues[]] | group_by(.) | map("  \(length)\t\(.[0])") | .[]' "${files[@]}"
-  echo
-  jq -r '[.product_id, (.isbn_issues | join(",")), (if .isbn == "" then "-" else .isbn end), .title] | join("\t")' "${files[@]}"
-  echo
-  echo "Pages and full details: $dir/<product_id>.{html,json}"
 }
 
 # src/lib/beam_shop_resize.sh
@@ -4310,22 +4099,19 @@ send_completions() {
   echo $'    24:--offline) return 0 ;;'
   echo $'    24:--help|24:-h) return 0 ;;'
   echo $'    25:--data-path) return 2 ;;'
+  echo $'    25:--series) return 2 ;;'
   echo $'    25:--offline) return 0 ;;'
   echo $'    25:--help|25:-h) return 0 ;;'
-  echo $'    25:--force|25:-f) return 0 ;;'
-  echo $'    25:--report) return 0 ;;'
-  echo $'    25:--batch) return 0 ;;'
   echo $'    26:--data-path) return 2 ;;'
   echo $'    26:--series) return 2 ;;'
+  echo $'    26:--item) return 2 ;;'
   echo $'    26:--offline) return 0 ;;'
   echo $'    26:--help|26:-h) return 0 ;;'
   echo $'    27:--data-path) return 2 ;;'
   echo $'    27:--series) return 2 ;;'
-  echo $'    27:--item) return 2 ;;'
   echo $'    27:--offline) return 0 ;;'
   echo $'    27:--help|27:-h) return 0 ;;'
   echo $'    28:--data-path) return 2 ;;'
-  echo $'    28:--series) return 2 ;;'
   echo $'    28:--offline) return 0 ;;'
   echo $'    28:--help|28:-h) return 0 ;;'
   echo $'    29:--data-path) return 2 ;;'
@@ -4340,10 +4126,7 @@ send_completions() {
   echo $'    32:--data-path) return 2 ;;'
   echo $'    32:--offline) return 0 ;;'
   echo $'    32:--help|32:-h) return 0 ;;'
-  echo $'    33:--data-path) return 2 ;;'
-  echo $'    33:--offline) return 0 ;;'
-  echo $'    33:--help|33:-h) return 0 ;;'
-  echo $'    33:--all|33:-a) return 0 ;;'
+  echo $'    32:--all|32:-a) return 0 ;;'
   echo $'  esac'
   echo $''
   echo $'  return 1'
@@ -4389,7 +4172,7 @@ send_completions() {
   echo $'        node_word_count=1'
   echo $'        ;;'
   echo $'      0:config)'
-  echo $'        node_id=29'
+  echo $'        node_id=28'
   echo $'        node_word_count=1'
   echo $'        ;;'
   echo $'      2:list)'
@@ -4492,40 +4275,36 @@ send_completions() {
   echo $'        node_id=23'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      24:backfill-isbn)'
+  echo $'      24:exclude)'
   echo $'        node_id=25'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      24:exclude)'
+  echo $'      24:set-item)'
   echo $'        node_id=26'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      24:set-item)'
+  echo $'      24:unset)'
   echo $'        node_id=27'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      24:unset)'
-  echo $'        node_id=28'
+  echo $'      28:list)'
+  echo $'        node_id=29'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      29:list)'
+  echo $'      28:ls)'
+  echo $'        node_id=29'
+  echo $'        node_word_count=2'
+  echo $'        ;;'
+  echo $'      28:get)'
   echo $'        node_id=30'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      29:ls)'
-  echo $'        node_id=30'
-  echo $'        node_word_count=2'
-  echo $'        ;;'
-  echo $'      29:get)'
+  echo $'      28:set)'
   echo $'        node_id=31'
   echo $'        node_word_count=2'
   echo $'        ;;'
-  echo $'      29:set)'
+  echo $'      28:unset)'
   echo $'        node_id=32'
-  echo $'        node_word_count=2'
-  echo $'        ;;'
-  echo $'      29:unset)'
-  echo $'        node_id=33'
   echo $'        node_word_count=2'
   echo $'        ;;'
   echo $'      *)'
@@ -4766,11 +4545,18 @@ send_completions() {
   echo $'    25:--data-path)'
   echo $'      return'
   echo $'      ;;'
+  echo $'    25:--series)'
+  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series\" 2>/dev/null)" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
   echo $'    26:--data-path)'
   echo $'      return'
   echo $'      ;;'
   echo $'    26:--series)'
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series\" 2>/dev/null)" -- "$cur")'
+  echo $'      return'
+  echo $'      ;;'
+  echo $'    26:--item)'
   echo $'      return'
   echo $'      ;;'
   echo $'    27:--data-path)'
@@ -4780,14 +4566,7 @@ send_completions() {
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series\" 2>/dev/null)" -- "$cur")'
   echo $'      return'
   echo $'      ;;'
-  echo $'    27:--item)'
-  echo $'      return'
-  echo $'      ;;'
   echo $'    28:--data-path)'
-  echo $'      return'
-  echo $'      ;;'
-  echo $'    28:--series)'
-  echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "$(ls \"${BEAM_SHOP_DATA:-$HOME/.beam-shop}/series\" 2>/dev/null)" -- "$cur")'
   echo $'      return'
   echo $'      ;;'
   echo $'    29:--data-path)'
@@ -4800,9 +4579,6 @@ send_completions() {
   echo $'      return'
   echo $'      ;;'
   echo $'    32:--data-path)'
-  echo $'      return'
-  echo $'      ;;'
-  echo $'    33:--data-path)'
   echo $'      return'
   echo $'      ;;'
   echo $'  esac'
@@ -4830,10 +4606,10 @@ send_completions() {
   echo $'        return'
   echo $'        ;;'
   echo $'      24)'
-  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "backfill-isbn exclude set-item unset" -- "$cur")'
+  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "exclude set-item unset" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
-  echo $'      29)'
+  echo $'      28)'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "list ls get set unset" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -5097,9 +4873,7 @@ send_completions() {
   echo $'        _beam-shop_completions_option_seen "--data-path" || words+=("--data-path")'
   echo $'        _beam-shop_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _beam-shop_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
-  echo $'        _beam-shop_completions_option_seen "--force" "-f" || words+=("--force" "-f")'
-  echo $'        _beam-shop_completions_option_seen "--report" || words+=("--report")'
-  echo $'        _beam-shop_completions_option_seen "--batch" || words+=("--batch")'
+  echo $'        _beam-shop_completions_option_seen "--series" || words+=("--series")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -5109,6 +4883,7 @@ send_completions() {
   echo $'        _beam-shop_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _beam-shop_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
   echo $'        _beam-shop_completions_option_seen "--series" || words+=("--series")'
+  echo $'        _beam-shop_completions_option_seen "--item" || words+=("--item")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -5118,7 +4893,6 @@ send_completions() {
   echo $'        _beam-shop_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _beam-shop_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
   echo $'        _beam-shop_completions_option_seen "--series" || words+=("--series")'
-  echo $'        _beam-shop_completions_option_seen "--item" || words+=("--item")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -5127,7 +4901,6 @@ send_completions() {
   echo $'        _beam-shop_completions_option_seen "--data-path" || words+=("--data-path")'
   echo $'        _beam-shop_completions_option_seen "--offline" || words+=("--offline")'
   echo $'        _beam-shop_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
-  echo $'        _beam-shop_completions_option_seen "--series" || words+=("--series")'
   echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
   echo $'        return'
   echo $'        ;;'
@@ -5156,14 +4929,6 @@ send_completions() {
   echo $'        return'
   echo $'        ;;'
   echo $'      32)'
-  echo $'        local words=()'
-  echo $'        _beam-shop_completions_option_seen "--data-path" || words+=("--data-path")'
-  echo $'        _beam-shop_completions_option_seen "--offline" || words+=("--offline")'
-  echo $'        _beam-shop_completions_option_seen "--help" "-h" || words+=("--help" "-h")'
-  echo $'        while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "${words[*]}" -- "$cur")'
-  echo $'        return'
-  echo $'        ;;'
-  echo $'      33)'
   echo $'        local words=()'
   echo $'        _beam-shop_completions_option_seen "--data-path" || words+=("--data-path")'
   echo $'        _beam-shop_completions_option_seen "--offline" || words+=("--offline")'
@@ -5199,11 +4964,7 @@ send_completions() {
   echo $'    return'
   echo $'  fi'
   echo $''
-  echo $'  if [[ "$node_id" == "25" ]] && (( positional_index >= 0 )); then'
-  echo $'    return'
-  echo $'  fi'
-  echo $''
-  echo $'  if [[ "$node_id" == "33" ]] && (( positional_index >= 0 )); then'
+  echo $'  if [[ "$node_id" == "32" ]] && (( positional_index >= 0 )); then'
   echo $'    while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url category_cache_ttl category_settle_period category_full_sync_max_interval category_full_sync_ramp category_full_sync_spread" -- "$cur")'
   echo $'    return'
   echo $'  fi'
@@ -5262,23 +5023,23 @@ send_completions() {
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -A file -- "$cur")'
   echo $'      return'
   echo $'      ;;'
+  echo $'    25:0)'
+  echo $'      return'
+  echo $'      ;;'
   echo $'    26:0)'
   echo $'      return'
   echo $'      ;;'
   echo $'    27:0)'
   echo $'      return'
   echo $'      ;;'
-  echo $'    28:0)'
-  echo $'      return'
-  echo $'      ;;'
-  echo $'    31:0)'
+  echo $'    30:0)'
   echo $'      while read -r; do COMPREPLY+=("$REPLY"); done < <(compgen -W "curl_bin http_request_delay_min http_request_delay_max http_retry_delays image_width image_height image_format known_placeholder_hashes discovery_root_url category_cache_ttl category_settle_period category_full_sync_max_interval category_full_sync_ramp category_full_sync_spread" -- "$cur")'
   echo $'      return'
   echo $'      ;;'
-  echo $'    32:0)'
+  echo $'    31:0)'
   echo $'      return'
   echo $'      ;;'
-  echo $'    32:1)'
+  echo $'    31:1)'
   echo $'      return'
   echo $'      ;;'
   echo $'  esac'
@@ -6108,72 +5869,6 @@ beam_shop_covers_import_command() {
     echo "error: give --product (plus --category/--title only if needed), or --series and --item (plus --title for a fully-manual entry)" >&2
     exit 1
   fi
-
-}
-
-# :command.function
-beam_shop_product_backfill_isbn_command() {
-
-  # src/product_backfill_isbn_command.sh
-  : # keeps the shellcheck directive below scoped to one line, not file-wide
-  # shellcheck disable=SC2154 # args is bashly's global associative array
-  product_ids="${args[product_id]:-}"
-  force="${args[--force]:-}"
-  quiet=""
-  if bs::fetch_quiet "${args[--batch]:-}"; then
-    quiet=1
-  fi
-
-  if [[ -n "${args[--report]:-}" ]]; then
-    bs::isbn_anomaly_report
-    exit
-  fi
-
-  products_dir="$(bs::products_dir)"
-  if [[ -n "$product_ids" ]]; then
-    # shellcheck disable=SC2206 # intentional word-splitting
-    product_id_array=($product_ids)
-  elif [[ -n "$force" ]]; then
-    mapfile -t product_id_array < <(find "$products_dir" -maxdepth 1 -name '*.json' -printf '%f\n' | sed 's/\.json$//' | sort)
-  else
-    # grep -L: records with no isbn field at all (null counts as checked)
-    mapfile -t product_id_array < <(find "$products_dir" -maxdepth 1 -name '*.json' -print0 \
-      | xargs -0 -r grep -L '"isbn":' | xargs -r -n1 basename | sed 's/\.json$//' | sort)
-  fi
-
-  total="${#product_id_array[@]}"
-  if (( total == 0 )); then
-    echo "Every product already has an isbn field -- nothing to do (--force re-checks them all)."
-    exit 0
-  fi
-
-  bs::init_curl_cmd || exit 1
-
-  stored=0
-  none=0
-  fail=0
-  n=0
-  for pid in "${product_id_array[@]}"; do
-    n=$((n + 1))
-    bs::status_line "isbn [$n/$total] $pid (stored $stored, none $none, failed $fail)" "$quiet"
-    if outcome="$(bs::backfill_isbn "$pid")"; then
-      if [[ "$outcome" == "none" ]]; then
-        none=$((none + 1))
-      else
-        stored=$((stored + 1))
-      fi
-      [[ -n "$quiet" ]] && echo "$pid -> $outcome"
-    else
-      bs::status_line_clear "$quiet"
-      fail=$((fail + 1))
-    fi
-  done
-  bs::status_line_clear "$quiet"
-
-  echo "Checked $n product(s): $stored isbn(s) stored, $none without one, $fail failed."
-  anomalies="$(find "$(bs::isbn_anomalies_dir)" -maxdepth 1 -name '*.json' | wc -l)"
-  (( anomalies > 0 )) && echo "$anomalies product(s) with ISBN anomalies on record -- see 'beam-shop product backfill-isbn --report'."
-  (( fail == 0 ))
 
 }
 
@@ -8587,13 +8282,6 @@ beam_shop_product_parse_requirements() {
   case $action in
     -*) ;;
 
-    backfill-isbn)
-      action="backfill-isbn"
-      shift
-      beam_shop_product_backfill_isbn_parse_requirements "$@"
-      shift $#
-      ;;
-
     exclude)
       action="exclude"
       shift
@@ -8643,88 +8331,6 @@ beam_shop_product_parse_requirements() {
         # :command.parse_requirements_case_simple
         printf "invalid argument: %s\n" "$key" >&2
         exit 1
-
-        ;;
-
-    esac
-  done
-
-}
-
-# :command.parse_requirements
-beam_shop_product_backfill_isbn_parse_requirements() {
-  local key
-
-  # :command.fixed_flags_filter
-  while [[ $# -gt 0 ]]; do
-    key="$1"
-    case "$key" in
-      --help | -h)
-        long_usage=yes
-        beam_shop_product_backfill_isbn_usage
-        exit
-        ;;
-
-      *)
-        break
-        ;;
-
-    esac
-  done
-
-  # :command.command_filter
-  action="product backfill-isbn"
-
-  # :command.parse_requirements_while
-  while [[ $# -gt 0 ]]; do
-    key="$1"
-    case "$key" in
-      # :flag.case
-      --force | -f)
-
-        # :flag.case_no_arg
-        args['--force']=1
-        shift
-        ;;
-
-      # :flag.case
-      --report)
-        # :flag.conflicts
-        if [[ -n "${args['--force']:-}" ]]; then
-          printf "conflicting options: %s cannot be used with %s\n" "$key" "--force" >&2
-          exit 1
-        fi
-
-        # :flag.case_no_arg
-        args['--report']=1
-        shift
-        ;;
-
-      # :flag.case
-      --batch)
-
-        # :flag.case_no_arg
-        args['--batch']=1
-        shift
-        ;;
-
-      -?*)
-        printf "invalid option: %s\n" "$key" >&2
-        exit 1
-        ;;
-
-      *)
-        # :command.parse_requirements_case
-        # :command.parse_requirements_case_repeatable
-        # :argument.case_repeatable
-        escaped="$(printf '%q' "$1")"
-        if [[ -z ${args['product_id']+x} ]]; then
-          args['product_id']="$escaped"
-        else
-          args['product_id']="${args['product_id']} $escaped"
-
-        fi
-        shift
 
         ;;
 
@@ -9356,7 +8962,6 @@ run() {
     "covers resize") beam_shop_covers_resize_command ;;
     "covers import") beam_shop_covers_import_command ;;
     "product") beam_shop_product_command ;;
-    "product backfill-isbn") beam_shop_product_backfill_isbn_command ;;
     "product exclude") beam_shop_product_exclude_command ;;
     "product set-item") beam_shop_product_set_item_command ;;
     "product unset") beam_shop_product_unset_command ;;
