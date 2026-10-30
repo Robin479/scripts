@@ -1232,7 +1232,10 @@ backfill *and* a regular `covers fetch`/`series refresh` — goes through
 `bs::assess_product_detail`, which collects every ISBN-looking value on the
 page (gtin13 meta, "ISBN" row, other `itemprop` isbn/gtin metas, the
 reading-sample EAN, and 13-digit `97[89]` / "ISBN"-labelled 10-digit
-numbers in the visible text) and flags: `not-a-product-page` (no
+numbers in the visible text, except inside other products' `.product--box`es
+— the recommendation sliders show other books' reading-sample filenames like
+`9783641130077_sample.EPUB`, which flagged 2 false `multiple-isbns` in the
+first backfill) and flags: `not-a-product-page` (no
 Artikelnummer row), `ordernumber-mismatch`, `no-isbn`, `multiple-isbns`
 (more than one distinct normalized value), `gtin13-meta-missing`,
 `isbn-row-missing`, `isbn10`, `bad-length`, `non-isbn-prefix` (13 digits,

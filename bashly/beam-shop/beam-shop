@@ -2461,7 +2461,8 @@ bs::isbn_anomalies_dir() {
 
 # Raw facts from a product detail page (html file $1): title, subtitle,
 # image_url, page_url (canonical), ordernumber (details table), every place
-# an ISBN could show up, and the page's visible text.
+# an ISBN could show up, and the page's visible text -- minus other
+# products' boxes (recommendation sliders), which carry their own ISBNs.
 bs::extract_product_detail() {
   local html_file="$1"
   # shellcheck disable=SC2016 # xidel xquery, not bash vars
@@ -2480,7 +2481,8 @@ bs::extract_product_detail() {
       "isbn_row": [$entry("ISBN")/normalize-space(.)],
       "other_meta": [//*[@itemprop = ("isbn", "gtin", "gtin8", "gtin12", "gtin14")]/normalize-space((@content, .)[1])],
       "reading_sample_ean": [//@data-reading_sample_ean/normalize-space(.)],
-      "text": string-join(//body//text()[not(ancestor::script or ancestor::style)], " ")
+      "text": string-join(//body//text()[not(ancestor::script or ancestor::style
+        or ancestor::*[contains(concat(" ", normalize-space(@class), " "), " product--box ")])], " ")
     }
   ' --output-format=json-wrapped 2> /dev/null | jq -c '.[0]'
 }
