@@ -1,2 +1,1 @@
-re::init
-re::clean_remote
+re::clean_recorded

@@ -4,19 +4,19 @@ version: 0.1.0
 
 environment_variables:
 - name: remote_exec_host
-  help: Default remote ssh host
-  default: kiwi
+  help: "Remote ssh host -- beats the config file, but not --host"
 - name: remote_exec_root
-  help: "Default remote scratch root (this directory's own absolute local path gets appended to it)"
-  default: /tmp/remote-exec
+  help: "Remote scratch root -- beats the config file, but not --root"
+- name: remote_exec_config
+  help: "Config file (default: ${XDG_CONFIG_HOME:-~/.config}/remote-exec/config.ini). INI keys 'host'/'root' set the global defaults; the same keys under a [mvn] or [exec] section override them for that command only. Built-in defaults: host=kiwi, root=/tmp/remote-exec"
 
 flags:
 - long: --host
   arg: host
-  help: "Remote ssh host (default: $REMOTE_EXEC_HOST)"
+  help: "Remote ssh host (default: \\$REMOTE_EXEC_HOST, else the config file, else kiwi)"
 - long: --root
   arg: root
-  help: "Remote scratch root (default: $REMOTE_EXEC_ROOT); this directory's own absolute local path gets appended to it, resolved relative to the remote host's \\$HOME unless it's absolute"
+  help: "Remote scratch root (default: \\$REMOTE_EXEC_ROOT, else the config file, else /tmp/remote-exec); this directory's own absolute local path gets appended to it, resolved relative to the remote host's \\$HOME unless it's absolute"
 - long: --dry-run
   short: -n
   help: Pass -n (and -v) to rsync to preview the sync, then stop -- the remote command is skipped entirely
@@ -54,7 +54,13 @@ commands:
   - remote-exec exec mvn --version
 
 - name: clean
-  help: Remove the remote scratch directory (and any now-empty parent directories up to the root) -- skips rsync entirely
+  help: "Remove this directory's remote scratch copy on every host/root on record for it or any of its parents (so in a subfolder, only that subfolder is removed remotely), plus any now-empty remote parents up to the root; history entries whose remote copy is gone afterwards are dropped from the history file next to the config file -- skips rsync entirely. --host/--root (or \\$REMOTE_EXEC_HOST/\\$REMOTE_EXEC_ROOT) clean only the matching copies; the config file doesn't narrow it down"
+  flags:
+  - long: --all
+    short: -a
+    help: Clean every recorded copy as a whole, regardless of the current directory (still narrowed down by --host/--root)
   examples:
   - remote-exec clean
+  - remote-exec --host kiwi clean
   - remote-exec --dry-run clean
+  - remote-exec --dry-run --host kiwi clean --all
