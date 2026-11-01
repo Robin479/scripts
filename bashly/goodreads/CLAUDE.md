@@ -410,7 +410,7 @@ $data_dir/
   .last_response_headers      # headers (all hops) of the latest gr::http_get attempt
   .last_bad_response.{html,headers}  # latest challenge / unparseable page
   .last_request_blocked       # present while the latest request gave up on bot challenges (circuit breaker)
-  .blogs_discovery_marker     # newest blog post id seen by the last successful discovery
+  .blogs_discovery_marker     # newest listing date (YYYY-MM-DD) seen by the last successful discovery
   accounts/
     <id>/
       cookies.txt             # curl/Netscape cookie jar; absent/removed = logged out
@@ -1357,37 +1357,52 @@ uncached → `fetched`.)
 
 ### Discovery (`gr::discover_blog_ids`)
 
-Paginates `/news?content_type=articles[&page=N]` (`gr::news_url`). The
-`content_type=articles` filter is deliberate: without it the listing also
-shows `/interviews/show/<id>.<name>` pages (separate id space and layout,
-no book list, not scraped here) and yields zero additional `/blog/show/`
-ids, so filtering costs nothing. `GR_NEWS_DISCOVER_MAX_PAGES` (50) is a
-safety cap against a non-terminating listing; the real listing is ~17-18
-pages. One temp file per page, removed right away (a function-level
-`RETURN` trap would only clean up the last page's file).
+Paginates `/news?content_type=all[&page=N]` (`gr::news_url`). Not
+`content_type=articles`: that view isn't date-ordered (seen live on
+2026-11-01: an Oct 27 post sat above nine posts from that day, so the old
+id marker hid all of them for days); `all` is. `all` also lists
+`/interviews/show/<id>.<name>` cards (separate id space, no book list, not
+scraped here) — they count for dates and end-of-listing detection but
+contribute no id. `GR_NEWS_DISCOVER_MAX_PAGES` (50) is a safety cap
+against a non-terminating listing; the real listing is ~19 pages. One temp
+file per page, removed right away (a function-level `RETURN` trap would
+only clean up the last page's file).
 
-**Id extraction is scoped to real listing cards**: only lines matching
-`/blog/show/<id>` *and* `editorialCard__image--fullHeight` (the listing
-card's cover-image class, always on the same line as its href). A
-page-wide `grep` would also pick up an unrelated promo banner link in the
-page header, which comes before the listing in document order and would be
-mistaken for the newest post (History: see DESIGN-HISTORY.md › Discovery
-marker bugs). Ids are then deduplicated order-preservingly (`awk
-'!seen[$0]++'`, not `sort -u`), since position relative to the marker
-matters.
+**Card extraction**: one `xidel` query over
+`//small[@class="editorialCard__timestamp"]/a`, giving each card's href and
+timestamp. The timestamp only exists on real listing cards, so an
+unrelated promo `/blog/show/` link in the page header is never picked up
+(History: see DESIGN-HISTORY.md › Discovery marker bugs). Timestamps are
+relative (`7h`, `45m`, `2d`) for recent cards and `Mon DD` (no year) for
+older ones; `gr::news_card_date` turns them into `YYYY-MM-DD` (a yearless
+date is this year's, or last year's if that would be in the future; also
+accepts `Mon DD, YYYY`; unknown formats give nothing, and such a card is
+always kept and never ends the scan).
+
+**Ordering**: the listing is date-ordered, but posts sharing a date come
+in no stable order (the same day's posts differ in order between
+`articles` and `all`, and an older post id can be published later) — so
+nothing may rely on a card's position within a date.
 
 **The discovery marker** (user decision): `gr::blogs_discovery_marker_file`
-= `$(gr::data_dir)/.blogs_discovery_marker`, a plain-text file holding one
-blog id (same small-state-file convention as `gr::throttle`'s
-`.last_request_at`) — the id at the top of page 1 as of the last
-**successfully completed** discovery. The listing is recency-ordered, so a
-plain `blogs fetch` stops paginating when it meets that id; only ids
-*before* it on that page (in document order) count as new, plus all ids of
-earlier pages. `--full` ignores the marker and walks the whole listing
-(same as a marker-less first run). Pagination ends on either:
-- the marker appearing on a page (the common case), or
-- a page contributing no id not already seen *this run* (the fallback:
-  `--full`, first run, or the marker's own post having left the listing).
+= `$(gr::data_dir)/.blogs_discovery_marker`, a plain-text file holding a
+**date** (`YYYY-MM-DD`, same small-state-file convention as
+`gr::throttle`'s `.last_request_at`) — the newest card date seen by the
+last **successfully completed** discovery. A plain `blogs fetch` uses a
+cutoff of marker minus one day (slack: relative timestamps are converted
+in local time, absolute ones are goodreads' own dates), returns only ids
+dated on/after the cutoff, and stops after the first page whose **last**
+card is older than the cutoff (the last card, not the oldest, so a single
+stray old card higher up can't end the scan). Re-returning same-date posts
+that are already cached is harmless: the caller diffs against the cache.
+`--full` ignores the marker (same as a marker-less first run, or a marker
+file in the old blog-id format, which `gr::blogs_discovery_marker_get`
+treats as absent). Pagination ends on either:
+- a page ending below the cutoff (the common case: usually page 1), or
+- a page contributing no card href not already seen *this run* (the
+  fallback: `--full`, first run, or past the end of the listing). It
+  compares all hrefs, interviews included, so a page of only interviews
+  isn't mistaken for the end.
 
 The marker is updated by **every** successful discovery, `--full`
 included ("this marker is only ever updated by running a blog discovery",
@@ -1396,8 +1411,9 @@ path only — a page-fetch failure returns 1 before it, so a failed
 discovery can be repeated against the old marker (explicit requirement).
 The marker is authoritative about "what discovery last saw", independent
 of what was added to/removed from the cache by other means. (Replaces an
-earlier design that seeded the scan with the whole cached-id set —
-History: see DESIGN-HISTORY.md › Discovery marker.)
+earlier single-blog-id marker and, before that, a design that seeded the
+scan with the whole cached-id set — History: see DESIGN-HISTORY.md ›
+Discovery marker, › Date marker.)
 
 The function must end in `result="$(… | grep -v '^$')"; echo "$result"`,
 not a bare trailing `grep -v`: with nothing new, `grep` exits 1 ("no lines

@@ -32,25 +32,28 @@ gr::blog_url() {
   echo "https://www.goodreads.com/blog/show/$1"
 }
 
+# content_type=all, not =articles: the articles view isn't date-ordered (an
+# older post can sit above newer ones), which broke the discovery marker.
 gr::news_url() {
   local page="$1"
   if [[ "$page" -le 1 ]]; then
-    echo "https://www.goodreads.com/news?content_type=articles"
+    echo "https://www.goodreads.com/news?content_type=all"
   else
-    echo "https://www.goodreads.com/news?content_type=articles&page=$page"
+    echo "https://www.goodreads.com/news?content_type=all&page=$page"
   fi
 }
 
-# Holds the newest post id seen by the last successful discovery.
+# Holds the newest card date (YYYY-MM-DD) seen by the last successful discovery.
 gr::blogs_discovery_marker_file() {
   echo "$(gr::data_dir)/.blogs_discovery_marker"
 }
 
+# Prints the marker date; anything else (e.g. a pre-date-marker blog id) prints nothing.
 gr::blogs_discovery_marker_get() {
   local file
   file="$(gr::blogs_discovery_marker_file)"
   if [[ -f "$file" ]]; then
-    cat "$file"
+    grep -xE '[0-9]{4}-[0-9]{2}-[0-9]{2}' "$file" || true
   fi
 }
 
@@ -58,20 +61,57 @@ gr::blogs_discovery_marker_set() {
   echo "$1" > "$(gr::blogs_discovery_marker_file)"
 }
 
+# Converts a listing card timestamp ("7h", "45m", "2d", "Oct 27", "Oct 27,
+# 2025") to YYYY-MM-DD; prints nothing for an unknown format. A yearless
+# date is this year's, or last year's if that would be in the future.
+gr::news_card_date() {
+  local text="$1"
+  local today
+  today="$(date +%F)"
+
+  if [[ "$text" =~ ^([0-9]+)([smhd])$ ]]; then
+    local unit
+    case "${BASH_REMATCH[2]}" in
+      s) unit=seconds ;;
+      m) unit=minutes ;;
+      h) unit=hours ;;
+      d) unit=days ;;
+    esac
+    date -d "${BASH_REMATCH[1]} $unit ago" +%F
+  elif [[ "$text" =~ ^[A-Z][a-z]{2}\ [0-9]{1,2},\ [0-9]{4}$ ]]; then
+    date -d "${text/,/}" +%F 2>/dev/null || true
+  elif [[ "$text" =~ ^[A-Z][a-z]{2}\ [0-9]{1,2}$ ]]; then
+    local year result
+    year="$(date +%Y)"
+    result="$(date -d "$text $year" +%F 2>/dev/null)" || return 0
+    if [[ "$result" > "$today" ]]; then
+      result="$(date -d "$text $((year - 1))" +%F 2>/dev/null)" || return 0
+    fi
+    echo "$result"
+  fi
+}
+
 # Prints blog post ids from the /news listing, one per line (not filtered
-# against the cache). Stops at the discovery marker (ids before it are new),
-# or with $1 == "--full" only when a page adds no new ids. Updates the
-# marker only on success.
+# against the cache). The listing is date-ordered, but same-date posts are
+# in no stable order, so the marker is a date, not an id: it stops after the
+# first page whose last card is older than the marker date minus one day
+# (slack for relative "7h" timestamps being converted in local time), and
+# only returns ids dated on or after that cutoff (or undatable). With $1 ==
+# "--full", or without a valid marker, it stops only when a page adds no new
+# cards. Updates the marker only on success.
 gr::discover_blog_ids() {
   local full="${1:-}"
-  local marker=""
+  local marker="" cutoff=""
   if [[ "$full" != "--full" ]]; then
     marker="$(gr::blogs_discovery_marker_get)"
   fi
+  if [[ -n "$marker" ]]; then
+    cutoff="$(date -d "$marker - 1 day" +%F)"
+  fi
 
   local page=1
-  local all_ids=""
-  local newest_id=""
+  local all_ids="" all_hrefs=""
+  local newest_date=""
   # Per-page temp file, removed directly (a RETURN trap would only catch the last).
   local html
 
@@ -84,35 +124,54 @@ gr::discover_blog_ids() {
       return 1
     fi
 
-    # Only real listing cards; the header has an unrelated promo /blog/show/ link.
-    # awk: order-preserving dedup (position relative to the marker matters).
-    local raw_ids ordered_ids
-    raw_ids="$(grep -E '/blog/show/[0-9]+.*editorialCard__image--fullHeight' "$html" | grep -oE '/blog/show/[0-9]+' | grep -oE '[0-9]+')"
+    # "<href>|<timestamp>" per listing card. The timestamp only exists on
+    # real cards (not the header's promo /blog/show/ link); interview cards
+    # (/interviews/show/) count for dates but contribute no id.
+    local cards
+    cards="$(xidel -s "$html" -e '//small[@class="editorialCard__timestamp"]/a/concat(@href, "|", normalize-space(.))' 2>/dev/null)" || true
     rm -f "$html"
-    ordered_ids="$(awk '!seen[$0]++' <<< "$raw_ids")"
 
-    if [[ "$page" -eq 1 ]]; then
-      newest_id="$(head -n1 <<< "$ordered_ids")"
-    fi
+    local line href stamp card_date id page_ids="" page_hrefs="" last_date=""
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      href="${line%%|*}"
+      page_hrefs="${page_hrefs}${page_hrefs:+$'\n'}${href}"
+      stamp="${line#*|}"
+      card_date="$(gr::news_card_date "$stamp")"
+      last_date="$card_date"
+      if [[ -n "$card_date" && "$card_date" > "$newest_date" ]]; then
+        newest_date="$card_date"
+      fi
+      if [[ -n "$cutoff" && -n "$card_date" && "$card_date" < "$cutoff" ]]; then
+        continue
+      fi
+      if [[ "$href" =~ /blog/show/([0-9]+) ]]; then
+        id="${BASH_REMATCH[1]}"
+        page_ids="${page_ids}${page_ids:+$'\n'}${id}"
+      fi
+    done <<< "$cards"
 
-    if [[ -n "$marker" ]] && grep -qxF "$marker" <<< "$ordered_ids"; then
-      all_ids="${all_ids}${all_ids:+$'\n'}$(sed "/^${marker}\$/,\$d" <<< "$ordered_ids")"
+    # Every card's href, not just blog ids: a page of only interview cards
+    # isn't the end of the listing.
+    local new_on_page
+    new_on_page="$(comm -23 <(sort -u <<< "$page_hrefs" | grep -v '^$') <(sort -u <<< "$all_hrefs"))" || true
+    all_hrefs="${all_hrefs}${all_hrefs:+$'\n'}${page_hrefs}"
+    all_ids="${all_ids}${all_ids:+$'\n'}${page_ids}"
+
+    # The last card, not the oldest: a stray old card further up the page
+    # mustn't end the scan.
+    if [[ -n "$cutoff" && -n "$last_date" && "$last_date" < "$cutoff" ]]; then
       break
     fi
-
-    local page_ids new_on_page
-    page_ids="$(sort -n -u <<< "$ordered_ids")"
-    new_on_page="$(comm -23 <(echo "$page_ids") <(sort -n -u <<< "$all_ids"))"
     if [[ -z "$new_on_page" ]]; then
       break
     fi
 
-    all_ids="${all_ids}${all_ids:+$'\n'}${ordered_ids}"
     page=$((page + 1))
   done
 
-  if [[ -n "$newest_id" ]]; then
-    gr::blogs_discovery_marker_set "$newest_id"
+  if [[ -n "$newest_date" ]]; then
+    gr::blogs_discovery_marker_set "$newest_date"
   fi
 
   # Not a bare trailing grep: it exits 1 on empty output, which isn't a failure.

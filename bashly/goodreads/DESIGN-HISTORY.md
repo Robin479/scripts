@@ -742,6 +742,25 @@ Two bugs found by testing against the live listing:
    `gr::discover_blog_ids … || exit 1` treated it as failure. Fixed by
    capturing into a variable and `echo`ing it.
 
+## Date marker
+
+- **The id marker silently stopped discovering (2026-11-01).** `blogs
+  fetch` kept reporting nothing new while 9 posts from that day were
+  online. Cause: `content_type=articles` served an Oct 27 post (3176) as
+  the first card, above all nine newer ones; it was the stored marker, so
+  every run stopped at card 1 and wrote 3176 back. `content_type=all` lists
+  the same posts in date order. Within one date neither view has a stable
+  order (articles: ascending id; all: 3084 first, then descending), and
+  ids don't follow publish order (3084 was published after 3198).
+- **User decision**: switch to `content_type=all`, keep a marker, but make
+  it a date rather than a blog id. Implemented as a cutoff of marker minus
+  one day, stopping after a page whose last card is older. Verified live:
+  the first run (old id marker treated as absent) walked the full listing
+  in ~3 minutes and fetched the 8 posts still missing; the next run stopped
+  after page 1 in ~2 seconds.
+- `--full`'s "page adds nothing new" termination now compares all card
+  hrefs, not just blog ids, since `all` mixes in interview cards.
+
 ## bashly re-indent bug
 
 Found while building `discover`'s already-cached/catalog set difference.
