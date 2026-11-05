@@ -127,3 +127,19 @@ actual install/upgrade does.
    flags.
 3. `src/install_<tool>_command.sh` dispatching to the lib functions and
    implementing the `--update` decision above.
+
+## Open items
+
+- **Installer for the Albert plugin `run_background`.** A custom Albert
+  launcher plugin, currently living somewhere in the user's home folder
+  (exact location not yet pinned down). Its source should move into this
+  repo, with a command that installs it into Albert's plugin directory.
+  Find the plugin first
+  (e.g. `find ~ -path '*albert*' -iname '*run_background*'`).
+
+  Open design question: probably *not* under `boxctl install`, which
+  installs third-party tools. The user leans towards a separate command for
+  deploying the repo's own code snippets, configs and dot-files (this
+  plugin being the first case) — either a new `boxctl` subcommand group
+  next to `install`, or a separate bashly project altogether. Decide that
+  before implementing.
